@@ -110,18 +110,14 @@
   (attr-get run k))
 
 (defn- prepare-options [run]
-  (let [resumes (attribute run :harness/resumes)
-        prompt (attribute run :harness/prompt)]
+  (let [resumes (attribute run :harness/resumes)]
     {:mode (attribute run :harness/mode)
      :resumes resumes
      :session-id (attribute run :harness/session-id)
      :model (attribute run :harness.codex/model)
      :reasoning-effort (attribute run :harness.codex/reasoning-effort)
-     :prompt (if resumes
-               prompt
-               (str/join "\n\n"
-                         (remove str/blank?
-                                 [(attribute run :identity/prompt) prompt])))
+     :identity-prompt (attribute run :identity/prompt)
+     :prompt (attribute run :harness/prompt)
      :extra (or (attribute run :harness.codex/extra-argv) [])}))
 
 (defn- validate-prepare-options!
@@ -139,12 +135,16 @@
     (fail! "harness.codex/extra-argv must be a vector of non-blank strings"
            {:extra-argv extra})))
 
-(defn- option-argv [{:keys [model reasoning-effort extra]}]
+(defn- option-argv
+  [{:keys [resumes model reasoning-effort identity-prompt extra]}]
   (vec
    (concat
     (when model ["--model" model])
     (when reasoning-effort ["--config"
                             (str "model_reasoning_effort=" reasoning-effort)])
+    (when (and (not resumes) (not (str/blank? identity-prompt)))
+      ["--config"
+       (str "developer_instructions=" (json/write-str identity-prompt))])
     extra)))
 
 (defn- codex-command [{:keys [mode resumes session-id prompt] :as options}]

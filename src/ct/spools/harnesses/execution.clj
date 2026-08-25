@@ -307,7 +307,8 @@
                                                            (:id run)
                                                            (attr-get run :harness/attempt)
                                                            record)})
-  (let [observed (custody/terminal-observed record)
+  (let [observed (select-keys (custody/terminal-observed record)
+                              [:exit-code :stdout :stderr])
         observed (if (some? (:exit-code observed))
                    observed
                    (assoc observed :exit-code 1

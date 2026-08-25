@@ -24,12 +24,14 @@
            attributes)}))
 
 (deftest prepare-builds-new-and-resumed-launch-specifications
-  (testing "new headless runs prefix identity in prompt stdin"
+  (testing "new headless runs separate developer identity from prompt stdin"
     (is (= {:argv ["codex" "exec" "--json"
                    "--model" "gpt-test"
                    "--config" "model_reasoning_effort=high"
+                   "--config"
+                   "developer_instructions=\"You are agent tidy-brave-swan.\""
                    "--skip-git-repo-check"]
-            :stdin "You are agent tidy-brave-swan.\n\nDo the work\n"}
+            :stdin "Do the work\n"}
            (codex/prepare runtime definition (run "headless")))))
   (testing "headless resume names the provider session"
     (is (= {:argv ["codex" "exec" "resume" "--json"
@@ -46,7 +48,16 @@
                    "--skip-git-repo-check" "provisional" "Do the work"]
             :stdin nil}
            (codex/prepare runtime definition
-                          (run "interactive" {:harness/resumes "prior"}))))))
+                          (run "interactive" {:harness/resumes "prior"})))))
+  (testing "new interactive runs separate developer identity from user prompt"
+    (is (= {:argv ["codex"
+                   "--model" "gpt-test"
+                   "--config" "model_reasoning_effort=high"
+                   "--config"
+                   "developer_instructions=\"You are agent tidy-brave-swan.\""
+                   "--skip-git-repo-check" "Do the work"]
+            :stdin nil}
+           (codex/prepare runtime definition (run "interactive"))))))
 
 (deftest finish-normalizes-final-message-and-provider-session
   (let [stdout (str "{\"type\":\"thread.started\",\"thread_id\":\"thread-1\"}\n"
