@@ -36,6 +36,10 @@
                    {:modes #{:headless :interactive}
                     :prepare 'ct.spools.harnesses.providers.claude/prepare
                     :finish 'ct.spools.harnesses.providers.claude/finish
+                    :thinking {:attribute :harness.claude/effort
+                               :levels {:low "low"
+                                        :medium "medium"
+                                        :high "high"}}
                     :attributes attributes}
                    "harness produced an invalid Claude definition")))
 

@@ -35,6 +35,10 @@
                    {:modes #{:headless :interactive}
                     :prepare 'ct.spools.harnesses.providers.pi/prepare
                     :finish 'ct.spools.harnesses.providers.pi/finish
+                    :thinking {:attribute :harness.pi/thinking
+                               :levels {:low "low"
+                                        :medium "medium"
+                                        :high "high"}}
                     :attributes attributes}
                    "harness produced an invalid Pi definition")))
 

@@ -78,5 +78,22 @@ Provider options are stored as harness overlay attributes:
 | Cursor | `harness.cursor/model`, `harness.cursor/extra-argv` |
 | Pi | `harness.pi/model`, `harness.pi/thinking`, `harness.pi/extra-argv` |
 
-Use `strand harness list` to inspect registered concrete harnesses and aliases,
-or `mill bin run agent --help` to launch an interactive tracked session.
+Register aliases with a documented descriptor. Portable thinking is limited to
+`:low`, `:medium`, and `:high`; each provider maps those levels to its native
+attribute. An explicit provider attribute takes precedence over portable
+thinking.
+
+```clojure
+(harnesses/register-alias!
+ runtime :terra
+ {:doc "Use the Terra model with medium thinking."
+  :parent :pi
+  :thinking :medium
+  :attributes {:harness.pi/model "openai-codex/gpt-5.6-terra"}})
+```
+
+Aliases may name another alias as their parent. Concrete harnesses must declare
+a portable-thinking mapping before an alias using `:thinking` can resolve.
+
+Use `strand harness list` to inspect registered concrete harnesses and documented
+aliases, or `mill bin run agent --help` to launch an interactive tracked session.

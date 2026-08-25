@@ -36,6 +36,10 @@
                    {:modes #{:headless :interactive}
                     :prepare 'ct.spools.harnesses.providers.codex/prepare
                     :finish 'ct.spools.harnesses.providers.codex/finish
+                    :thinking {:attribute :harness.codex/reasoning-effort
+                               :levels {:low "low"
+                                        :medium "medium"
+                                        :high "high"}}
                     :attributes attributes}
                    "harness produced an invalid Codex definition")))
 

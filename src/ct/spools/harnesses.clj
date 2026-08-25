@@ -12,14 +12,35 @@
 
 (def ^:private registry-version 1)
 (def ^:private overlay-prefix "harness.")
-(declare ^:private json-value? new-registry registry name-string overlay-key?
+(declare ^:private apply-thinking json-value? new-registry registry name-string
          normalize-overlay mode-keyword run-title require-run require-phase)
+
+(defn- overlay-key? [k]
+  (str/starts-with? (if (keyword? k)
+                      (if-let [n (namespace k)] (str n "/" (name k)) (name k))
+                      (str k))
+                    overlay-prefix))
+
 (s/def ::runtime map?)
 (s/def ::name-ref #(or (keyword? %) (symbol? %) (and (string? %) (not (str/blank? %)))))
 (s/def ::id (s/and string? (complement str/blank?)))
 (s/def ::title (s/and string? (complement str/blank?)))
 (s/def ::state #{"active" "closed"})
 (s/def ::attributes map?)
+(s/def ::doc (s/and string? (complement str/blank?)))
+(s/def ::thinking-level #{:low :medium :high})
+(s/def ::attribute overlay-key?)
+(s/def ::levels
+  (s/and (s/keys :req-un [::low ::medium ::high])
+         #(every? #{:low :medium :high} (keys %))
+         #(every? (fn [level] (and (string? level) (not (str/blank? level))))
+                  (vals %))))
+(s/def ::low string?)
+(s/def ::medium string?)
+(s/def ::high string?)
+(s/def ::thinking-definition
+  (s/and (s/keys :req-un [::attribute ::levels])
+         #(every? #{:attribute :levels} (keys %))))
 (s/def ::strand (s/keys :req-un [::id ::title ::state ::attributes]))
 (s/def ::mode #{:headless :interactive "headless" "interactive"})
 (s/def ::modes (s/coll-of #{:headless :interactive} :kind set? :min-count 1))
@@ -36,16 +57,31 @@
            :opt-un [::attributes])
    #(qualified-symbol? (:prepare %))
    #(qualified-symbol? (:finish %))
-   #(every? #{:modes :prepare :finish :attributes} (keys %))
+   #(every? #{:modes :prepare :finish :attributes :thinking} (keys %))
    #(or (not (contains? % :attributes))
-        (s/valid? ::overlay-attributes (:attributes %)))))
-(s/def ::alias-result (s/keys :req-un [:ct.spools.harnesses/alias :ct.spools.harnesses/parent ::attributes]))
+        (s/valid? ::overlay-attributes (:attributes %)))
+   #(or (not (contains? % :thinking))
+        (s/valid? ::thinking-definition (:thinking %)))))
+(s/def ::alias-descriptor
+  (s/and (s/keys :req-un [::doc ::parent ::attributes])
+         #(every? #{:doc :parent :thinking :attributes} (keys %))
+         #(s/valid? ::name-ref (:parent %))
+         #(or (not (contains? % :thinking))
+              (s/valid? ::thinking-level (:thinking %)))
+         #(s/valid? ::overlay-attributes (:attributes %))))
+(s/def ::alias-result
+  (s/and (s/keys :req-un [:ct.spools.harnesses/alias ::doc
+                          :ct.spools.harnesses/parent ::attributes])
+         #(every? #{:alias :doc :parent :thinking :attributes} (keys %))
+         #(or (not (contains? % :thinking))
+              (s/valid? ::thinking-level (:thinking %)))))
 (s/def ::alias string?)
-(s/def ::parent string?)
+(s/def ::parent ::name-ref)
 (s/def ::harness ::name-ref)
 (s/def ::definition ::harness-definition)
 (s/def ::generated ::overlay-attributes)
-(s/def ::resolved-harness (s/keys :req-un [::alias ::harness ::definition ::generated]))
+(s/def ::resolved-harness
+  (s/keys :req-un [::alias ::harness ::definition ::generated]))
 (s/def ::name string?)
 (s/def ::kind #{"harness" "alias"})
 (s/def ::alias-of string?)
@@ -58,9 +94,10 @@
                #(= "harness" (:kind %))
                #(every? #{:name :kind :modes} (keys %)))
         :alias
-        (s/and (s/keys :req-un [::name ::kind ::alias-of ::attributes])
+        (s/and (s/keys :req-un [::name ::kind ::doc ::alias-of ::attributes])
                #(= "alias" (:kind %))
-               #(every? #{:name :kind :alias-of :attributes} (keys %)))))
+               #(every? #{:name :kind :doc :alias-of :thinking :attributes}
+                        (keys %)))))
 (s/def ::registry-list (s/coll-of ::registry-entry :kind vector?))
 (s/def ::harness-registration (s/keys :req-un [::harness ::definition]))
 (s/def ::prompt string?)
@@ -147,23 +184,43 @@
 (defn register-alias!
   "Register or replace an alias over a harness or another alias.
 
-  Provider attributes are merged over the parent when resolved. Returns the
-  normalized alias registration."
-  [rt alias-name parent attributes]
+  The descriptor documents the alias and names its parent, optional portable
+  thinking level, and provider attributes. Child values replace parent values.
+  Provider-specific attributes take precedence over portable thinking."
+  [rt alias-name {:keys [doc parent thinking attributes] :as descriptor}]
   (require-valid! ::runtime rt "register-alias! requires a Weaver runtime")
   (require-valid! ::name-ref alias-name "register-alias! requires an alias name")
-  (require-valid! ::name-ref parent "register-alias! requires a parent name")
-  (require-valid! ::overlay-attributes attributes
-                  "register-alias! requires provider overlay attributes")
+  (require-valid! ::alias-descriptor descriptor
+                  "register-alias! requires a valid alias descriptor")
   (let [alias-name (name-string alias-name "Alias name")
-        parent (name-string parent "Alias parent")
-        entry {:parent parent :attributes (normalize-overlay attributes)}]
+        entry (cond-> {:doc doc
+                       :parent (name-string parent "Alias parent")
+                       :attributes (normalize-overlay attributes)}
+                thinking (assoc :thinking thinking))]
     (swap! (:aliases (registry rt)) assoc alias-name entry)
     (require-valid! ::alias-result
-                    {:alias alias-name :parent parent :attributes (:attributes entry)}
+                    (assoc entry :alias alias-name)
                     "register-alias! produced an invalid registration")))
 
-(s/fdef register-alias! :args (s/cat :runtime ::runtime :alias-name ::name-ref :parent ::name-ref :attributes ::overlay-attributes) :ret ::alias-result)
+(s/fdef register-alias!
+  :args (s/cat :runtime ::runtime :alias-name ::name-ref
+               :descriptor ::alias-descriptor)
+  :ret ::alias-result)
+
+(defn unregister-alias!
+  "Remove one alias registration from the runtime registry.
+
+  Return whether a registration existed. Child aliases that name the removed
+  alias remain visible and fail loudly if resolved until their owner updates
+  them."
+  [rt alias-name]
+  (require-valid! ::runtime rt "unregister-alias! requires a Weaver runtime")
+  (require-valid! ::name-ref alias-name
+                  "unregister-alias! requires an alias name")
+  (let [alias-name (name-string alias-name "Alias name")
+        removed? (contains? @(:aliases (registry rt)) alias-name)]
+    (swap! (:aliases (registry rt)) dissoc alias-name)
+    removed?))
 
 (defn resolve-harness
   "Resolve a harness or alias into its implementation and merged attributes.
@@ -178,15 +235,19 @@
       (when (contains? seen cursor)
         (fail! "Harness alias cycle" {:requested requested :at cursor}))
       (if-let [alias (get @aliases cursor)]
-        (recur (:parent alias) (conj seen cursor) (conj layers (:attributes alias)))
+        (recur (:parent alias) (conj seen cursor) (conj layers alias))
         (if-let [definition (get @harnesses cursor)]
-          (require-valid!
-           ::resolved-harness
-           {:alias requested
-            :harness cursor
-            :definition definition
-            :generated (apply merge (:attributes definition) (reverse layers))}
-           "resolve-harness produced an invalid resolution")
+          (let [layers (reverse layers)
+                attributes (apply merge (:attributes definition)
+                                  (map :attributes layers))
+                thinking (some :thinking (reverse layers))]
+            (require-valid!
+             ::resolved-harness
+             {:alias requested
+              :harness cursor
+              :definition definition
+              :generated (apply-thinking definition attributes thinking)}
+             "resolve-harness produced an invalid resolution"))
           (fail! "Harness or alias is not registered"
                  {:requested requested :missing cursor}))))))
 
@@ -218,8 +279,14 @@
       (concat
        (for [[name definition] (sort-by key @harnesses)]
          {:name name :kind "harness" :modes (mapv clojure.core/name (:modes definition))})
-       (for [[name {:keys [parent attributes]}] (sort-by key @aliases)]
-         {:name name :kind "alias" :alias-of parent :attributes attributes})))
+       (for [[name {:keys [doc parent thinking attributes]}]
+             (sort-by key @aliases)]
+         (cond-> {:name name
+                  :kind "alias"
+                  :doc doc
+                  :alias-of parent
+                  :attributes attributes}
+           thinking (assoc :thinking thinking)))))
      "harnesses produced an invalid registry listing")))
 
 (s/fdef harnesses :args (s/cat :runtime ::runtime) :ret ::registry-list)
@@ -482,6 +549,18 @@
   [_context]
   {:closed :harness-core})
 
+(defn- apply-thinking [definition attributes thinking]
+  (if-not thinking
+    attributes
+    (let [{:keys [attribute levels] :as thinking-definition}
+          (:thinking definition)]
+      (when-not thinking-definition
+        (fail! "Harness does not define portable thinking"
+               {:thinking thinking}))
+      (if (contains? attributes attribute)
+        attributes
+        (assoc attributes attribute (get levels thinking))))))
+
 (defn- json-value? [value]
   (cond
     (or (nil? value) (string? value) (number? value) (boolean? value)) true
@@ -505,12 +584,6 @@
     (if (and s (not (str/blank? s)))
       s
       (fail! (str context " must be a non-blank name") {:value v}))))
-
-(defn- overlay-key? [k]
-  (str/starts-with? (if (keyword? k)
-                      (if-let [n (namespace k)] (str n "/" (name k)) (name k))
-                      (str k))
-                    overlay-prefix))
 
 (defn- normalize-overlay [m]
   (into {}

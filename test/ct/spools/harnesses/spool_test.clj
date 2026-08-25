@@ -105,6 +105,51 @@
                         :harness-execution-runtime
                         :harness-process-custody]]
           (is (= :applied (get-in lifecycles [effect :status]))))
+        (testing "aliases expose documentation and portable thinking"
+          (is (= {:registration
+                  {:alias "reviewer"
+                   :doc "Review with high thinking."
+                   :parent "terra"
+                   :attributes {:harness.pi/thinking "max"}}
+                  :listing
+                  {:name "reviewer"
+                   :kind "alias"
+                   :doc "Review with high thinking."
+                   :alias-of "terra"
+                   :attributes {:harness.pi/thinking "max"}}
+                  :portable
+                  {:harness.pi/extra-argv []
+                   :harness.pi/model "terra-model"
+                   :harness.pi/thinking "high"}
+                  :generated
+                  {:harness.pi/extra-argv []
+                   :harness.pi/model "terra-model"
+                   :harness.pi/thinking "max"}}
+                 (test-alpha/repl!
+                  ctx
+                  '(do
+                     (require '[ct.spools.harnesses :as harnesses]
+                              '[millstrand.api.current.alpha :as current])
+                     (let [rt (current/runtime)
+                           _ (harnesses/register-alias!
+                              rt :terra
+                              {:doc "Use Terra."
+                               :parent :pi
+                               :thinking :high
+                               :attributes {:harness.pi/model "terra-model"}})
+                           registration
+                           (harnesses/register-alias!
+                            rt :reviewer
+                            {:doc "Review with high thinking."
+                             :parent :terra
+                             :attributes {:harness.pi/thinking "max"}})]
+                       {:registration registration
+                        :listing (some #(when (= "reviewer" (:name %)) %)
+                                       (harnesses/harnesses rt))
+                        :portable (:generated
+                                   (harnesses/resolve-harness rt :terra))
+                        :generated (:generated
+                                    (harnesses/resolve-harness rt :reviewer))}))))))
         (testing "the runtime resource can close and reopen in one Weaver"
           (is (= [{:closed :harness-execution}
                   {:opened :harness-execution :claimed []}]
