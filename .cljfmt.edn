@@ -1,0 +1,4 @@
+;; cljfmt runs with its defaults, which track the community style guide
+;; (semantic indentation, single blank lines, preserved ns ordering).
+;; Add :extra-indents here only for project macros the defaults misindent.
+{}

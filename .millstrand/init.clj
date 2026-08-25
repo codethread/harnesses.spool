@@ -3,10 +3,6 @@
 
 (def runtime (current/runtime))
 
-;; batteries load by default, see
-;; https://codethread.github.io/millstrand/spools/batteries/ for details
-;; adds common commands like `strand add` `strand list` etc
-;; you can omit this `module!` and build entirely your own way, see
 ;; https://codethread.github.io/millstrand/docs/spools/customisation/
 (runtime/module! runtime :millstrand/spools-batteries
                  {:ns 'millstrand.spools.batteries
@@ -16,3 +12,19 @@
                  {:file "me/help.clj"
                   :spools ['millstrand.spools/batteries]
                   :after [:millstrand/spools-batteries]})
+
+(runtime/module! runtime :millhouse/spools-identity
+                 {:ns 'millhouse.spools.identity
+                  :spools ['millhouse.spools/identity]
+                  :required? true})
+
+(runtime/module! runtime :millhouse/spools-kanban
+                 {:ns 'millhouse.spools.kanban
+                  :spools ['millhouse.spools/kanban]
+                  :required? true})
+
+(runtime/module! runtime :module-me-config
+                 {:file "me/config.clj"
+                  :spools ['ct.spools/harnesses 'millhouse.spools/identity]
+                  :after [:millhouse/spools-identity]
+                  :required? true})

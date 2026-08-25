@@ -1,0 +1,10 @@
+{:output {:format "clj-kondo"}
+ :parallel true
+
+ ;; Harness custody is a daemon boundary. It must persist and aggregate Errors
+ ;; as well as Exceptions so one failed owner cannot stop reconciliation for
+ ;; healthy runs.
+ lint/catch-throwable {:enabled false}
+
+ ;; Keep interop consistent with the source project during this port.
+ lint/prefer-method-values {:enabled false}}

@@ -1,0 +1,33 @@
+{:paths ["src"]
+ :aliases
+ {:test
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.millstrand/millstrand
+    {:git/url "https://github.com/codethread/millstrand.git"
+     :git/sha "a0b5c5a5ae5018c069b7cab75cd5f40f8c128bb7"
+     :deps/root "."}
+    millhouse.spools/identity
+    {:git/url "https://github.com/codethread/millhouse.spool.git"
+     :git/sha "f1cdda3b46706b186f547251d285791be650d232"
+     :deps/root "spools/identity"}}
+   :jvm-opts ["--enable-native-access=ALL-UNNAMED"]
+   :main-opts ["-m" "ct.spools.harnesses.test-runner"]}
+  :format
+  {:extra-deps {dev.weavejester/cljfmt {:mvn/version "0.13.1"}}
+   :main-opts ["-m" "cljfmt.main" "check" "src" "test"]}
+  :format/fix
+  {:extra-deps {dev.weavejester/cljfmt {:mvn/version "0.13.1"}}
+   :main-opts ["-m" "cljfmt.main" "fix" "src" "test"]}
+  :lint/clj-kondo
+  {:extra-deps
+   {clj-kondo/clj-kondo {:mvn/version "2025.06.05"}
+    io.millstrand/millstrand
+    {:git/url "https://github.com/codethread/millstrand.git"
+     :git/sha "a0b5c5a5ae5018c069b7cab75cd5f40f8c128bb7"
+     :deps/root "."}}
+   :main-opts ["-m" "clj-kondo.main"]}
+  :lint/splint
+  {:extra-deps {io.github.noahtheduke/splint {:mvn/version "1.21.0"}}
+   :main-opts ["-m" "noahtheduke.splint" "--output" "clj-kondo"
+               "src" "test"]}}}

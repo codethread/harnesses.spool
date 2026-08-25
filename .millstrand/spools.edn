@@ -1,1 +1,12 @@
-{:spools {millstrand.spools/batteries {:millstrand/source-root "spools/batteries"}}}
+{:spools
+ {millstrand.spools/batteries
+  {:millstrand/source-root "spools/batteries"}
+
+  millhouse/spools
+  {:git/url "https://github.com/codethread/millhouse.spool.git"
+   :git/sha "f1cdda3b46706b186f547251d285791be650d232"
+   :roots {millhouse.spools/identity "spools/identity"
+           millhouse.spools/kanban "spools/kanban"}}
+
+  ct.spools/harnesses
+  {:local/root ".."}}}

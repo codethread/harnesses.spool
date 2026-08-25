@@ -1,0 +1,116 @@
+#!/bin/sh
+set -u
+
+strand_call() {
+  if [ -n "${MILLSTRAND_WORKSPACE:-}" ]; then
+    strand --workspace "$MILLSTRAND_WORKSPACE" "$@"
+  else
+    strand "$@"
+  fi
+}
+
+print_help() {
+  cat <<'EOF'
+Launch a tracked interactive coding-agent session.
+
+Usage:
+  mill bin run agent <harness> [options]
+  mill bin run agent resume [run-id]
+
+The agent bin creates or resumes an interactive harness run. Without a run ID,
+`agent resume` presents completed interactive runs in an fzf picker. It starts
+the selected provider in this terminal and records its lifecycle in Millstrand.
+
+Arguments:
+  <harness>                   A registered harness or alias.
+  <run-id>                    A completed interactive run; omit to pick with fzf.
+
+Options forwarded to `strand harness run`:
+  --cwd <directory>           Execution directory.
+  --prompt <text>             Optional initial prompt for the provider.
+  --title <text>              Title for the tracked run.
+  --attributes <json-object>  Provider-specific configuration overlay.
+  -h, --help                  Show this help.
+
+Registered harnesses and aliases:
+EOF
+  strand_call harness list | jq -r '
+    [.[] | select(.kind == "harness")] as $harnesses
+    | [.[] | select(.kind == "alias")] as $aliases
+    | ($harnesses[] | "  \(.name) — \(.modes | join(", "))")
+    , (if ($aliases | length) > 0 then
+         "\nAliases:"
+         , ($aliases[]
+            | "  \(.name) — \(.["alias-of"])"
+              + (if (.attributes | length) > 0 then
+                   " (\(.attributes | to_entries
+                     | map("\(.key)=\(.value | tojson)")
+                     | join(", ")))"
+                 else ""
+                 end))
+       else empty
+       end)
+  '
+}
+
+for argument in "$@"; do
+  case "$argument" in
+    -h|--help)
+      print_help
+      exit $?
+      ;;
+  esac
+done
+
+if [ "${1:-}" = "resume" ]; then
+  shift
+  if [ "$#" -gt 1 ]; then
+    printf '%s\n' "agent resume accepts at most one run ID" >&2
+    exit 2
+  fi
+  predecessor="${1:-}"
+  if [ -z "$predecessor" ]; then
+    selected="$(strand_call harness resumable | jq -r '
+      def clean: tostring | gsub("[\\t\\r\\n]"; " ");
+      . as $runs
+      | [$runs[] | .resumes] as $resumed
+      | $runs[]
+      | select(.id as $id | $resumed | index($id) | not)
+      | "\(.id)\t"
+        + "\((."updated-at" // "unknown time") | clean)"
+        + "  │  "
+        + "\u001b[32m\((.identity // "—") | clean)\u001b[0m"
+        + "  │  "
+        + "\u001b[35m\(.alias | clean)\u001b[0m"
+        + "  │  "
+        + "\(."session-id" | clean)"
+    ' | fzf --ansi --delimiter='\t' --with-nth=2.. --prompt='Resume agent> ')" || exit $?
+    [ -n "$selected" ] || exit 1
+    predecessor="$(printf '%s\n' "$selected" | cut -f1)"
+  fi
+  created="$(strand_call harness resume --run-id "$predecessor" --interactive)" || exit $?
+else
+  created="$(strand_call harness run "$@" --interactive)" || exit $?
+fi
+run_id="$(printf '%s' "$created" | jq -r '.id')"
+launcher="$(printf '%s' "$created" | jq -r '.launcher')"
+
+record_finish() {
+  strand_call harness _finished "$run_id" --exit-code "$1" >/dev/null
+}
+
+interrupted() {
+  trap '' HUP INT TERM
+  record_finish "$1" || :
+  exit "$1"
+}
+
+trap 'interrupted 129' HUP
+trap 'interrupted 130' INT
+trap 'interrupted 143' TERM
+
+strand_call harness _started "$run_id" >/dev/null || exit $?
+"$launcher"
+exit_code=$?
+record_finish "$exit_code" || exit $?
+exit "$exit_code"

@@ -2,6 +2,7 @@
 .lsp/*
 !.lsp/config.edn
 **/.clj-kondo/.cache/
+**/.clj-kondo/imports/
 **/.lsp/.cache/
 target/
 

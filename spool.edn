@@ -1,0 +1,2 @@
+{:spool/format 1
+ :roots {ct.spools/harnesses {:root "."}}}
