@@ -1,0 +1,7 @@
+.cpcache/
+.lsp/*
+!.lsp/config.edn
+**/.clj-kondo/.cache/
+**/.lsp/.cache/
+target/
+
