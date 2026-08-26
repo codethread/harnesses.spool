@@ -29,7 +29,7 @@
 (deftest prepare-builds-new-and-resumed-launch-specifications
   (testing "new headless runs expose identity for Cursor system-context injection"
     (is (= {:argv ["agent" "--print" "--output-format" "json"
-                   "--model" "composer-2.5[fast=false]"
+                   "--model" "composer-2.5"
                    "--plugin-dir" plugin-dir "--yolo" "--trust"]
             :env {"MILLSTRAND_HARNESS_CURSOR_SYS_PROMPT"
                   "You are agent tidy-brave-swan."}
@@ -38,20 +38,20 @@
   (testing "resumed headless runs select the recorded Cursor chat"
     (is (= {:argv ["agent" "--print" "--output-format" "json"
                    "--resume" "provisional"
-                   "--model" "composer-2.5[fast=false]"
+                   "--model" "composer-2.5"
                    "--plugin-dir" plugin-dir "--yolo" "--trust"]
             :stdin "Do the work\n"}
            (cursor/prepare runtime definition
                            (run "headless" {:harness/resumes "prior"})))))
   (testing "interactive runs retain a host-TTY prompt and expose identity"
-    (is (= {:argv ["agent" "--model" "composer-2.5[fast=false]"
+    (is (= {:argv ["agent" "--model" "composer-2.5"
                    "--plugin-dir" plugin-dir "--yolo" "--trust" "Do the work"]
             :env {"MILLSTRAND_HARNESS_CURSOR_SYS_PROMPT"
                   "You are agent tidy-brave-swan."}
             :stdin nil}
            (cursor/prepare runtime definition (run "interactive")))))
   (testing "Grok enables effort and fast model overrides"
-    (is (= "cursor-grok-4.6[effort=high,fast=true]"
+    (is (= "cursor-grok-4.6-high-fast"
            (-> (cursor/prepare runtime definition
                                (run "interactive"
                                     {:harness/model "cursor-grok-4.6"

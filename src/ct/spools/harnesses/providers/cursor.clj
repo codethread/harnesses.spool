@@ -162,22 +162,17 @@
                {:plugin-dir (.getPath plugin)}))
       (.getCanonicalPath plugin))))
 
-(defn- model-with-overrides [model overrides]
-  (let [parameters (str/join "," (map (fn [[k v]] (str (name k) "=" v)) overrides))]
-    (if (str/ends-with? model "]")
-      (str (subs model 0 (dec (count model))) "," parameters "]")
-      (str model "[" parameters "]"))))
+(defn- model-variant [model effort fast]
+  (str model
+       (when effort (str "-" effort))
+       (when fast "-fast")))
 
 (defn- option-argv [{:keys [model effort fast plugin-dir extra]}]
-  (let [overrides (cond-> []
-                    effort (conj [:effort effort])
-                    (some? fast) (conj [:fast fast]))]
-    (vec
-     (concat
-      (when model ["--model" (cond-> model (seq overrides)
-                               (model-with-overrides overrides))])
-      ["--plugin-dir" plugin-dir]
-      extra))))
+  (vec
+   (concat
+    (when model ["--model" (model-variant model effort fast)])
+    ["--plugin-dir" plugin-dir]
+    extra)))
 
 (defn- cursor-command [{:keys [mode resumes session-id prompt] :as options}]
   (let [interactive? (= "interactive" mode)]
