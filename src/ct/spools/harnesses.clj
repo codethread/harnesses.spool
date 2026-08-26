@@ -10,10 +10,11 @@
             [millstrand.api.weaver.alpha :as weaver])
   (:import [java.util UUID]))
 
-(def ^:private registry-version 1)
+(def ^:private registry-version 2)
 (def ^:private overlay-prefix "harness.")
-(declare ^:private json-value? new-registry registry name-string normalize-overlay
-         mode-keyword run-title require-run require-phase)
+(declare ^:private availability* condition-result json-value? new-registry
+         registry name-string normalize-alias-candidate normalize-overlay
+         reference-string mode-keyword run-title require-run require-phase)
 
 (defn- overlay-key? [k]
   (let [attribute (if (keyword? k)
@@ -52,23 +53,32 @@
    #(every? #{:modes :prepare :finish :attributes} (keys %))
    #(or (not (contains? % :attributes))
         (s/valid? ::overlay-attributes (:attributes %)))))
-(s/def ::alias-descriptor
-  (s/and (s/keys :req-un [::doc ::parent ::attributes])
-         #(every? #{:doc :parent :model :effort :attributes} (keys %))
+(s/def ::condition
+  #(or (s/valid? ::name-ref %)
+       (and (vector? %)
+            (cond
+              (= :not (first %))
+              (and (= 2 (count %)) (s/valid? ::condition (second %)))
+
+              (#{:and :or} (first %))
+              (and (< 1 (count %))
+                   (every? (partial s/valid? ::condition) (rest %)))
+
+              :else false))))
+(s/def ::when ::condition)
+(s/def ::alias-candidate
+  (s/and (s/keys :req-un [::doc ::parent ::attributes]
+                 :opt-un [::when])
+         #(every? #{:doc :parent :model :effort :attributes :when} (keys %))
          #(s/valid? ::name-ref (:parent %))
-         #(or (not (contains? % :model))
-              (s/valid? ::model (:model %)))
-         #(or (not (contains? % :effort))
-              (s/valid? ::effort (:effort %)))
+         #(or (not (contains? % :model)) (s/valid? ::model (:model %)))
+         #(or (not (contains? % :effort)) (s/valid? ::effort (:effort %)))
          #(s/valid? ::overlay-attributes (:attributes %))))
-(s/def ::alias-result
-  (s/and (s/keys :req-un [:ct.spools.harnesses/alias ::doc
-                          :ct.spools.harnesses/parent ::attributes])
-         #(every? #{:alias :doc :parent :model :effort :attributes} (keys %))
-         #(or (not (contains? % :model))
-              (s/valid? ::model (:model %)))
-         #(or (not (contains? % :effort))
-              (s/valid? ::effort (:effort %)))))
+(s/def ::alias-descriptor
+  #(or (s/valid? ::alias-candidate %)
+       (and (vector? %) (seq %) (every? (partial s/valid? ::alias-candidate) %))))
+(s/def ::candidates (s/coll-of ::alias-candidate :kind vector? :min-count 1))
+(s/def ::alias-result (s/keys :req-un [:ct.spools.harnesses/alias ::candidates]))
 (s/def ::alias string?)
 (s/def ::parent ::name-ref)
 (s/def ::harness ::name-ref)
@@ -81,16 +91,27 @@
 (s/def ::alias-of string?)
 (s/def ::mode-name #{"headless" "interactive"})
 (s/def :ct.spools.harnesses.registry/modes (s/coll-of ::mode-name :kind vector? :min-count 1))
+(s/def ::available boolean?)
+(s/def ::unavailable-reasons (s/coll-of map? :kind vector?))
+(s/def ::selected-candidate nat-int?)
+(s/def ::selected-parent string?)
 (s/def ::registry-entry
   (s/or :harness
         (s/and (s/keys :req-un [::name ::kind
-                                :ct.spools.harnesses.registry/modes])
+                                :ct.spools.harnesses.registry/modes ::available]
+                       :opt-un [::harness ::unavailable-reasons])
                #(= "harness" (:kind %))
-               #(every? #{:name :kind :modes} (keys %)))
+               #(every? #{:name :kind :modes :available :harness
+                          :unavailable-reasons}
+                        (keys %)))
         :alias
-        (s/and (s/keys :req-un [::name ::kind ::doc ::alias-of ::attributes])
+        (s/and (s/keys :req-un [::name ::kind ::candidates ::available]
+                       :opt-un [::harness ::selected-candidate ::selected-parent
+                                ::unavailable-reasons])
                #(= "alias" (:kind %))
-               #(every? #{:name :kind :doc :alias-of :model :effort :attributes}
+               #(every? #{:name :kind :candidates :available :harness
+                          :selected-candidate :selected-parent
+                          :unavailable-reasons}
                         (keys %)))))
 (s/def ::registry-list (s/coll-of ::registry-entry :kind vector?))
 (s/def ::harness-registration (s/keys :req-un [::harness ::definition]))
@@ -146,6 +167,38 @@
    #(every? #{:prompt :cwd :attributes :mode :title} (keys %))
    #(or (not (contains? % :attributes))
         (s/valid? ::overlay-attributes (:attributes %)))))
+(defn set-flag!
+  "Set a runtime-local boolean configuration flag and return its new value."
+  [rt flag value]
+  (require-valid! ::runtime rt "set-flag! requires a Weaver runtime")
+  (require-valid! ::name-ref flag "set-flag! requires a flag name")
+  (require-valid! boolean? value "set-flag! requires a boolean value")
+  (swap! (:flags (registry rt)) assoc (reference-string flag "Flag") value)
+  value)
+
+(defn unset-flag!
+  "Remove a runtime-local configuration flag and return whether it existed."
+  [rt flag]
+  (require-valid! ::runtime rt "unset-flag! requires a Weaver runtime")
+  (require-valid! ::name-ref flag "unset-flag! requires a flag name")
+  (let [flag (reference-string flag "Flag")
+        existed? (contains? @(:flags (registry rt)) flag)]
+    (swap! (:flags (registry rt)) dissoc flag)
+    existed?))
+
+(defn flags
+  "Return runtime-local configuration flags as a sorted map."
+  [rt]
+  (require-valid! ::runtime rt "flags requires a Weaver runtime")
+  (into (sorted-map) @(:flags (registry rt))))
+
+(defn flag
+  "Return a runtime-local flag value, or nil when it is unset."
+  [rt flag-name]
+  (require-valid! ::runtime rt "flag requires a Weaver runtime")
+  (require-valid! ::name-ref flag-name "flag requires a flag name")
+  (get @(:flags (registry rt)) (reference-string flag-name "Flag")))
+
 (defn register-harness!
   "Register or replace a concrete harness definition.
 
@@ -159,6 +212,10 @@
   (let [harness-name (name-string harness-name "Harness name")
         definition (update definition :attributes normalize-overlay)]
     (swap! (:harnesses (registry rt)) assoc harness-name definition)
+    (swap! (:flags (registry rt))
+           #(if (contains? % (str "harness/" harness-name))
+              %
+              (assoc % (str "harness/" harness-name) true)))
     (require-valid! ::harness-registration
                     {:harness harness-name :definition definition}
                     "register-harness! produced an invalid registration")))
@@ -180,24 +237,21 @@
     removed?))
 
 (defn register-alias!
-  "Register or replace an alias over a harness or another alias.
+  "Register or replace one or more ordered definitions for an alias.
 
-  The descriptor documents the alias and names its parent, optional core model
-  and effort, and provider attributes. Child values replace parent values."
-  [rt alias-name {:keys [doc parent model effort attributes] :as descriptor}]
+  A map is one definition. A vector is tried in order; each complete definition
+  may carry a `:when` flag expression. The first available definition wins."
+  [rt alias-name descriptor]
   (require-valid! ::runtime rt "register-alias! requires a Weaver runtime")
   (require-valid! ::name-ref alias-name "register-alias! requires an alias name")
   (require-valid! ::alias-descriptor descriptor
                   "register-alias! requires a valid alias descriptor")
   (let [alias-name (name-string alias-name "Alias name")
-        entry (cond-> {:doc doc
-                       :parent (name-string parent "Alias parent")
-                       :attributes (normalize-overlay attributes)}
-                model (assoc :model model)
-                effort (assoc :effort effort))]
-    (swap! (:aliases (registry rt)) assoc alias-name entry)
+        candidates (mapv normalize-alias-candidate
+                         (if (vector? descriptor) descriptor [descriptor]))]
+    (swap! (:aliases (registry rt)) assoc alias-name candidates)
     (require-valid! ::alias-result
-                    (assoc entry :alias alias-name)
+                    {:alias alias-name :candidates candidates}
                     "register-alias! produced an invalid registration")))
 
 (s/fdef register-alias!
@@ -220,37 +274,42 @@
     (swap! (:aliases (registry rt)) dissoc alias-name)
     removed?))
 
-(defn resolve-harness
-  "Resolve a harness or alias into its implementation and merged attributes.
+(defn availability
+  "Return whether a registered harness or alias can currently be resolved.
 
-  Alias layers are ordinary maps: child values replace parent values. Cycles and
-  missing parents fail loudly."
+  Unavailable results include structured reasons for disabled flags, rejected
+  alias candidates, and missing registrations."
+  [rt requested]
+  (require-valid! ::runtime rt "availability requires a Weaver runtime")
+  (let [requested (name-string requested "Harness")]
+    (dissoc (availability* rt requested #{}) :definition :layers)))
+
+(defn resolve-harness
+  "Resolve the first available alias definition into launch data.
+
+  Candidate definitions are considered in registration order. Their `:when`
+  expressions and complete parent chains must both be available."
   [rt requested]
   (require-valid! ::runtime rt "resolve-harness requires a Weaver runtime")
   (let [requested (name-string requested "Harness")
-        {:keys [harnesses aliases]} (registry rt)]
-    (loop [cursor requested seen #{} layers []]
-      (when (contains? seen cursor)
-        (fail! "Harness alias cycle" {:requested requested :at cursor}))
-      (if-let [alias (get @aliases cursor)]
-        (recur (:parent alias) (conj seen cursor) (conj layers alias))
-        (if-let [definition (get @harnesses cursor)]
-          (let [layers (reverse layers)
-                attributes (apply merge (:attributes definition)
-                                  (map :attributes layers))
-                model (some :model (reverse layers))
-                effort (some :effort (reverse layers))]
-            (require-valid!
-             ::resolved-harness
-             {:alias requested
-              :harness cursor
-              :definition definition
-              :generated (cond-> attributes
-                           model (assoc :harness/model model)
-                           effort (assoc :harness/effort (name effort)))}
-             "resolve-harness produced an invalid resolution"))
-          (fail! "Harness or alias is not registered"
-                 {:requested requested :missing cursor}))))))
+        result (availability* rt requested #{})]
+    (when-not (:available result)
+      (fail! "Harness or alias is unavailable"
+             {:requested requested :reasons (:unavailable-reasons result)}))
+    (let [layers (:layers result)
+          definition (:definition result)
+          attributes (apply merge (:attributes definition) (map :attributes layers))
+          model (some :model (reverse layers))
+          effort (some :effort (reverse layers))]
+      (require-valid!
+       ::resolved-harness
+       {:alias requested
+        :harness (:harness result)
+        :definition definition
+        :generated (cond-> attributes
+                     model (assoc :harness/model model)
+                     effort (assoc :harness/effort (name effort)))}
+       "resolve-harness produced an invalid resolution"))))
 
 (s/fdef resolve-harness :args (s/cat :runtime ::runtime :requested ::name-ref) :ret ::resolved-harness)
 
@@ -270,7 +329,7 @@
 (s/fdef concrete-harness :args (s/cat :runtime ::runtime :harness-name ::name-ref) :ret ::harness-definition)
 
 (defn harnesses
-  "Return registered concrete harnesses and aliases as plain data."
+  "Return every registration with its current runtime availability."
   [rt]
   (require-valid! ::runtime rt "harnesses requires a Weaver runtime")
   (let [{:keys [harnesses aliases]} (registry rt)]
@@ -279,16 +338,15 @@
      (vec
       (concat
        (for [[name definition] (sort-by key @harnesses)]
-         {:name name :kind "harness" :modes (mapv clojure.core/name (:modes definition))})
-       (for [[name {:keys [doc parent model effort attributes]}]
-             (sort-by key @aliases)]
-         (cond-> {:name name
-                  :kind "alias"
-                  :doc doc
-                  :alias-of parent
-                  :attributes attributes}
-           model (assoc :model model)
-           effort (assoc :effort effort)))))
+         (merge {:name name
+                 :kind "harness"
+                 :modes (mapv clojure.core/name (:modes definition))}
+                (availability rt name)))
+       (for [[name candidates] (sort-by key @aliases)]
+         (merge {:name name
+                 :kind "alias"
+                 :candidates candidates}
+                (availability rt name)))))
      "harnesses produced an invalid registry listing")))
 
 (s/fdef harnesses :args (s/cat :runtime ::runtime) :ret ::registry-list)
@@ -419,8 +477,8 @@
 (defn retry!
   "Reconstruct and reset one failed run, applying replacement options.
 
-  A live alias is resolved again when possible; otherwise its frozen generated
-  data is retained. Explicit overrides win and nil removes an old override."
+  Resolve the live alias again so disabled definitions cannot be restarted.
+  Explicit overrides win and nil removes an old override."
   [rt id {:keys [harness cwd attributes] :as request}]
   (require-valid! ::runtime rt "retry! requires a Weaver runtime")
   (require-valid! ::id id "retry! requires a run id")
@@ -430,14 +488,9 @@
         old-generated (normalize-overlay (attr-get run :harness/generated))
         old-overrides (normalize-overlay (attr-get run :harness/overrides))
         requested (or harness (attr-get run :harness/alias))
-        explicit-alias? (some? harness)
-        resolved (try
-                   (resolve-harness rt requested)
-                   (catch Exception e
-                     (when explicit-alias?
-                       (throw e))))
-        generated (or (:generated resolved) old-generated)
-        concrete (or (:harness resolved) (attr-get run :harness/harness))
+        resolved (resolve-harness rt requested)
+        generated (:generated resolved)
+        concrete (:harness resolved)
         _ (concrete-harness rt concrete)
         call-overrides (normalize-overlay attributes)
         overrides (reduce-kv (fn [m k v] (if (nil? v) (dissoc m k) (assoc m k v)))
@@ -561,7 +614,8 @@
 
 (defn- new-registry []
   {:harnesses (atom {})
-   :aliases (atom {})})
+   :aliases (atom {})
+   :flags (atom {})})
 
 (defn- registry [rt]
   (runtime/spool-state rt ::registry {:version registry-version} new-registry))
@@ -574,6 +628,93 @@
     (if (and s (not (str/blank? s)))
       s
       (fail! (str context " must be a non-blank name") {:value v}))))
+
+(defn- reference-string [v context]
+  (let [s (cond
+            (keyword? v) (if-let [n (namespace v)] (str n "/" (name v)) (name v))
+            (symbol? v) (str v)
+            (string? v) v
+            :else nil)]
+    (if (and s (not (str/blank? s)))
+      s
+      (fail! (str context " must be a non-blank name") {:value v}))))
+
+(defn- normalize-alias-candidate
+  [{:keys [parent attributes] :as candidate}]
+  (assoc candidate
+         :parent (name-string parent "Alias parent")
+         :attributes (normalize-overlay attributes)))
+
+(defn- condition-result [rt expression]
+  (if (vector? expression)
+    (let [[operator & operands] expression
+          results (mapv (partial condition-result rt) operands)]
+      (case operator
+        :and {:passes? (every? :passes? results)
+              :reasons (vec (mapcat :reasons (remove :passes? results)))}
+        :or {:passes? (boolean (some :passes? results))
+             :reasons (if (some :passes? results)
+                        []
+                        (vec (mapcat :reasons results)))}
+        :not {:passes? (not (:passes? (first results)))
+              :reasons (if (:passes? (first results))
+                         [{:condition expression :reason "negated condition passed"}]
+                         [])}))
+    (let [flag-name (reference-string expression "Condition flag")
+          value (flag rt flag-name)]
+      {:passes? (true? value)
+       :reasons (if (true? value)
+                  []
+                  [{:flag flag-name :value value}])})))
+
+(defn- availability* [rt requested seen]
+  (let [{:keys [harnesses aliases]} (registry rt)]
+    (condp contains? requested
+      seen
+      {:available false
+       :unavailable-reasons [{:name requested :reason "alias cycle"}]}
+
+      @aliases
+      (let [candidates (get @aliases requested)]
+        (loop [index 0 remaining candidates rejected []]
+          (if-let [candidate (first remaining)]
+            (let [condition (if-let [expression (:when candidate)]
+                              (condition-result rt expression)
+                              {:passes? true :reasons []})]
+              (if-not (:passes? condition)
+                (recur (inc index) (next remaining)
+                       (conj rejected {:candidate index
+                                       :parent (:parent candidate)
+                                       :reasons (:reasons condition)}))
+                (let [parent (availability* rt (:parent candidate)
+                                            (conj seen requested))]
+                  (if (:available parent)
+                    (-> parent
+                        (assoc :name requested
+                               :selected-candidate index
+                               :selected-parent (:parent candidate))
+                        (update :layers conj candidate))
+                    (recur (inc index) (next remaining)
+                           (conj rejected {:candidate index
+                                           :parent (:parent candidate)
+                                           :reasons (:unavailable-reasons parent)}))))))
+            {:name requested
+             :available false
+             :unavailable-reasons rejected})))
+
+      @harnesses
+      (let [enabled? (not= false (flag rt (str "harness/" requested)))]
+        (cond-> {:name requested :available enabled?}
+          enabled? (assoc :harness requested
+                          :definition (get @harnesses requested)
+                          :layers [])
+          (not enabled?) (assoc :unavailable-reasons
+                                [{:flag (str "harness/" requested)
+                                  :value false}])))
+
+      {:name requested
+       :available false
+       :unavailable-reasons [{:name requested :reason "not registered"}]})))
 
 (defn- normalize-overlay [m]
   (into {}

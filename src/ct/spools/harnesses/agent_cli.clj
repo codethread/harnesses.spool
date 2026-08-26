@@ -41,11 +41,13 @@
 (s/def ::timed-out (s/coll-of ::harness/id :kind vector?))
 (s/def ::await-result
   (s/keys :req-un [::runs ::timed-out]))
+(s/def ::config-result map?)
 (s/def ::op-result
   (s/or :run ::run-summary
         :runs ::runs
         :await ::await-result
-        :registry ::harness/registry-list))
+        :registry ::harness/registry-list
+        :config ::config-result))
 
 (millstrand/defop harness
   "Dispatch parsed `strand harness` subcommands.
@@ -58,21 +60,27 @@
   (require-valid! ::op-context ctx "harness op received an invalid operation context")
   (require-valid!
    ::op-result
-   (case (first (:subcommand args))
-     "run" (op-run runtime args cwd)
-     "await" (await! runtime (:run-ids args) (or (:timeout-secs args) 300))
-     "retry" (op-retry runtime args)
-     "resumable" (resumable-runs runtime)
-     "resume" (op-resume runtime args)
-     "self-complete" (summary (harness/self-complete! runtime
-                                                      (:run-id args)
-                                                      (:result args)))
-     "_started" (summary (execution/mark-interactive-running! runtime
-                                                              (:run-id args)))
-     "_finished" (summary (execution/finish-interactive! runtime
-                                                         (:run-id args)
-                                                         (:exit-code args)))
-     "list" (harness/harnesses runtime))
+   (case (:subcommand args)
+     ["run"] (op-run runtime args cwd)
+     ["await"] (await! runtime (:run-ids args) (or (:timeout-secs args) 300))
+     ["retry"] (op-retry runtime args)
+     ["resumable"] (resumable-runs runtime)
+     ["resume"] (op-resume runtime args)
+     ["self-complete"] (summary (harness/self-complete! runtime
+                                                        (:run-id args)
+                                                        (:result args)))
+     ["_started"] (summary (execution/mark-interactive-running! runtime
+                                                                (:run-id args)))
+     ["_finished"] (summary (execution/finish-interactive! runtime
+                                                           (:run-id args)
+                                                           (:exit-code args)))
+     ["list"] (harness/harnesses runtime)
+     ["config" "list"] {:flags (harness/flags runtime)}
+     ["config" "set"] {:flag (:flag args)
+                       :value (harness/set-flag! runtime (:flag args)
+                                                 (:value args))}
+     ["config" "unset"] {:flag (:flag args)
+                         :removed (harness/unset-flag! runtime (:flag args))})
    "harness op produced an invalid result"))
 
 (millstrand/defbin agent

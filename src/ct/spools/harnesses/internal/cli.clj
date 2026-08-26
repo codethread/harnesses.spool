@@ -95,6 +95,30 @@
                                 :type :string
                                 :required? true
                                 :doc "Interactive run ID."}]}
-    "list" {:doc "List registered concrete harnesses and aliases."
+    "list" {:doc "List registered harnesses, aliases, and availability."
             :hook-class :read
-            :deadline-class :standard}}})
+            :deadline-class :standard}
+    "config"
+    {:doc "Manage runtime-local harness configuration."
+     :subcommands
+     {"list" {:doc "List runtime-local flags."
+              :hook-class :read
+              :deadline-class :standard}
+      "set" {:doc "Set a runtime-local boolean flag."
+             :hook-class :mutating
+             :deadline-class :standard
+             :positionals [{:name :flag
+                            :type :string
+                            :required? true
+                            :doc "Flag name."}
+                           {:name :value
+                            :type :boolean-token
+                            :required? true
+                            :doc "Boolean value."}]}
+      "unset" {:doc "Remove a runtime-local flag."
+               :hook-class :mutating
+               :deadline-class :standard
+               :positionals [{:name :flag
+                              :type :string
+                              :required? true
+                              :doc "Flag name."}]}}}}})

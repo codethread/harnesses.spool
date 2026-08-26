@@ -65,6 +65,7 @@
             Provide details up front to minimise required exploration. Present
             intent or concrete issues, not solutions." {}),
     :parent :claude,
+    :when :seat/fable
     :model "claude-fable-5"
     :effort :high,
     :attributes {}},
@@ -102,9 +103,14 @@
     :attributes {:harness.cursor/fast true}},
 
    :oracle
-   {:doc "default choice for guidance when stuck or needing additional api guidance"
-    :parent :fable
-    :attributes {}},
+   [{:doc "Default guidance seat using Fable."
+     :parent :fable
+     :effort :high
+     :attributes {}}
+    {:doc "Fallback guidance seat using Sol."
+     :parent :sol
+     :effort :max
+     :attributes {}}],
    :reviewer
    {:doc "default choice for targetted reviews"
     :parent :terra
@@ -127,6 +133,8 @@
 (defn open-harnesses!
   "Register the shared Codethread-inspired harness seat map."
   [{:keys [runtime]}]
+  (when (nil? (harnesses/flag runtime :seat/fable))
+    (harnesses/set-flag! runtime :seat/fable true))
   (let [registrations
         (mapv (fn [[alias descriptor]]
                 (harnesses/register-alias! runtime alias descriptor))

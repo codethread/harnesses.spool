@@ -91,7 +91,35 @@ through unchanged.
 ```
 
 Aliases may name another alias as their parent. Child model and effort values
-replace their parent values.
+replace their parent values. Register a vector of complete descriptors to define
+ordered fallbacks. Each descriptor may use a flag expression with `:when`:
 
-Use `strand harness list` to inspect registered concrete harnesses and documented
-aliases, or `mill bin run agent --help` to launch an interactive tracked session.
+```clojure
+(harnesses/register-alias!
+ runtime :oracle
+ [{:doc "Use Fable."
+   :parent :fable
+   :when [:and :seat/fable [:not :seat/maintenance]]
+   :effort :high
+   :attributes {}}
+  {:doc "Fall back to Sol."
+   :parent :sol
+   :effort :max
+   :attributes {}}])
+```
+
+Conditions support a flag name and the `:and`, `:or`, and `:not` operators.
+Unset custom flags are false. Concrete harnesses start enabled under their
+`harness/<name>` flag and remain registered when disabled.
+
+Runtime flags are intentionally process-local:
+
+```text
+strand harness config list
+strand harness config set harness/claude false
+strand harness config unset seat/fable
+```
+
+Use `strand harness list` to inspect all concrete harnesses and aliases with
+their availability, or `mill bin run agent --help` to launch an interactive
+tracked session.

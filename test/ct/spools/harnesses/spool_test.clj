@@ -124,19 +124,25 @@
         (testing "aliases expose documentation, model, and open effort"
           (is (= {:registration
                   {:alias "reviewer"
-                   :doc "Review with high effort."
-                   :parent "terra"
-                   :model "reviewer-model"
-                   :effort :max
-                   :attributes {}}
+                   :candidates
+                   [{:doc "Review with high effort."
+                     :parent "terra"
+                     :model "reviewer-model"
+                     :effort :max
+                     :attributes {}}]}
                   :listing
                   {:name "reviewer"
                    :kind "alias"
-                   :doc "Review with high effort."
-                   :alias-of "terra"
-                   :model "reviewer-model"
-                   :effort :max
-                   :attributes {}}
+                   :candidates
+                   [{:doc "Review with high effort."
+                     :parent "terra"
+                     :model "reviewer-model"
+                     :effort :max
+                     :attributes {}}]
+                   :available true
+                   :harness "pi"
+                   :selected-candidate 0
+                   :selected-parent "terra"}
                   :portable
                   {:harness/extra-argv []
                    :harness/model "terra-model"
@@ -173,6 +179,66 @@
                                    (harnesses/resolve-harness rt :terra))
                         :generated (:generated
                                     (harnesses/resolve-harness rt :reviewer))}))))))
+        (testing "ordered definitions follow flags and provider availability"
+          (is (= {:initial ["pi" "maximum"]
+                  :preferred ["claude" "high"]
+                  :fallback ["pi" "maximum"]
+                  :unavailable false
+                  :re-enabled "pi"
+                  :flag false}
+                 (test-alpha/repl!
+                  ctx
+                  '(let [rt (millstrand.api.current.alpha/runtime)
+                         _ (harnesses/register-alias!
+                            rt :conditional-fable
+                            {:doc "Conditional Fable."
+                             :parent :claude
+                             :when :seat/fable
+                             :effort :high
+                             :attributes {}})
+                         _ (harnesses/register-alias!
+                            rt :fallback-oracle
+                            [{:doc "Use Fable."
+                              :parent :conditional-fable
+                              :effort :high
+                              :attributes {}}
+                             {:doc "Use Pi."
+                              :parent :pi
+                              :effort :maximum
+                              :attributes {}}])
+                         resolve #(let [resolved (harnesses/resolve-harness
+                                                  rt :fallback-oracle)]
+                                    [(:harness resolved)
+                                     (get-in resolved
+                                             [:generated :harness/effort])])
+                         initial (resolve)
+                         _ (harnesses/set-flag! rt :seat/fable true)
+                         preferred (resolve)
+                         _ (millstrand.api.weaver.alpha/op!
+                            rt 'harness ["config" "set"
+                                         "harness/claude" "false"])
+                         fallback (resolve)
+                         _ (harnesses/set-flag! rt :harness/pi false)
+                         unavailable (:available
+                                      (some #(when (= "fallback-oracle"
+                                                      (:name %))
+                                               %)
+                                            (harnesses/harnesses rt)))
+                         _ (millstrand.api.weaver.alpha/op!
+                            rt 'harness ["config" "set"
+                                         "harness/pi" "true"])
+                         re-enabled (:harness
+                                     (harnesses/resolve-harness
+                                      rt :fallback-oracle))
+                         flag (get-in (millstrand.api.weaver.alpha/op!
+                                       rt 'harness ["config" "list"])
+                                      [:flags "harness/claude"])]
+                     {:initial initial
+                      :preferred preferred
+                      :fallback fallback
+                      :unavailable unavailable
+                      :re-enabled re-enabled
+                      :flag flag})))))
         (testing "the runtime resource can close and reopen in one Weaver"
           (is (= [{:closed :harness-execution}
                   {:opened :harness-execution :claimed []}]
