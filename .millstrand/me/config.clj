@@ -16,14 +16,12 @@
   {:deepseek-flash
    {:doc (format-alpha/prose
           "
-            Scores: complexity X; code-taste X; resilience X; ui-design X;
-            coordination -; cost 9.
+            Scores: complexity X; code-taste X; resilience X; ui-design X; coordination -; cost 9.
 
-            DeepSeek v4 Flash via Pi. Enumeration-shaped recon and quota fallback at
-            very low cost. It won millstrand's wide fan-out explore arm but loses
-            precision on deep traces and exact citations; verify citations and do
-            not route load-bearing deep dives here.
-            " {}),
+            Enumeration-shaped recon and quota fallback at very low cost. Good
+            for wide fan-out explore but loses precision on deep traces and
+            exact citations; verify citations and do not route load-bearing
+            deep dives here." {}),
     :parent :pi,
     :model "deepseek/deepseek-v4-flash"
     :effort :high
@@ -31,11 +29,13 @@
    :luna
    {:doc (format-alpha/prose
           "
-            Scores: complexity 3; code-taste 4; resilience 1; ui-design 2;
-            coordination -; cost 9.
+            Scores: complexity 3; code-taste 4; resilience 1; ui-design 2; coordination -; cost 9.
 
-            Ideal for implementation details, scouting and delegated focussed tasks
-    " {}),
+            gpt-5.6-luna Ideal for implementation details, scouting and
+            delegated focussed tasks. Be explicit with tight success criteria.
+            Well behaved, does not need imposed limitations
+
+            default choice for sub coordinator roles" {}),
     :parent :pi,
     :model "openai-codex/gpt-5.6-luna"
     :effort :high,
@@ -43,30 +43,27 @@
    :opus
    {:doc (format-alpha/prose
           "
-            Scores: complexity 8; code-taste 9; resilience X; ui-design 9;
-            coordination 6; docs-prose 7; cost 2.
+            Scores: complexity 8; code-taste 9; resilience X; ui-design 9; coordination 6; docs-prose 7; cost 2.
 
             Claude Opus. Greenfield features, API design, and critical seams;
             archaeology-first and strongest on known-work code quality. Keep
             cross-vendor GPT sign-off for Opus-authored changes. Suitable for
-            agent-facing docs, though the docs bake-off found its restructuring
-            paste-up-prone.
+            agent-facing docs or first pass human docs, but keep it to outline
+            and review heavily via a gpt seat.
             " {}),
     :parent :claude,
     :model "opus"
     :effort :low,
     :attributes {}},
-   :oracle
+   :fable
    {:doc (format-alpha/prose
           "
-            Scores: complexity 9; code-taste 9; resilience X; ui-design 8;
-            coordination 9; docs-prose 9; cost 1.
+            Scores: complexity 9; code-taste 9; resilience X; ui-design 8; coordination 9; docs-prose 9; cost 1.
 
-            Claude Fable. Reserve for extreme diagnosis, top-of-graph coordination,
-            user-facing prose where writing is the product, and bench judging. Brief
-            one case per run and require incremental notes: a context-overflowed run
-            that writes nothing is unusually expensive.
-            " {}),
+            Claude Fable. Reserve for extreme diagnosis, top-of-graph
+            coordination, user-facing prose where writing is the product.
+            Provide details up front to minimise required exploration. Present
+            intent or concrete issues, not solutions." {}),
     :parent :claude,
     :model "claude-fable-5"
     :effort :high,
@@ -74,14 +71,14 @@
    :sol
    {:doc (format-alpha/prose
           "
-            Scores: complexity 6; code-taste 6; resilience 9; ui-design 5;
-            coordination X; cost 5.
+            Scores: complexity 6; code-taste 6; resilience 9; ui-design 5; coordination 8; cost 5.
 
-            gpt-5.6-sol low via Codex. General build and default delegation seat,
-            including diff-shaped refactors. It was the only model to ship a passing
-            gate under every benched environment condition, recovering hostile
-            toolchains when needed.
-    " {}),
+            gpt-5.6-sol. Strongest under hostile environments for complex
+            debugging. Or complex features. Thorough reviewer but prone to over
+            critical thinking.
+
+            default choice for sub coordinator roles
+            " {}),
     :parent :pi,
     :model "openai-codex/gpt-5.6-sol"
     :effort :low,
@@ -89,15 +86,10 @@
    :terra
    {:doc (format-alpha/prose
           "
-            Scores: complexity 5; code-taste 7; resilience 2; ui-design 4;
-            coordination 7; cost 7.
+            Scores: complexity 5; code-taste 6; resilience 2; ui-design 4; coordination 5; cost 7.
 
-            gpt-5.6-terra medium via Codex. Well-defined single-concern review
-            and validation on clean checkouts; benched the cleanest test-writing
-            of the Codex tiers at about 40% of Sol's price. It missed
-            cross-package fallout when tests could not run and gives up on
-            broken toolchains.
-    " {}),
+            gpt-5.6-terra medium. Well-defined single-concern review and
+            validation on clean checkouts." {}),
     :parent :pi,
     :model "openai-codex/gpt-5.6-terra"
     :effort :medium,
@@ -108,6 +100,24 @@
     :model "cursor-grok-4.6"
     :effort :high
     :attributes {:harness.cursor/fast true}},
+
+   :oracle
+   {:doc "default choice for guidance when stuck or needing additional api guidance"
+    :parent :fable
+    :attributes {}},
+   :reviewer
+   {:doc "default choice for targetted reviews"
+    :parent :terra
+    :attributes {}},
+   :grunt
+   {:doc "default choice for mechanical, well scoped tasks. Review code and tighten as needed"
+    :parent :luna
+    :attributes {}},
+   :coordinator
+   {:doc "default choice for sub coordinator to break up work"
+    :parent :sol
+    :attributes {}},
+
    :tui
    {:doc "Primary user agent",
     :parent :sol
