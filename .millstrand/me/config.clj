@@ -25,6 +25,7 @@
     :parent :pi,
     :model "deepseek/deepseek-v4-flash"
     :effort :high
+    :allow #{:reviewer :oracle}
     :attributes {:harness/extra-argv ["--agent" "main"]}}
    :luna
    {:doc (format-alpha/prose
@@ -39,6 +40,7 @@
     :parent :pi,
     :model "openai-codex/gpt-5.6-luna"
     :effort :high,
+    :allow #{:reviewer :oracle}
     :attributes {}},
    :opus
    {:doc (format-alpha/prose
@@ -114,10 +116,12 @@
    :reviewer
    {:doc "default choice for targetted reviews"
     :parent :terra
+    :allow #{:grunt :oracle}
     :attributes {}},
    :grunt
    {:doc "default choice for mechanical, well scoped tasks. Review code and tighten as needed"
     :parent :luna
+    :allow #{:reviewer :oracle}
     :attributes {}},
    :coordinator
    {:doc "default choice for sub coordinator to break up work"

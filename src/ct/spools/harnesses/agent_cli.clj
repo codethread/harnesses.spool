@@ -5,12 +5,15 @@
             [ct.spools.harnesses :as harness]
             [ct.spools.harnesses.execution :as execution]
             [ct.spools.harnesses.internal.cli :as cli]
+            [millhouse.spools.identity :as identity]
+            [millstrand.api.graph.alpha :as graph]
             [millstrand.api.millstrand.alpha :as millstrand]
             [millstrand.api.spool.alpha :refer [attr-get fail! require-valid!]]
             [millstrand.api.weaver.alpha :as weaver]))
 
 (declare ^:private op-run
          ^:private await!
+         ^:private identity-alias
          ^:private op-retry
          ^:private op-resume
          ^:private resumable-runs
@@ -58,6 +61,8 @@
   {:arg-spec cli/harness-arg-spec}
   [{:op/keys [runtime args cwd] :as ctx}]
   (require-valid! ::op-context ctx "harness op received an invalid operation context")
+  (when-let [friendly-id (:by-identity args)]
+    (identity/current runtime friendly-id))
   (require-valid!
    ::op-result
    (case (:subcommand args)
@@ -74,7 +79,10 @@
      ["_finished"] (summary (execution/finish-interactive! runtime
                                                            (:run-id args)
                                                            (:exit-code args)))
-     ["list"] (harness/harnesses runtime)
+     ["list"] (if-let [friendly-id (:by-identity args)]
+                (harness/harnesses runtime
+                                   (identity-alias runtime friendly-id))
+                (harness/harnesses runtime))
      ["config" "list"] {:flags (harness/flags runtime)}
      ["config" "set"] {:flag (:flag args)
                        :value (harness/set-flag! runtime (:flag args)
@@ -86,6 +94,18 @@
 (millstrand/defbin agent
   "Open a coding agent in the caller's terminal as a tracked interactive run."
   {:executable [:root "bin/agent"]})
+
+(defn- identity-alias [rt friendly-id]
+  (let [identity (identity/current rt friendly-id)
+        run-ids (mapv :to_strand_id
+                      (graph/outgoing-edges rt [(:id identity)] "performed"))
+        latest-run (->> run-ids
+                        (map #(weaver/show rt %))
+                        (sort-by (juxt :updated_at :id) #(compare %2 %1))
+                        first)]
+    (or (some-> latest-run (attr-get :harness/alias))
+        (fail! "Identity has no associated harness run"
+               {:identity friendly-id}))))
 
 (defn- full-run [rt id]
   (or (weaver/show rt id) (fail! "Harness run not found" {:id id})))
@@ -131,7 +151,9 @@
   (assoc (summary run) :launcher (execution/prepare-interactive! rt run)))
 
 (defn- op-run
-  [rt {:keys [harness interactive prompt cwd attributes title] :as args} op-cwd]
+  [rt {:keys [harness interactive prompt cwd attributes title by-identity]
+       :as args}
+   op-cwd]
   (let [effort (if (contains? args :effort) (:effort args) (:thinking args))
         attributes (cond-> (overlay-map attributes)
                      (some? effort) (assoc :harness/effort effort))
@@ -142,7 +164,8 @@
                       :cwd (or cwd op-cwd)
                       :attributes attributes}
                (some? prompt) (assoc :prompt prompt)
-               (some? title) (assoc :title title)))]
+               (some? title) (assoc :title title)
+               (some? by-identity) (assoc :by-identity by-identity)))]
     (if interactive
       (interactive-plan rt run)
       (do
@@ -184,7 +207,9 @@
                (contains? args :cwd) (assoc :cwd (:cwd args))
                (contains? args :attributes)
                (assoc :attributes (overlay-map (:attributes args)))
-               (contains? args :title) (assoc :title (:title args))))]
+               (contains? args :title) (assoc :title (:title args))
+               (contains? args :by-identity)
+               (assoc :by-identity (:by-identity args))))]
     (if (:interactive args)
       (interactive-plan rt run)
       (do

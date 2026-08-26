@@ -121,5 +121,34 @@ strand harness config unset seat/fable
 ```
 
 Use `strand harness list` to inspect all concrete harnesses and aliases with
-their availability, or `mill bin run agent --help` to launch an interactive
-tracked session.
+their availability. Identity-bearing harness commands accept `--by-identity`
+to name the agent performing the operation. `list` always returns the same
+registry vector, filtered by the caller alias when it defines a visibility
+policy:
+
+```clojure
+{:doc "Reviewer seat."
+ :parent :pi
+ :allow #{:reviewer :oracle}
+ :attributes {}}
+
+{:doc "Restricted seat."
+ :parent :pi
+ :deny #{:luna :codex}
+ :attributes {}}
+```
+
+`:allow` and `:deny` are mutually exclusive sets of harness or alias names.
+Each name includes aliases that currently resolve through it, so hiding
+`:fable` also hides an `:oracle` currently using `:fable` as its parent.
+
+```text
+strand harness list --by-identity gentle-cool-puma
+```
+
+On `run` and `resume`, the caller identity gains a `parent-of` edge to the
+spawned session identity. Agents pass their `MILLSTRAND_AGENT_ID` explicitly at
+the Strand client boundary; Weaver never reads a caller's environment. The
+user-only agent bin does not supply agent identity.
+
+Use `mill bin run agent --help` to launch an interactive tracked session.
