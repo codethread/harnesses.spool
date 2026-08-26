@@ -15,15 +15,21 @@ Launch a tracked interactive coding-agent session.
 
 Usage:
   mill bin run agent <harness> [options]
+  mill bin run agent --fzf [options]
   mill bin run agent resume [run-id]
 
-The agent bin creates or resumes an interactive harness run. Without a run ID,
-`agent resume` presents completed interactive runs in an fzf picker. It starts
-the selected provider in this terminal and records its lifecycle in Millstrand.
+The agent bin creates or resumes an interactive harness run. Pass `--fzf` in
+place of a harness to pick from registered harnesses and aliases. Without a run
+ID, `agent resume` presents completed interactive runs in an fzf picker. It
+starts the selected provider in this terminal and records its lifecycle in
+Millstrand.
 
 Arguments:
   <harness>                   A registered harness or alias.
   <run-id>                    A completed interactive run; omit to pick with fzf.
+
+Options:
+  --fzf                       Pick a registered harness or alias with fzf.
 
 Options forwarded to `strand harness run`:
   --cwd <directory>           Execution directory.
@@ -54,6 +60,10 @@ EOF
   '
 }
 
+# Parse the complete lifecycle before launching an interactive process. Shells may
+# otherwise continue reading this file after the process exits, so an agent that
+# edits this script during its session can corrupt the running shell's input.
+main() {
 for argument in "$@"; do
   case "$argument" in
     -h|--help)
@@ -63,7 +73,25 @@ for argument in "$@"; do
   esac
 done
 
-if [ "${1:-}" = "resume" ]; then
+if [ "${1:-}" = "--fzf" ]; then
+  shift
+  selected="$(strand_call harness list | jq -r '
+    (map(.name | length) | max) as $name_width
+    | .[]
+    | "\(.name)\t"
+      + (if .kind == "alias" then "\u001b[35m" else "\u001b[32m" end)
+      + "\(.name)\(" " * ($name_width - (.name | length)))  │  "
+      + (if .kind == "alias" then
+           "alias    │  \(.["alias-of"])  │  thinking=\(.thinking)"
+         else
+           "harness  │  \(.modes | join(", "))"
+         end)
+      + "\u001b[0m"
+  ' | fzf --ansi --delimiter='\t' --with-nth=2.. --prompt='Harness> ')" || exit $?
+  [ -n "$selected" ] || exit 1
+  harness="$(printf '%s\n' "$selected" | cut -f1)"
+  created="$(strand_call harness run "$harness" "$@" --interactive)" || exit $?
+elif [ "${1:-}" = "resume" ]; then
   shift
   if [ "$#" -gt 1 ]; then
     printf '%s\n' "agent resume accepts at most one run ID" >&2
@@ -115,3 +143,6 @@ strand_call harness _started "$run_id" >/dev/null || exit $?
 exit_code=$?
 record_finish "$exit_code" || exit $?
 exit "$exit_code"
+}
+
+main "$@"
