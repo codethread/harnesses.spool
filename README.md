@@ -74,8 +74,10 @@ The core owns the shared `harness/model`, `harness/effort`, and
 and materialize them with their native CLI flags: Claude uses `--effort`, Codex
 uses `model_reasoning_effort`, and Cursor and Pi use `--thinking`.
 
-Register aliases with a documented descriptor and optional top-level `:model`
-and `:effort`. Effort is intentionally open rather than restricted to a fixed
+Register aliases with a documented descriptor and optional top-level `:model`,
+`:effort`, and `:append-system-prompt`. Parent and child appended system prompts
+accumulate in that order, while model and effort values are replaced by the
+nearest child. Effort is intentionally open rather than restricted to a fixed
 set, so provider integrations may pass it through or remap it before building
 the command. Codex currently maps `low` to its native `light`; other values pass
 through unchanged.
@@ -87,6 +89,7 @@ through unchanged.
   :parent :pi
   :model "openai-codex/gpt-5.6-terra"
   :effort :medium
+  :append-system-prompt "Act as a read-only reviewer."
   :attributes {}})
 ```
 
@@ -111,6 +114,18 @@ ordered fallbacks. Each descriptor may use a flag expression with `:when`:
 Conditions support a flag name and the `:and`, `:or`, and `:not` operators.
 Unset custom flags are false. Concrete harnesses start enabled under their
 `harness/<name>` flag and remain registered when disabled.
+
+A caller can add run-specific guidance without changing the alias:
+
+```text
+strand harness run reviewer --prompt "Review this change" \
+  --append-system-prompt "Focus on concurrency risks."
+```
+
+Claude and Pi receive one native append flag per contribution. Codex and Cursor
+receive the identity and accumulated contributions joined with blank lines.
+System-prompt injection applies when creating a provider session and is not
+replayed when resuming one.
 
 Runtime flags are intentionally process-local:
 

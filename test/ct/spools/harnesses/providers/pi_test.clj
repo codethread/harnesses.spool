@@ -18,6 +18,8 @@
             :harness/session-id "provisional"
             :harness/prompt "Do the work"
             :identity/prompt "You are agent tidy-brave-swan."
+            :harness/appended-system-prompts
+            ["Review changes only." "Do not edit files."]
             :harness/model "gpt-test"
             :harness/effort "adaptive"
             :harness/extra-argv ["--skip-git-repo-check"]}
@@ -28,6 +30,8 @@
     (is (= {:argv ["pi" "--print" "--mode" "json"
                    "--session-id" "provisional"
                    "--append-system-prompt" "You are agent tidy-brave-swan."
+                   "--append-system-prompt" "Review changes only."
+                   "--append-system-prompt" "Do not edit files."
                    "--model" "gpt-test" "--thinking" "adaptive"
                    "--skip-git-repo-check"]
             :stdin "Do the work\n"}
@@ -43,6 +47,8 @@
   (testing "interactive runs retain a host-TTY prompt"
     (is (= {:argv ["pi" "--session-id" "provisional"
                    "--append-system-prompt" "You are agent tidy-brave-swan."
+                   "--append-system-prompt" "Review changes only."
+                   "--append-system-prompt" "Do not edit files."
                    "--model" "gpt-test" "--thinking" "adaptive"
                    "--skip-git-repo-check" "Do the work"]
             :stdin nil}

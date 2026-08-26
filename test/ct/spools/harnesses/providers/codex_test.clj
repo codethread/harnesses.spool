@@ -18,6 +18,8 @@
             :harness/session-id "provisional"
             :harness/prompt "Do the work"
             :identity/prompt "You are agent tidy-brave-swan."
+            :harness/appended-system-prompts
+            ["Review changes only." "Do not edit files."]
             :harness/model "gpt-test"
             :harness/effort "low"
             :harness/extra-argv ["--skip-git-repo-check"]}
@@ -29,7 +31,9 @@
                    "--model" "gpt-test"
                    "--config" "model_reasoning_effort=light"
                    "--config"
-                   "developer_instructions=\"You are agent tidy-brave-swan.\""
+                   (str "developer_instructions=\"You are agent tidy-brave-swan."
+                        "\\n\\nReview changes only."
+                        "\\n\\nDo not edit files.\"")
                    "--skip-git-repo-check"]
             :stdin "Do the work\n"}
            (codex/prepare runtime definition (run "headless")))))
@@ -54,7 +58,9 @@
                    "--model" "gpt-test"
                    "--config" "model_reasoning_effort=light"
                    "--config"
-                   "developer_instructions=\"You are agent tidy-brave-swan.\""
+                   (str "developer_instructions=\"You are agent tidy-brave-swan."
+                        "\\n\\nReview changes only."
+                        "\\n\\nDo not edit files.\"")
                    "--skip-git-repo-check" "Do the work"]
             :stdin nil}
            (codex/prepare runtime definition (run "interactive"))))))

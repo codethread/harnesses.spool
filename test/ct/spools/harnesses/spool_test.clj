@@ -105,8 +105,9 @@
                         :harness-execution-runtime
                         :harness-process-custody]]
           (is (= :applied (get-in lifecycles [effect :status]))))
-        (testing "run flags override effort on new strands"
-          (is (= ["adaptive" "maximum"]
+        (testing "run flags override effort and append a system prompt"
+          (is (= [["adaptive" ["Review without editing."]]
+                  ["maximum" ["Review without editing."]]]
                  (test-alpha/repl!
                   ctx
                   '(let [rt (millstrand.api.current.alpha/runtime)]
@@ -115,10 +116,15 @@
                         (let [created (millstrand.api.weaver.alpha/op!
                                        rt 'harness
                                        ["run" "pi" "--interactive"
-                                        "--cwd" "/tmp" flag effort])]
-                          (millstrand.api.spool.alpha/attr-get
-                           (millstrand.api.weaver.alpha/show rt (:id created))
-                           :harness/effort)))
+                                        "--cwd" "/tmp" flag effort
+                                        "--append-system-prompt"
+                                        "Review without editing."])
+                              run (millstrand.api.weaver.alpha/show
+                                   rt (:id created))]
+                          [(millstrand.api.spool.alpha/attr-get
+                            run :harness/effort)
+                           (millstrand.api.spool.alpha/attr-get
+                            run :harness/appended-system-prompts)]))
                       ["--effort" "--thinking"]
                       ["adaptive" "maximum"]))))))
         (testing "aliases expose documentation, model, and open effort"
@@ -129,6 +135,7 @@
                      :parent "terra"
                      :model "reviewer-model"
                      :effort :max
+                     :append-system-prompt "Do not edit files."
                      :attributes {}}]}
                   :listing
                   {:name "reviewer"
@@ -138,6 +145,7 @@
                      :parent "terra"
                      :model "reviewer-model"
                      :effort :max
+                     :append-system-prompt "Do not edit files."
                      :attributes {}}]
                    :available true
                    :harness "pi"
@@ -146,11 +154,15 @@
                   :portable
                   {:harness/extra-argv []
                    :harness/model "terra-model"
-                   :harness/effort "high"}
+                   :harness/effort "high"
+                   :harness/appended-system-prompts
+                   ["Review changes only."]}
                   :generated
                   {:harness/extra-argv []
                    :harness/model "reviewer-model"
-                   :harness/effort "max"}}
+                   :harness/effort "max"
+                   :harness/appended-system-prompts
+                   ["Review changes only." "Do not edit files."]}}
                  (test-alpha/repl!
                   ctx
                   '(do
@@ -163,6 +175,7 @@
                                :parent :pi
                                :model "terra-model"
                                :effort :high
+                               :append-system-prompt "Review changes only."
                                :attributes {}})
                            registration
                            (harnesses/register-alias!
@@ -171,6 +184,7 @@
                              :parent :terra
                              :model "reviewer-model"
                              :effort :max
+                             :append-system-prompt "Do not edit files."
                              :attributes {}})]
                        {:registration registration
                         :listing (some #(when (= "reviewer" (:name %)) %)

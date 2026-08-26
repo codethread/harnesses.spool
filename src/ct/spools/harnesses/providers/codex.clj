@@ -118,32 +118,44 @@
      :model (attribute run :harness/model)
      :effort (attribute run :harness/effort)
      :identity-prompt (attribute run :identity/prompt)
+     :appended-system-prompts
+     (or (attribute run :harness/appended-system-prompts) [])
      :prompt (attribute run :harness/prompt)
      :extra (or (attribute run :harness/extra-argv) [])}))
 
 (defn- validate-prepare-options!
-  [{:keys [mode session-id extra]} run]
+  [{:keys [mode session-id appended-system-prompts extra]} run]
   (when-not (#{"headless" "interactive"} mode)
     (fail! "Codex run mode is unsupported" {:mode mode}))
   (when (str/blank? session-id)
     (fail! "Codex run requires a session id" {:run (:id run)}))
+  (when-not (and (vector? appended-system-prompts)
+                 (every? #(and (string? %) (not (str/blank? %)))
+                         appended-system-prompts))
+    (fail! "harness/appended-system-prompts must be a vector of non-blank strings"
+           {:appended-system-prompts appended-system-prompts}))
   (when-not (and (vector? extra)
                  (every? #(and (string? %) (not (str/blank? %))) extra))
     (fail! "harness/extra-argv must be a vector of non-blank strings"
            {:extra-argv extra})))
 
 (defn- option-argv
-  [{:keys [resumes model effort identity-prompt extra]}]
-  (vec
-   (concat
-    (when model ["--model" model])
-    (when effort
-      ["--config"
-       (str "model_reasoning_effort=" (get effort-names effort effort))])
-    (when (and (not resumes) (not (str/blank? identity-prompt)))
-      ["--config"
-       (str "developer_instructions=" (json/write-str identity-prompt))])
-    extra)))
+  [{:keys [resumes model effort identity-prompt appended-system-prompts extra]}]
+  (let [system-prompt (when-not resumes
+                        (str/join "\n\n"
+                                  (remove str/blank?
+                                          (cons identity-prompt
+                                                appended-system-prompts))))]
+    (vec
+     (concat
+      (when model ["--model" model])
+      (when effort
+        ["--config"
+         (str "model_reasoning_effort=" (get effort-names effort effort))])
+      (when-not (str/blank? system-prompt)
+        ["--config"
+         (str "developer_instructions=" (json/write-str system-prompt))])
+      extra))))
 
 (defn- codex-command [{:keys [mode resumes session-id prompt] :as options}]
   (let [options (option-argv options)

@@ -12,15 +12,20 @@
 
 (def ^:private registry-version 2)
 (def ^:private overlay-prefix "harness.")
-(declare ^:private availability* condition-result json-value? new-registry
-         registry name-string normalize-alias-candidate normalize-overlay
-         reference-string mode-keyword run-title require-run require-phase)
+(def ^:private appended-system-prompts-attribute
+  :harness/appended-system-prompts)
+(declare ^:private availability* condition-result json-value? merge-overlays
+         new-registry registry name-string normalize-alias-candidate
+         normalize-overlay reference-string mode-keyword run-title require-run
+         require-phase)
 
 (defn- overlay-key? [k]
   (let [attribute (if (keyword? k)
                     (if-let [n (namespace k)] (str n "/" (name k)) (name k))
                     (str k))]
-    (or (#{"harness/model" "harness/effort" "harness/extra-argv"} attribute)
+    (or (#{"harness/model" "harness/effort" "harness/extra-argv"
+           "harness/appended-system-prompts"}
+         attribute)
         (str/starts-with? attribute overlay-prefix))))
 
 (s/def ::runtime map?)
@@ -34,6 +39,9 @@
   #(or (keyword? %)
        (and (string? %) (not (str/blank? %)))))
 (s/def ::model (s/and string? (complement str/blank?)))
+(s/def ::append-system-prompt (s/and string? (complement str/blank?)))
+(s/def ::appended-system-prompts
+  (s/coll-of ::append-system-prompt :kind vector?))
 (s/def ::strand (s/keys :req-un [::id ::title ::state ::attributes]))
 (s/def ::mode #{:headless :interactive "headless" "interactive"})
 (s/def ::modes (s/coll-of #{:headless :interactive} :kind set? :min-count 1))
@@ -68,8 +76,10 @@
 (s/def ::when ::condition)
 (s/def ::alias-candidate
   (s/and (s/keys :req-un [::doc ::parent ::attributes]
-                 :opt-un [::when])
-         #(every? #{:doc :parent :model :effort :attributes :when} (keys %))
+                 :opt-un [::when ::append-system-prompt])
+         #(every? #{:doc :parent :model :effort :append-system-prompt
+                    :attributes :when}
+                  (keys %))
          #(s/valid? ::name-ref (:parent %))
          #(or (not (contains? % :model)) (s/valid? ::model (:model %)))
          #(or (not (contains? % :effort)) (s/valid? ::effort (:effort %)))
@@ -134,8 +144,10 @@
 (s/def ::create-request
   (s/and
    (s/keys :req-un [::harness]
-           :opt-un [::mode ::prompt ::cwd ::attributes ::title ::resumes ::session-id])
-   #(every? #{:harness :mode :prompt :cwd :attributes :title :resumes :session-id}
+           :opt-un [::mode ::prompt ::cwd ::attributes ::title ::resumes
+                    ::session-id ::append-system-prompt])
+   #(every? #{:harness :mode :prompt :cwd :attributes :title :resumes
+              :session-id :append-system-prompt}
             (keys %))
    #(or (not (contains? % :attributes))
         (s/valid? ::overlay-attributes (:attributes %)))))
@@ -300,7 +312,10 @@
           definition (:definition result)
           attributes (apply merge (:attributes definition) (map :attributes layers))
           model (some :model (reverse layers))
-          effort (some :effort (reverse layers))]
+          effort (some :effort (reverse layers))
+          appended-system-prompts
+          (vec (concat (get attributes appended-system-prompts-attribute [])
+                       (keep :append-system-prompt layers)))]
       (require-valid!
        ::resolved-harness
        {:alias requested
@@ -308,7 +323,10 @@
         :definition definition
         :generated (cond-> attributes
                      model (assoc :harness/model model)
-                     effort (assoc :harness/effort (name effort)))}
+                     effort (assoc :harness/effort (name effort))
+                     (seq appended-system-prompts)
+                     (assoc appended-system-prompts-attribute
+                            appended-system-prompts))}
        "resolve-harness produced an invalid resolution"))))
 
 (s/fdef resolve-harness :args (s/cat :runtime ::runtime :requested ::name-ref) :ret ::resolved-harness)
@@ -356,13 +374,18 @@
 
   Resolves the requested alias, merges provider overrides, assigns a session ID,
   and records frozen reconstruction data. Headless runs require a prompt."
-  [rt {:keys [harness mode prompt cwd attributes title resumes session-id] :as request}]
+  [rt {:keys [harness mode prompt cwd attributes title resumes session-id
+              append-system-prompt]
+       :as request}]
   (require-valid! ::runtime rt "create! requires a Weaver runtime")
   (require-valid! ::create-request request "create! requires a valid run request")
   (let [mode (mode-keyword (or mode :headless))
         {:keys [alias harness definition generated]} (resolve-harness rt harness)
-        overrides (normalize-overlay attributes)
-        effective (merge generated overrides)
+        overrides (cond-> (normalize-overlay attributes)
+                    append-system-prompt
+                    (update appended-system-prompts-attribute
+                            (fnil conj []) append-system-prompt))
+        effective (merge-overlays generated overrides)
         cwd (or cwd (System/getProperty "user.dir"))
         session-id (or session-id (str (UUID/randomUUID)))]
     (when-not (contains? (:modes definition) mode)
@@ -495,7 +518,7 @@
         call-overrides (normalize-overlay attributes)
         overrides (reduce-kv (fn [m k v] (if (nil? v) (dissoc m k) (assoc m k v)))
                              old-overrides call-overrides)
-        effective (merge generated overrides)
+        effective (merge-overlays generated overrides)
         old-overlay-keys (set (filter overlay-key? (keys old-attrs)))
         all-overlay-keys (into old-overlay-keys (keys effective))
         overlay-delta (into {} (map (fn [k] [k (get effective k)]) all-overlay-keys))
@@ -716,6 +739,12 @@
        :available false
        :unavailable-reasons [{:name requested :reason "not registered"}]})))
 
+(defn- merge-overlays [generated overrides]
+  (let [prompts (vec (concat (get generated appended-system-prompts-attribute [])
+                             (get overrides appended-system-prompts-attribute [])))]
+    (cond-> (merge generated overrides)
+      (seq prompts) (assoc appended-system-prompts-attribute prompts))))
+
 (defn- normalize-overlay [m]
   (into {}
         (map (fn [[k v]]
@@ -723,6 +752,10 @@
                  (when-not (overlay-key? k)
                    (fail! "Harness overrides may contain only harness.<provider>/* attributes"
                           {:attribute k}))
+                 (when (and (= appended-system-prompts-attribute k)
+                            (not (s/valid? ::appended-system-prompts v)))
+                   (fail! "harness/appended-system-prompts must be a vector of non-blank strings"
+                          {:appended-system-prompts v}))
                  [k v])))
         (or m {})))
 

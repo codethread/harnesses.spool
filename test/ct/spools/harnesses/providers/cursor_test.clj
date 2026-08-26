@@ -21,6 +21,8 @@
             :harness/session-id "provisional"
             :harness/prompt "Do the work"
             :identity/prompt "You are agent tidy-brave-swan."
+            :harness/appended-system-prompts
+            ["Review changes only." "Do not edit files."]
             :harness/model "composer-2.5"
             :harness.cursor/fast false
             :harness/extra-argv ["--yolo" "--trust"]}
@@ -32,7 +34,8 @@
                    "--model" "composer-2.5"
                    "--plugin-dir" plugin-dir "--yolo" "--trust"]
             :env {"MILLSTRAND_HARNESS_CURSOR_SYS_PROMPT"
-                  "You are agent tidy-brave-swan."}
+                  (str "You are agent tidy-brave-swan.\n\n"
+                       "Review changes only.\n\nDo not edit files.")}
             :stdin "Do the work\n"}
            (cursor/prepare runtime definition (run "headless")))))
   (testing "resumed headless runs select the recorded Cursor chat"
@@ -47,7 +50,8 @@
     (is (= {:argv ["agent" "--model" "composer-2.5"
                    "--plugin-dir" plugin-dir "--yolo" "--trust" "Do the work"]
             :env {"MILLSTRAND_HARNESS_CURSOR_SYS_PROMPT"
-                  "You are agent tidy-brave-swan."}
+                  (str "You are agent tidy-brave-swan.\n\n"
+                       "Review changes only.\n\nDo not edit files.")}
             :stdin nil}
            (cursor/prepare runtime definition (run "interactive")))))
   (testing "Grok enables effort and fast model overrides"

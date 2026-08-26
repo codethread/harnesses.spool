@@ -61,7 +61,7 @@
                      {:argv (cursor-command options)
                       :stdin (when (= "headless" (:mode options))
                                (str (:prompt options) "\n"))}
-                      (:system-prompt options)
+                      (not (str/blank? (:system-prompt options)))
                       (assoc :env
                              {"MILLSTRAND_HARNESS_CURSOR_SYS_PROMPT"
                               (:system-prompt options)}))]
@@ -128,7 +128,14 @@
      :effort (attribute run :harness/effort)
      :fast (attribute run :harness.cursor/fast)
      :plugin-dir (cursor-plugin-dir)
-     :system-prompt (when-not resumes (attribute run :identity/prompt))
+     :system-prompt
+     (when-not resumes
+       (str/join "\n\n"
+                 (remove str/blank?
+                         (cons (attribute run :identity/prompt)
+                               (or (attribute run
+                                              :harness/appended-system-prompts)
+                                   [])))))
      :prompt (attribute run :harness/prompt)
      :extra (or (attribute run :harness/extra-argv) [])}))
 

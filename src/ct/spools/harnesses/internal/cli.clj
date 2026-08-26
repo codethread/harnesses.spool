@@ -16,6 +16,9 @@
                    :thinking {:type :string
                               :doc "User-facing alias for --effort."}
                    :prompt {:type :string :doc "Prompt; required headlessly."}
+                   :append-system-prompt
+                   {:type :string
+                    :doc "Append role or policy text to the system prompt."}
                    :title {:type :string :doc "Run title."}
                    :attributes {:type :string
                                 :parse :json

@@ -18,6 +18,8 @@
             :harness/session-id "provisional"
             :harness/prompt "Do the work"
             :identity/prompt "You are agent tidy-brave-swan."
+            :harness/appended-system-prompts
+            ["Review changes only." "Do not edit files."]
             :harness/model "sonnet"
             :harness/effort "adaptive"
             :harness/extra-argv ["--dangerously-skip-permissions"]}
@@ -28,6 +30,8 @@
     (is (= {:argv ["claude" "--print" "--output-format" "json"
                    "--session-id" "provisional"
                    "--append-system-prompt" "You are agent tidy-brave-swan."
+                   "--append-system-prompt" "Review changes only."
+                   "--append-system-prompt" "Do not edit files."
                    "--model" "sonnet" "--effort" "adaptive"
                    "--dangerously-skip-permissions"]
             :stdin "Do the work\n"}

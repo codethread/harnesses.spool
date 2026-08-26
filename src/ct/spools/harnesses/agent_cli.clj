@@ -131,7 +131,9 @@
   (assoc (summary run) :launcher (execution/prepare-interactive! rt run)))
 
 (defn- op-run
-  [rt {:keys [harness interactive prompt cwd attributes title] :as args} op-cwd]
+  [rt {:keys [harness interactive prompt append-system-prompt cwd attributes title]
+       :as args}
+   op-cwd]
   (let [effort (if (contains? args :effort) (:effort args) (:thinking args))
         attributes (cond-> (overlay-map attributes)
                      (some? effort) (assoc :harness/effort effort))
@@ -142,6 +144,8 @@
                       :cwd (or cwd op-cwd)
                       :attributes attributes}
                (some? prompt) (assoc :prompt prompt)
+               (some? append-system-prompt)
+               (assoc :append-system-prompt append-system-prompt)
                (some? title) (assoc :title title)))]
     (if interactive
       (interactive-plan rt run)
