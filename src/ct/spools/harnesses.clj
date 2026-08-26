@@ -99,10 +99,14 @@
   (s/coll-of (s/and string? (complement str/blank?))
              :kind vector? :min-count 1))
 (s/def ::stdin (s/nilable string?))
+(s/def ::env
+  (s/map-of (s/and string? #(re-matches #"[A-Za-z_][A-Za-z0-9_]*" %))
+            string?))
 (s/def ::launch-spec
   (s/and
-   (s/keys :req-un [::argv ::stdin])
-   #(every? #{:argv :stdin} (keys %))))
+   (s/keys :req-un [::argv ::stdin]
+           :opt-un [::env])
+   #(every? #{:argv :stdin :env} (keys %))))
 (s/def ::cwd (s/and string? (complement str/blank?)))
 (s/def ::session-id (s/and string? (complement str/blank?)))
 (s/def ::resumes ::id)

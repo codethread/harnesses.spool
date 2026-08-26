@@ -22,11 +22,18 @@
 
 (defn write!
   "Write and return a private launcher script for one interactive run."
-  [runtime run argv]
+  [runtime run argv env]
   (let [file (io/file (launcher-dir runtime) (str (:id run) ".sh"))
-        workspace (get-in runtime [:metadata :config-dir])]
+        workspace (get-in runtime [:metadata :config-dir])
+        provider-exports (->> env
+                              (sort-by key)
+                              (map (fn [[name value]]
+                                     (str "export " name "="
+                                          (sh-quote value) "\n")))
+                              (apply str))]
     (spit file
           (str "#!/bin/sh\n"
+               provider-exports
                "export MILLSTRAND_RUN_ID=" (sh-quote (:id run)) "\n"
                "export MILLSTRAND_AGENT_ID="
                (sh-quote (attr-get run :identity/id)) "\n"

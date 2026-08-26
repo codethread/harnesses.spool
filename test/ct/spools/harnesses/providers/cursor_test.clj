@@ -1,8 +1,11 @@
 (ns ct.spools.harnesses.providers.cursor-test
   "Provider-boundary tests for Cursor launch preparation and JSON normalization."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.java.io :as io]
+            [clojure.test :refer [deftest is testing]]
             [ct.spools.harnesses.providers.cursor :as cursor]))
 
+(def ^:private plugin-dir
+  (.getCanonicalPath (io/file "plugins" "cursor" "harness")))
 (def ^:private runtime {})
 (def ^:private definition (cursor/harness runtime))
 
@@ -24,22 +27,27 @@
            attributes)}))
 
 (deftest prepare-builds-new-and-resumed-launch-specifications
-  (testing "new headless runs prefix identity because Cursor has no system prompt flag"
+  (testing "new headless runs expose identity for Cursor system-context injection"
     (is (= {:argv ["agent" "--print" "--output-format" "json"
-                   "--model" "composer-2.5[fast=false]" "--thinking" "adaptive" "--yolo" "--trust"]
-            :stdin "You are agent tidy-brave-swan.\n\nDo the work\n"}
+                   "--model" "composer-2.5[fast=false]" "--thinking" "adaptive"
+                   "--plugin-dir" plugin-dir "--yolo" "--trust"]
+            :env {"MILLSTRAND_HARNESS_CURSOR_SYS_PROMPT"
+                  "You are agent tidy-brave-swan."}
+            :stdin "Do the work\n"}
            (cursor/prepare runtime definition (run "headless")))))
   (testing "resumed headless runs select the recorded Cursor chat"
     (is (= {:argv ["agent" "--print" "--output-format" "json"
                    "--resume" "provisional"
-                   "--model" "composer-2.5[fast=false]" "--thinking" "adaptive" "--yolo" "--trust"]
+                   "--model" "composer-2.5[fast=false]" "--thinking" "adaptive"
+                   "--plugin-dir" plugin-dir "--yolo" "--trust"]
             :stdin "Do the work\n"}
            (cursor/prepare runtime definition
                            (run "headless" {:harness/resumes "prior"})))))
-  (testing "interactive runs retain a host-TTY prompt"
+  (testing "interactive runs retain a host-TTY prompt and expose identity"
     (is (= {:argv ["agent" "--model" "composer-2.5[fast=false]" "--thinking" "adaptive"
-                   "--yolo" "--trust"
-                   "You are agent tidy-brave-swan.\n\nDo the work"]
+                   "--plugin-dir" plugin-dir "--yolo" "--trust" "Do the work"]
+            :env {"MILLSTRAND_HARNESS_CURSOR_SYS_PROMPT"
+                  "You are agent tidy-brave-swan."}
             :stdin nil}
            (cursor/prepare runtime definition (run "interactive"))))))
 

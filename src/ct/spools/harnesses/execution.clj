@@ -93,7 +93,7 @@
   (try
     (let [definition (resolved-definition rt run)
           launch-spec (prepare-launch rt definition run)]
-      (launcher/write! rt run (:argv launch-spec)))
+      (launcher/write! rt run (:argv launch-spec) (:env launch-spec)))
     (catch Exception e
       (harness/finish! rt (:id run) {:status :failed
                                      :error (str (ex-message e)
@@ -293,10 +293,10 @@
    ((callback (:prepare definition)) rt definition run)
    "Harness prepare must return a valid launch specification"))
 
-(defn- process-spec [run {:keys [argv stdin]}]
+(defn- process-spec [run {:keys [argv env stdin]}]
   {:argv argv
    :cwd (attr-get run :harness/cwd)
-   :env (cond-> {}
+   :env (cond-> (or env {})
           (attr-get run :identity/id)
           (assoc "MILLSTRAND_AGENT_ID" (attr-get run :identity/id)))
    :stdin stdin})

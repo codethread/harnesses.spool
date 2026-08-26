@@ -1,11 +1,15 @@
 (ns ct.spools.harnesses.providers.cursor
   "Cursor CLI definition and provider-specific prepare/finish callbacks."
   (:require [clojure.data.json :as json]
+            [clojure.java.io :as io]
             [clojure.spec.alpha :as s]
             [clojure.string :as str]
             [ct.spools.harnesses :as harness]
             [millstrand.api.lifecycle.alpha :as lifecycle]
             [millstrand.api.spool.alpha :refer [attr-get fail! require-valid!]]))
+
+(defmacro ^:private current-source-resource []
+  `(io/resource ~*file*))
 
 (s/def ::exit-code int?)
 (s/def ::stdout (s/nilable string?))
@@ -18,6 +22,8 @@
 (declare ^:private attribute
          ^:private prepare-options
          ^:private validate-prepare-options!
+         ^:private spool-root
+         ^:private cursor-plugin-dir
          ^:private cursor-command
          ^:private interactive-outcome
          ^:private headless-outcome)
@@ -51,9 +57,14 @@
                   "Cursor prepare requires a resolved harness definition")
   (require-valid! ::harness/strand run "Cursor prepare requires a full run strand")
   (let [options (prepare-options run)
-        launch-spec {:argv (cursor-command options)
-                     :stdin (when (= "headless" (:mode options))
-                              (str (:prompt options) "\n"))}]
+        launch-spec (cond->
+                     {:argv (cursor-command options)
+                      :stdin (when (= "headless" (:mode options))
+                               (str (:prompt options) "\n"))}
+                      (:system-prompt options)
+                      (assoc :env
+                             {"MILLSTRAND_HARNESS_CURSOR_SYS_PROMPT"
+                              (:system-prompt options)}))]
     (validate-prepare-options! options run)
     (require-valid! ::harness/launch-spec launch-spec
                     "Cursor prepare produced an invalid launch specification")))
@@ -108,18 +119,15 @@
   (attr-get run k))
 
 (defn- prepare-options [run]
-  (let [resumes (attribute run :harness/resumes)
-        prompt (attribute run :harness/prompt)]
+  (let [resumes (attribute run :harness/resumes)]
     {:mode (attribute run :harness/mode)
      :resumes resumes
      :session-id (attribute run :harness/session-id)
      :model (attribute run :harness/model)
      :effort (attribute run :harness/effort)
-     :prompt (if resumes
-               prompt
-               (str/join "\n\n"
-                         (remove str/blank?
-                                 [(attribute run :identity/prompt) prompt])))
+     :plugin-dir (cursor-plugin-dir)
+     :system-prompt (when-not resumes (attribute run :identity/prompt))
+     :prompt (attribute run :harness/prompt)
      :extra (or (attribute run :harness/extra-argv) [])}))
 
 (defn- validate-prepare-options!
@@ -133,11 +141,31 @@
     (fail! "harness/extra-argv must be a vector of non-blank strings"
            {:extra-argv extra})))
 
-(defn- option-argv [{:keys [model effort extra]}]
+(defn- spool-root [source]
+  (or (some #(when (.isFile (io/file % "spool.edn")) %)
+            (take-while some?
+                        (iterate #(some-> % .getParentFile)
+                                 (io/file source))))
+      (fail! "Cursor provider is not inside a spool"
+             {:resource source})))
+
+(defn- cursor-plugin-dir []
+  (let [source (current-source-resource)]
+    (when-not (= "file" (some-> source .getProtocol))
+      (fail! "Cursor provider source is not a filesystem resource"
+             {:resource source}))
+    (let [plugin (io/file (spool-root source) "plugins" "cursor" "harness")]
+      (when-not (.isDirectory plugin)
+        (fail! "Cursor harness plugin directory is missing"
+               {:plugin-dir (.getPath plugin)}))
+      (.getCanonicalPath plugin))))
+
+(defn- option-argv [{:keys [model effort plugin-dir extra]}]
   (vec
    (concat
     (when model ["--model" model])
     (when effort ["--thinking" effort])
+    ["--plugin-dir" plugin-dir]
     extra)))
 
 (defn- cursor-command [{:keys [mode resumes session-id prompt] :as options}]
