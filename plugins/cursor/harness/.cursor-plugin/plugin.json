@@ -1,0 +1,6 @@
+{
+  "name": "harness",
+  "version": "0.1.0",
+  "description": "Inject MILLSTRAND_HARNESS_CURSOR_SYS_PROMPT into Cursor session context.",
+  "hooks": "./hooks/hooks.json"
+}
