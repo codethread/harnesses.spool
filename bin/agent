@@ -43,18 +43,23 @@ Options forwarded to `strand harness run`:
 Registered harnesses and aliases:
 EOF
   strand_call harness list | jq -r '
-    [.[] | select(.kind == "harness")] as $harnesses
-    | [.[] | select(.kind == "alias")] as $aliases
+    [.[] | select(.available and .kind == "harness")] as $harnesses
+    | [.[] | select(.available and .kind == "alias")] as $aliases
     | ($harnesses[] | "  \(.name) — \(.modes | join(", "))")
     , (if ($aliases | length) > 0 then
          "\nAliases:"
          , ($aliases[]
-            | "  \(.name) — \(.doc) [\(.["alias-of"])]"
-              + (if .effort then " effort=\(.effort)" else "" end)
-              + (if (.attributes | length) > 0 then
-                   " (\(.attributes | to_entries
+            | .candidates[."selected-candidate"] as $candidate
+            | "  \(.name) — \($candidate.doc) [\($candidate.parent)]"
+              + (if $candidate.effort then
+                   " effort=\($candidate.effort)"
+                 else ""
+                 end)
+              + (if ($candidate.attributes | length) > 0 then
+                   " \($candidate.attributes | to_entries
                      | map("\(.key)=\(.value | tojson)")
-                     | join(", ")))"
+                     | join(", ")
+                     | "(" + . + ")")"
                  else ""
                  end))
        else empty
@@ -78,13 +83,15 @@ done
 if [ "${1:-}" = "--fzf" ]; then
   shift
   selected="$(strand_call harness list | jq -r '
-    (map(.name | length) | max) as $name_width
+    map(select(.available))
+    | (map(.name | length) | max) as $name_width
     | .[]
     | "\(.name)\t"
       + (if .kind == "alias" then "\u001b[35m" else "\u001b[32m" end)
       + "\(.name)\(" " * ($name_width - (.name | length)))  │  "
       + (if .kind == "alias" then
-           "alias    │  \(.["alias-of"])  │  effort=\(.effort)"
+           .candidates[."selected-candidate"] as $candidate
+           | "alias    │  \($candidate.parent)  │  effort=\($candidate.effort // "default")"
          else
            "harness  │  \(.modes | join(", "))"
          end)
