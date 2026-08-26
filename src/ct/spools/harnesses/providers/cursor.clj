@@ -105,7 +105,8 @@
   (require-valid! ::harness/runtime runtime "cursor-harness open received an invalid runtime")
   (harness/register-harness!
    runtime :cursor
-   (harness runtime {:harness/model "composer-2.5[fast=false]"
+   (harness runtime {:harness/model "composer-2.5"
+                     :harness.cursor/fast false
                      :harness/extra-argv ["--yolo" "--trust"]}))
   {:opened :cursor})
 
@@ -125,6 +126,7 @@
      :session-id (attribute run :harness/session-id)
      :model (attribute run :harness/model)
      :effort (attribute run :harness/effort)
+     :fast (attribute run :harness.cursor/fast)
      :plugin-dir (cursor-plugin-dir)
      :system-prompt (when-not resumes (attribute run :identity/prompt))
      :prompt (attribute run :harness/prompt)
@@ -160,13 +162,22 @@
                {:plugin-dir (.getPath plugin)}))
       (.getCanonicalPath plugin))))
 
-(defn- option-argv [{:keys [model effort plugin-dir extra]}]
-  (vec
-   (concat
-    (when model ["--model" model])
-    (when effort ["--thinking" effort])
-    ["--plugin-dir" plugin-dir]
-    extra)))
+(defn- model-with-overrides [model overrides]
+  (let [parameters (str/join "," (map (fn [[k v]] (str (name k) "=" v)) overrides))]
+    (if (str/ends-with? model "]")
+      (str (subs model 0 (dec (count model))) "," parameters "]")
+      (str model "[" parameters "]"))))
+
+(defn- option-argv [{:keys [model effort fast plugin-dir extra]}]
+  (let [overrides (cond-> []
+                    effort (conj [:effort effort])
+                    (some? fast) (conj [:fast fast]))]
+    (vec
+     (concat
+      (when model ["--model" (cond-> model (seq overrides)
+                               (model-with-overrides overrides))])
+      ["--plugin-dir" plugin-dir]
+      extra))))
 
 (defn- cursor-command [{:keys [mode resumes session-id prompt] :as options}]
   (let [interactive? (= "interactive" mode)]

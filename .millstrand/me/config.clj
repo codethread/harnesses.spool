@@ -102,6 +102,12 @@
     :model "openai-codex/gpt-5.6-terra"
     :effort :medium,
     :attributes {}},
+   :grok
+   {:doc "Grok agent, similar to opus, use when claude unavailable"
+    :parent :cursor
+    :model "cursor-grok-4.6"
+    :effort :high
+    :attributes {:harness.cursor/fast true}},
    :tui
    {:doc "Primary user agent",
     :parent :sol
