@@ -12,6 +12,9 @@
            :flags {:interactive {:type :boolean
                                  :doc "Prepare a host-TTY interactive launcher."}
                    :cwd {:type :string :doc "Execution directory."}
+                   :effort {:type :string :doc "Override the alias effort."}
+                   :thinking {:type :string
+                              :doc "User-facing alias for --effort."}
                    :prompt {:type :string :doc "Prompt; required headlessly."}
                    :title {:type :string :doc "Run title."}
                    :attributes {:type :string

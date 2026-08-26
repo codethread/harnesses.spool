@@ -18,16 +18,16 @@
             :harness/session-id "provisional"
             :harness/prompt "Do the work"
             :identity/prompt "You are agent tidy-brave-swan."
-            :harness.codex/model "gpt-test"
-            :harness.codex/reasoning-effort "high"
-            :harness.codex/extra-argv ["--skip-git-repo-check"]}
+            :harness/model "gpt-test"
+            :harness/effort "low"
+            :harness/extra-argv ["--skip-git-repo-check"]}
            attributes)}))
 
 (deftest prepare-builds-new-and-resumed-launch-specifications
   (testing "new headless runs separate developer identity from prompt stdin"
     (is (= {:argv ["codex" "exec" "--json"
                    "--model" "gpt-test"
-                   "--config" "model_reasoning_effort=high"
+                   "--config" "model_reasoning_effort=light"
                    "--config"
                    "developer_instructions=\"You are agent tidy-brave-swan.\""
                    "--skip-git-repo-check"]
@@ -36,7 +36,7 @@
   (testing "headless resume names the provider session"
     (is (= {:argv ["codex" "exec" "resume" "--json"
                    "--model" "gpt-test"
-                   "--config" "model_reasoning_effort=high"
+                   "--config" "model_reasoning_effort=light"
                    "--skip-git-repo-check" "provisional" "-"]
             :stdin "Do the work\n"}
            (codex/prepare runtime definition
@@ -44,7 +44,7 @@
   (testing "interactive resume keeps the initial prompt in argv for the host TTY"
     (is (= {:argv ["codex" "resume"
                    "--model" "gpt-test"
-                   "--config" "model_reasoning_effort=high"
+                   "--config" "model_reasoning_effort=light"
                    "--skip-git-repo-check" "provisional" "Do the work"]
             :stdin nil}
            (codex/prepare runtime definition
@@ -52,7 +52,7 @@
   (testing "new interactive runs separate developer identity from user prompt"
     (is (= {:argv ["codex"
                    "--model" "gpt-test"
-                   "--config" "model_reasoning_effort=high"
+                   "--config" "model_reasoning_effort=light"
                    "--config"
                    "developer_instructions=\"You are agent tidy-brave-swan.\""
                    "--skip-git-repo-check" "Do the work"]

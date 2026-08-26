@@ -18,9 +18,9 @@
             :harness/session-id "provisional"
             :harness/prompt "Do the work"
             :identity/prompt "You are agent tidy-brave-swan."
-            :harness.pi/model "gpt-test"
-            :harness.pi/thinking "high"
-            :harness.pi/extra-argv ["--skip-git-repo-check"]}
+            :harness/model "gpt-test"
+            :harness/effort "adaptive"
+            :harness/extra-argv ["--skip-git-repo-check"]}
            attributes)}))
 
 (deftest prepare-builds-new-and-resumed-launch-specifications
@@ -28,14 +28,14 @@
     (is (= {:argv ["pi" "--print" "--mode" "json"
                    "--session-id" "provisional"
                    "--append-system-prompt" "You are agent tidy-brave-swan."
-                   "--model" "gpt-test" "--thinking" "high"
+                   "--model" "gpt-test" "--thinking" "adaptive"
                    "--skip-git-repo-check"]
             :stdin "Do the work\n"}
            (pi/prepare runtime definition (run "headless")))))
   (testing "resumed headless runs select the recorded Pi session"
     (is (= {:argv ["pi" "--print" "--mode" "json"
                    "--session" "provisional"
-                   "--model" "gpt-test" "--thinking" "high"
+                   "--model" "gpt-test" "--thinking" "adaptive"
                    "--skip-git-repo-check"]
             :stdin "Do the work\n"}
            (pi/prepare runtime definition
@@ -43,7 +43,7 @@
   (testing "interactive runs retain a host-TTY prompt"
     (is (= {:argv ["pi" "--session-id" "provisional"
                    "--append-system-prompt" "You are agent tidy-brave-swan."
-                   "--model" "gpt-test" "--thinking" "high"
+                   "--model" "gpt-test" "--thinking" "adaptive"
                    "--skip-git-repo-check" "Do the work"]
             :stdin nil}
            (pi/prepare runtime definition (run "interactive"))))))

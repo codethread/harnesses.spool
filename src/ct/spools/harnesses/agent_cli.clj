@@ -122,13 +122,17 @@
 (defn- interactive-plan [rt run]
   (assoc (summary run) :launcher (execution/prepare-interactive! rt run)))
 
-(defn- op-run [rt {:keys [harness interactive prompt cwd attributes title]} op-cwd]
-  (let [run (harness/create!
+(defn- op-run
+  [rt {:keys [harness interactive prompt cwd attributes title] :as args} op-cwd]
+  (let [effort (if (contains? args :effort) (:effort args) (:thinking args))
+        attributes (cond-> (overlay-map attributes)
+                     (some? effort) (assoc :harness/effort effort))
+        run (harness/create!
              rt
              (cond-> {:harness harness
                       :mode (if interactive :interactive :headless)
                       :cwd (or cwd op-cwd)
-                      :attributes (overlay-map attributes)}
+                      :attributes attributes}
                (some? prompt) (assoc :prompt prompt)
                (some? title) (assoc :title title)))]
     (if interactive

@@ -69,31 +69,29 @@ Clojure API are required.
 
 ## Providers
 
-Provider options are stored as harness overlay attributes:
+The core owns the shared `harness/model`, `harness/effort`, and
+`harness/extra-argv` overlay attributes. Providers read the same strand fields
+and materialize them with their native CLI flags: Claude uses `--effort`, Codex
+uses `model_reasoning_effort`, and Cursor and Pi use `--thinking`.
 
-| Provider | Attributes |
-| --- | --- |
-| Claude | `harness.claude/model`, `harness.claude/effort`, `harness.claude/extra-argv` |
-| Codex | `harness.codex/model`, `harness.codex/reasoning-effort`, `harness.codex/extra-argv` |
-| Cursor | `harness.cursor/model`, `harness.cursor/extra-argv` |
-| Pi | `harness.pi/model`, `harness.pi/thinking`, `harness.pi/extra-argv` |
-
-Register aliases with a documented descriptor. Portable thinking is limited to
-`:low`, `:medium`, and `:high`; each provider maps those levels to its native
-attribute. An explicit provider attribute takes precedence over portable
-thinking.
+Register aliases with a documented descriptor and optional top-level `:model`
+and `:effort`. Effort is intentionally open rather than restricted to a fixed
+set, so provider integrations may pass it through or remap it before building
+the command. Codex currently maps `low` to its native `light`; other values pass
+through unchanged.
 
 ```clojure
 (harnesses/register-alias!
  runtime :terra
- {:doc "Use the Terra model with medium thinking."
+ {:doc "Use the Terra model with medium effort."
   :parent :pi
-  :thinking :medium
-  :attributes {:harness.pi/model "openai-codex/gpt-5.6-terra"}})
+  :model "openai-codex/gpt-5.6-terra"
+  :effort :medium
+  :attributes {}})
 ```
 
-Aliases may name another alias as their parent. Concrete harnesses must declare
-a portable-thinking mapping before an alias using `:thinking` can resolve.
+Aliases may name another alias as their parent. Child model and effort values
+replace their parent values.
 
 Use `strand harness list` to inspect registered concrete harnesses and documented
 aliases, or `mill bin run agent --help` to launch an interactive tracked session.

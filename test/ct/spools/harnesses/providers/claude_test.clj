@@ -18,9 +18,9 @@
             :harness/session-id "provisional"
             :harness/prompt "Do the work"
             :identity/prompt "You are agent tidy-brave-swan."
-            :harness.claude/model "sonnet"
-            :harness.claude/effort "high"
-            :harness.claude/extra-argv ["--dangerously-skip-permissions"]}
+            :harness/model "sonnet"
+            :harness/effort "adaptive"
+            :harness/extra-argv ["--dangerously-skip-permissions"]}
            attributes)}))
 
 (deftest prepare-builds-new-and-resumed-launch-specifications
@@ -28,13 +28,13 @@
     (is (= {:argv ["claude" "--print" "--output-format" "json"
                    "--session-id" "provisional"
                    "--append-system-prompt" "You are agent tidy-brave-swan."
-                   "--model" "sonnet" "--effort" "high"
+                   "--model" "sonnet" "--effort" "adaptive"
                    "--dangerously-skip-permissions"]
             :stdin "Do the work\n"}
            (claude/prepare runtime definition (run "headless")))))
   (testing "interactive resumes select the recorded Claude session"
     (is (= {:argv ["claude" "--resume" "provisional" "--model" "sonnet"
-                   "--effort" "high" "--dangerously-skip-permissions"
+                   "--effort" "adaptive" "--dangerously-skip-permissions"
                    "Do the work"]
             :stdin nil}
            (claude/prepare runtime definition

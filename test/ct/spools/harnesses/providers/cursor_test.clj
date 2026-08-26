@@ -18,25 +18,26 @@
             :harness/session-id "provisional"
             :harness/prompt "Do the work"
             :identity/prompt "You are agent tidy-brave-swan."
-            :harness.cursor/model "composer-2.5[fast=false]"
-            :harness.cursor/extra-argv ["--yolo" "--trust"]}
+            :harness/model "composer-2.5[fast=false]"
+            :harness/effort "adaptive"
+            :harness/extra-argv ["--yolo" "--trust"]}
            attributes)}))
 
 (deftest prepare-builds-new-and-resumed-launch-specifications
   (testing "new headless runs prefix identity because Cursor has no system prompt flag"
     (is (= {:argv ["agent" "--print" "--output-format" "json"
-                   "--model" "composer-2.5[fast=false]" "--yolo" "--trust"]
+                   "--model" "composer-2.5[fast=false]" "--thinking" "adaptive" "--yolo" "--trust"]
             :stdin "You are agent tidy-brave-swan.\n\nDo the work\n"}
            (cursor/prepare runtime definition (run "headless")))))
   (testing "resumed headless runs select the recorded Cursor chat"
     (is (= {:argv ["agent" "--print" "--output-format" "json"
                    "--resume" "provisional"
-                   "--model" "composer-2.5[fast=false]" "--yolo" "--trust"]
+                   "--model" "composer-2.5[fast=false]" "--thinking" "adaptive" "--yolo" "--trust"]
             :stdin "Do the work\n"}
            (cursor/prepare runtime definition
                            (run "headless" {:harness/resumes "prior"})))))
   (testing "interactive runs retain a host-TTY prompt"
-    (is (= {:argv ["agent" "--model" "composer-2.5[fast=false]"
+    (is (= {:argv ["agent" "--model" "composer-2.5[fast=false]" "--thinking" "adaptive"
                    "--yolo" "--trust"
                    "You are agent tidy-brave-swan.\n\nDo the work"]
             :stdin nil}

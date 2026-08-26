@@ -33,9 +33,11 @@ Options:
 
 Options forwarded to `strand harness run`:
   --cwd <directory>           Execution directory.
+  --effort <value>            Override the alias effort.
+  --thinking <value>          User-facing alias for --effort.
   --prompt <text>             Optional initial prompt for the provider.
   --title <text>              Title for the tracked run.
-  --attributes <json-object>  Provider-specific configuration overlay.
+  --attributes <json-object>  Harness configuration overlay.
   -h, --help                  Show this help.
 
 Registered harnesses and aliases:
@@ -48,7 +50,7 @@ EOF
          "\nAliases:"
          , ($aliases[]
             | "  \(.name) — \(.doc) [\(.["alias-of"])]"
-              + (if .thinking then " thinking=\(.thinking)" else "" end)
+              + (if .effort then " effort=\(.effort)" else "" end)
               + (if (.attributes | length) > 0 then
                    " (\(.attributes | to_entries
                      | map("\(.key)=\(.value | tojson)")
@@ -82,7 +84,7 @@ if [ "${1:-}" = "--fzf" ]; then
       + (if .kind == "alias" then "\u001b[35m" else "\u001b[32m" end)
       + "\(.name)\(" " * ($name_width - (.name | length)))  │  "
       + (if .kind == "alias" then
-           "alias    │  \(.["alias-of"])  │  thinking=\(.thinking)"
+           "alias    │  \(.["alias-of"])  │  effort=\(.effort)"
          else
            "harness  │  \(.modes | join(", "))"
          end)

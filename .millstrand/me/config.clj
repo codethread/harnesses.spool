@@ -25,10 +25,9 @@
             not route load-bearing deep dives here.
             " {}),
     :parent :pi,
-    :thinking :high
-    :attributes
-    #:harness.pi{:model "deepseek/deepseek-v4-flash",
-                 :extra-argv ["--agent" "main"]}}
+    :model "deepseek/deepseek-v4-flash"
+    :effort :high
+    :attributes {:harness/extra-argv ["--agent" "main"]}}
    :luna
    {:doc (format-alpha/prose
           "
@@ -38,8 +37,9 @@
             Ideal for implementation details, scouting and delegated focussed tasks
     " {}),
     :parent :pi,
-    :thinking :high,
-    :attributes #:harness.codex{:model "gpt-5.6-luna"}},
+    :model "openai-codex/gpt-5.6-luna"
+    :effort :high,
+    :attributes {}},
    :opus
    {:doc (format-alpha/prose
           "
@@ -53,8 +53,9 @@
             paste-up-prone.
             " {}),
     :parent :claude,
-    :thinking :low,
-    :attributes #:harness.claude{:model "opus"}},
+    :model "opus"
+    :effort :low,
+    :attributes {}},
    :oracle
    {:doc (format-alpha/prose
           "
@@ -67,8 +68,9 @@
             that writes nothing is unusually expensive.
             " {}),
     :parent :claude,
-    :thinking :high,
-    :attributes #:harness.claude{:model "claude-fable-5"}},
+    :model "claude-fable-5"
+    :effort :high,
+    :attributes {}},
    :sol
    {:doc (format-alpha/prose
           "
@@ -81,8 +83,9 @@
             toolchains when needed.
     " {}),
     :parent :pi,
-    :thinking :low,
-    :attributes #:harness.codex{:model "gpt-5.6-sol"}},
+    :model "openai-codex/gpt-5.6-sol"
+    :effort :low,
+    :attributes {}},
    :terra
    {:doc (format-alpha/prose
           "
@@ -96,13 +99,13 @@
             broken toolchains.
     " {}),
     :parent :pi,
-    :thinking :medium,
-    :attributes
-    #:harness.codex{:model "gpt-5.6-terra"}},
+    :model "openai-codex/gpt-5.6-terra"
+    :effort :medium,
+    :attributes {}},
    :tui
    {:doc "Primary user agent",
     :parent :sol
-    :thinking :low
+    :effort :low
     :attributes {}}})
 
 (defn open-harnesses!

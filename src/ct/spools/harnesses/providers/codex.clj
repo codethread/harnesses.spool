@@ -7,7 +7,8 @@
             [millstrand.api.lifecycle.alpha :as lifecycle]
             [millstrand.api.spool.alpha :refer [attr-get fail! require-valid!]]))
 
-(def ^:private reasoning-efforts #{"minimal" "low" "medium" "high" "xhigh"})
+(def ^:private effort-names
+  {"low" "light"})
 
 (s/def ::exit-code int?)
 (s/def ::stdout (s/nilable string?))
@@ -36,10 +37,6 @@
                    {:modes #{:headless :interactive}
                     :prepare 'ct.spools.harnesses.providers.codex/prepare
                     :finish 'ct.spools.harnesses.providers.codex/finish
-                    :thinking {:attribute :harness.codex/reasoning-effort
-                               :levels {:low "low"
-                                        :medium "medium"
-                                        :high "high"}}
                     :attributes attributes}
                    "harness produced an invalid Codex definition")))
 
@@ -100,7 +97,7 @@
   (require-valid! ::harness/runtime runtime "codex-harness open received an invalid runtime")
   (harness/register-harness!
    runtime :codex
-   (harness runtime {:harness.codex/extra-argv
+   (harness runtime {:harness/extra-argv
                      ["--dangerously-bypass-approvals-and-sandbox"]}))
   {:opened :codex})
 
@@ -118,34 +115,31 @@
     {:mode (attribute run :harness/mode)
      :resumes resumes
      :session-id (attribute run :harness/session-id)
-     :model (attribute run :harness.codex/model)
-     :reasoning-effort (attribute run :harness.codex/reasoning-effort)
+     :model (attribute run :harness/model)
+     :effort (attribute run :harness/effort)
      :identity-prompt (attribute run :identity/prompt)
      :prompt (attribute run :harness/prompt)
-     :extra (or (attribute run :harness.codex/extra-argv) [])}))
+     :extra (or (attribute run :harness/extra-argv) [])}))
 
 (defn- validate-prepare-options!
-  [{:keys [mode session-id reasoning-effort extra]} run]
+  [{:keys [mode session-id extra]} run]
   (when-not (#{"headless" "interactive"} mode)
     (fail! "Codex run mode is unsupported" {:mode mode}))
   (when (str/blank? session-id)
     (fail! "Codex run requires a session id" {:run (:id run)}))
-  (when (and reasoning-effort (not (reasoning-efforts reasoning-effort)))
-    (fail! "Codex reasoning effort is unsupported"
-           {:reasoning-effort reasoning-effort
-            :allowed (sort reasoning-efforts)}))
   (when-not (and (vector? extra)
                  (every? #(and (string? %) (not (str/blank? %))) extra))
-    (fail! "harness.codex/extra-argv must be a vector of non-blank strings"
+    (fail! "harness/extra-argv must be a vector of non-blank strings"
            {:extra-argv extra})))
 
 (defn- option-argv
-  [{:keys [resumes model reasoning-effort identity-prompt extra]}]
+  [{:keys [resumes model effort identity-prompt extra]}]
   (vec
    (concat
     (when model ["--model" model])
-    (when reasoning-effort ["--config"
-                            (str "model_reasoning_effort=" reasoning-effort)])
+    (when effort
+      ["--config"
+       (str "model_reasoning_effort=" (get effort-names effort effort))])
     (when (and (not resumes) (not (str/blank? identity-prompt)))
       ["--config"
        (str "developer_instructions=" (json/write-str identity-prompt))])

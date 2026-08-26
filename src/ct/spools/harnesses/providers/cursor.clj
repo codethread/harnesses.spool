@@ -7,8 +7,6 @@
             [millstrand.api.lifecycle.alpha :as lifecycle]
             [millstrand.api.spool.alpha :refer [attr-get fail! require-valid!]]))
 
-(def ^:private thinking-levels #{"low" "medium" "high"})
-
 (s/def ::exit-code int?)
 (s/def ::stdout (s/nilable string?))
 (s/def ::stderr (s/nilable string?))
@@ -36,10 +34,6 @@
                    {:modes #{:headless :interactive}
                     :prepare 'ct.spools.harnesses.providers.cursor/prepare
                     :finish 'ct.spools.harnesses.providers.cursor/finish
-                    :thinking {:attribute :harness.cursor/thinking
-                               :levels {:low "low"
-                                        :medium "medium"
-                                        :high "high"}}
                     :attributes attributes}
                    "harness produced an invalid Cursor definition")))
 
@@ -100,8 +94,8 @@
   (require-valid! ::harness/runtime runtime "cursor-harness open received an invalid runtime")
   (harness/register-harness!
    runtime :cursor
-   (harness runtime {:harness.cursor/model "composer-2.5[fast=false]"
-                     :harness.cursor/extra-argv ["--yolo" "--trust"]}))
+   (harness runtime {:harness/model "composer-2.5[fast=false]"
+                     :harness/extra-argv ["--yolo" "--trust"]}))
   {:opened :cursor})
 
 (defn close-cursor-harness!
@@ -119,34 +113,31 @@
     {:mode (attribute run :harness/mode)
      :resumes resumes
      :session-id (attribute run :harness/session-id)
-     :model (attribute run :harness.cursor/model)
-     :thinking (attribute run :harness.cursor/thinking)
+     :model (attribute run :harness/model)
+     :effort (attribute run :harness/effort)
      :prompt (if resumes
                prompt
                (str/join "\n\n"
                          (remove str/blank?
                                  [(attribute run :identity/prompt) prompt])))
-     :extra (or (attribute run :harness.cursor/extra-argv) [])}))
+     :extra (or (attribute run :harness/extra-argv) [])}))
 
 (defn- validate-prepare-options!
-  [{:keys [mode session-id thinking extra]} run]
+  [{:keys [mode session-id extra]} run]
   (when-not (#{"headless" "interactive"} mode)
     (fail! "Cursor run mode is unsupported" {:mode mode}))
   (when (str/blank? session-id)
     (fail! "Cursor run requires a session id" {:run (:id run)}))
-  (when (and thinking (not (thinking-levels thinking)))
-    (fail! "Cursor thinking level is unsupported"
-           {:thinking thinking :allowed (sort thinking-levels)}))
   (when-not (and (vector? extra)
                  (every? #(and (string? %) (not (str/blank? %))) extra))
-    (fail! "harness.cursor/extra-argv must be a vector of non-blank strings"
+    (fail! "harness/extra-argv must be a vector of non-blank strings"
            {:extra-argv extra})))
 
-(defn- option-argv [{:keys [model thinking extra]}]
+(defn- option-argv [{:keys [model effort extra]}]
   (vec
    (concat
     (when model ["--model" model])
-    (when thinking ["--thinking" thinking])
+    (when effort ["--thinking" effort])
     extra)))
 
 (defn- cursor-command [{:keys [mode resumes session-id prompt] :as options}]

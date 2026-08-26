@@ -7,8 +7,6 @@
             [millstrand.api.lifecycle.alpha :as lifecycle]
             [millstrand.api.spool.alpha :refer [attr-get fail! require-valid!]]))
 
-(def ^:private thinking-levels #{"off" "minimal" "low" "medium" "high" "xhigh" "max"})
-
 (s/def ::exit-code int?)
 (s/def ::stdout (s/nilable string?))
 (s/def ::stderr (s/nilable string?))
@@ -35,10 +33,6 @@
                    {:modes #{:headless :interactive}
                     :prepare 'ct.spools.harnesses.providers.pi/prepare
                     :finish 'ct.spools.harnesses.providers.pi/finish
-                    :thinking {:attribute :harness.pi/thinking
-                               :levels {:low "low"
-                                        :medium "medium"
-                                        :high "high"}}
                     :attributes attributes}
                    "harness produced an invalid Pi definition")))
 
@@ -58,11 +52,11 @@
   (let [options {:mode (attribute run :harness/mode)
                  :resumes (attribute run :harness/resumes)
                  :session-id (attribute run :harness/session-id)
-                 :model (attribute run :harness.pi/model)
-                 :thinking (attribute run :harness.pi/thinking)
+                 :model (attribute run :harness/model)
+                 :effort (attribute run :harness/effort)
                  :identity-prompt (attribute run :identity/prompt)
                  :prompt (attribute run :harness/prompt)
-                 :extra (or (attribute run :harness.pi/extra-argv) [])}
+                 :extra (or (attribute run :harness/extra-argv) [])}
         launch-spec {:argv (pi-command options)
                      :stdin (when (= "headless" (:mode options))
                               (str (:prompt options) "\n"))}]
@@ -105,7 +99,7 @@
   [{:keys [runtime]}]
   (require-valid! ::harness/runtime runtime "pi-harness open received an invalid runtime")
   (harness/register-harness! runtime :pi
-                             (harness runtime {:harness.pi/extra-argv []}))
+                             (harness runtime {:harness/extra-argv []}))
   {:opened :pi})
 
 (defn close-pi-harness!
@@ -118,22 +112,18 @@
   (attr-get run k))
 
 (defn- validate-prepare-options!
-  [{:keys [mode session-id thinking extra]} run]
+  [{:keys [mode session-id extra]} run]
   (when-not (#{"headless" "interactive"} mode)
     (fail! "Pi run mode is unsupported" {:mode mode}))
   (when (str/blank? session-id)
     (fail! "Pi run requires a session id" {:run (:id run)}))
-  (when (and thinking (not (thinking-levels thinking)))
-    (fail! "Pi thinking level is unsupported"
-           {:thinking thinking
-            :allowed (sort thinking-levels)}))
   (when-not (and (vector? extra)
                  (every? #(and (string? %) (not (str/blank? %))) extra))
-    (fail! "harness.pi/extra-argv must be a vector of non-blank strings"
+    (fail! "harness/extra-argv must be a vector of non-blank strings"
            {:extra-argv extra})))
 
 (defn- pi-command
-  [{:keys [mode resumes session-id model thinking identity-prompt prompt extra]}]
+  [{:keys [mode resumes session-id model effort identity-prompt prompt extra]}]
   (let [interactive? (= "interactive" mode)]
     (vec
      (concat
@@ -143,7 +133,7 @@
       (when (and (not resumes) (not (str/blank? identity-prompt)))
         ["--append-system-prompt" identity-prompt])
       (when model ["--model" model])
-      (when thinking ["--thinking" thinking])
+      (when effort ["--thinking" effort])
       extra
       (when (and interactive? (not (str/blank? prompt))) [prompt])))))
 

@@ -7,8 +7,6 @@
             [millstrand.api.lifecycle.alpha :as lifecycle]
             [millstrand.api.spool.alpha :refer [attr-get fail! require-valid!]]))
 
-(def ^:private efforts #{"low" "medium" "high" "xhigh" "max"})
-
 (s/def ::exit-code int?)
 (s/def ::stdout (s/nilable string?))
 (s/def ::stderr (s/nilable string?))
@@ -36,10 +34,6 @@
                    {:modes #{:headless :interactive}
                     :prepare 'ct.spools.harnesses.providers.claude/prepare
                     :finish 'ct.spools.harnesses.providers.claude/finish
-                    :thinking {:attribute :harness.claude/effort
-                               :levels {:low "low"
-                                        :medium "medium"
-                                        :high "high"}}
                     :attributes attributes}
                    "harness produced an invalid Claude definition")))
 
@@ -102,7 +96,7 @@
   (harness/register-harness!
    runtime :claude
    (harness runtime
-            {:harness.claude/extra-argv ["--dangerously-skip-permissions"]}))
+            {:harness/extra-argv ["--dangerously-skip-permissions"]}))
   {:opened :claude})
 
 (defn close-claude-harness!
@@ -118,21 +112,19 @@
   {:mode (attribute run :harness/mode)
    :resumes (attribute run :harness/resumes)
    :session-id (attribute run :harness/session-id)
-   :model (attribute run :harness.claude/model)
-   :effort (attribute run :harness.claude/effort)
+   :model (attribute run :harness/model)
+   :effort (attribute run :harness/effort)
    :identity-prompt (attribute run :identity/prompt)
    :prompt (attribute run :harness/prompt)
-   :extra (or (attribute run :harness.claude/extra-argv) [])})
+   :extra (or (attribute run :harness/extra-argv) [])})
 
-(defn- validate-prepare-options! [{:keys [mode session-id effort extra]} run]
+(defn- validate-prepare-options! [{:keys [mode session-id extra]} run]
   (when-not (#{"headless" "interactive"} mode)
     (fail! "Claude run mode is unsupported" {:mode mode}))
   (when (str/blank? session-id)
     (fail! "Claude run requires a session id" {:run (:id run)}))
-  (when (and effort (not (efforts effort)))
-    (fail! "Claude effort is unsupported" {:effort effort :allowed (sort efforts)}))
   (when-not (and (vector? extra) (every? #(and (string? %) (not (str/blank? %))) extra))
-    (fail! "harness.claude/extra-argv must be a vector of non-blank strings"
+    (fail! "harness/extra-argv must be a vector of non-blank strings"
            {:extra-argv extra})))
 
 (defn- claude-command

@@ -105,26 +105,46 @@
                         :harness-execution-runtime
                         :harness-process-custody]]
           (is (= :applied (get-in lifecycles [effect :status]))))
-        (testing "aliases expose documentation and portable thinking"
+        (testing "run flags override effort on new strands"
+          (is (= ["adaptive" "maximum"]
+                 (test-alpha/repl!
+                  ctx
+                  '(let [rt (millstrand.api.current.alpha/runtime)]
+                     (mapv
+                      (fn [flag effort]
+                        (let [created (millstrand.api.weaver.alpha/op!
+                                       rt 'harness
+                                       ["run" "pi" "--interactive"
+                                        "--cwd" "/tmp" flag effort])]
+                          (millstrand.api.spool.alpha/attr-get
+                           (millstrand.api.weaver.alpha/show rt (:id created))
+                           :harness/effort)))
+                      ["--effort" "--thinking"]
+                      ["adaptive" "maximum"]))))))
+        (testing "aliases expose documentation, model, and open effort"
           (is (= {:registration
                   {:alias "reviewer"
-                   :doc "Review with high thinking."
+                   :doc "Review with high effort."
                    :parent "terra"
-                   :attributes {:harness.pi/thinking "max"}}
+                   :model "reviewer-model"
+                   :effort :max
+                   :attributes {}}
                   :listing
                   {:name "reviewer"
                    :kind "alias"
-                   :doc "Review with high thinking."
+                   :doc "Review with high effort."
                    :alias-of "terra"
-                   :attributes {:harness.pi/thinking "max"}}
+                   :model "reviewer-model"
+                   :effort :max
+                   :attributes {}}
                   :portable
-                  {:harness.pi/extra-argv []
-                   :harness.pi/model "terra-model"
-                   :harness.pi/thinking "high"}
+                  {:harness/extra-argv []
+                   :harness/model "terra-model"
+                   :harness/effort "high"}
                   :generated
-                  {:harness.pi/extra-argv []
-                   :harness.pi/model "terra-model"
-                   :harness.pi/thinking "max"}}
+                  {:harness/extra-argv []
+                   :harness/model "reviewer-model"
+                   :harness/effort "max"}}
                  (test-alpha/repl!
                   ctx
                   '(do
@@ -135,14 +155,17 @@
                               rt :terra
                               {:doc "Use Terra."
                                :parent :pi
-                               :thinking :high
-                               :attributes {:harness.pi/model "terra-model"}})
+                               :model "terra-model"
+                               :effort :high
+                               :attributes {}})
                            registration
                            (harnesses/register-alias!
                             rt :reviewer
-                            {:doc "Review with high thinking."
+                            {:doc "Review with high effort."
                              :parent :terra
-                             :attributes {:harness.pi/thinking "max"}})]
+                             :model "reviewer-model"
+                             :effort :max
+                             :attributes {}})]
                        {:registration registration
                         :listing (some #(when (= "reviewer" (:name %)) %)
                                        (harnesses/harnesses rt))
