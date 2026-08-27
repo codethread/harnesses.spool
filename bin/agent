@@ -9,6 +9,7 @@ strand_call() {
   fi
 }
 
+
 print_help() {
   cat <<'EOF'
 Launch a tracked interactive coding-agent session.
@@ -19,10 +20,10 @@ Usage:
   mill bin run agent resume [run-id]
 
 The agent bin creates or resumes an interactive agent run. Pass `--fzf` in
-place of an agent to pick from registered provider harnesses and aliases. Without a run
-ID, `agent resume` presents completed interactive runs in an fzf picker. It
-starts the selected provider in this terminal and records its lifecycle in
-Millstrand.
+place of an agent to pick from registered provider harnesses and aliases.
+Without a run ID, `agent resume` presents completed interactive runs in an fzf
+picker. It starts the selected provider in this terminal and records its
+lifecycle in Millstrand.
 
 Arguments:
   <agent>                     A registered provider harness or alias.

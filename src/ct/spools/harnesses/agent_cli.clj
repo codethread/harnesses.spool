@@ -6,7 +6,9 @@
             [ct.spools.harnesses :as harness]
             [ct.spools.harnesses.execution :as execution]
             [ct.spools.harnesses.internal.cli :as cli]
+            [millhouse.spools.identity :as identity]
             [millstrand.api.format.alpha :as fmt]
+            [millstrand.api.graph.alpha :as graph]
             [millstrand.api.millstrand.alpha :as millstrand]
             [millstrand.api.spool.alpha :refer [attr-get fail! require-valid!]]
             [millstrand.api.weaver.alpha :as weaver]))
@@ -14,6 +16,7 @@
 (declare ^:private op-run
          ^:private await!
          ^:private agent-list
+         ^:private identity-alias
          ^:private op-retry
          ^:private op-resume
          ^:private resumable-runs
@@ -111,7 +114,12 @@
      record identifies a concrete provider harness or an alias, its selected
      resolution path, effective provider, model and thinking level, and its
      description or supported modes. Use `strand agent list --full` for the
-     complete registry, including unavailable candidates and their reasons.
+     complete visible registry, including unavailable candidates and their
+     reasons.
+
+     Identity-bearing commands accept `--by-identity`. On `list`, it applies the
+     caller alias's `:allow` or `:deny` visibility policy. On `run` and `resume`,
+     it records the caller as the parent of the spawned session identity.
 
      Workspace startup code registers aliases. An alias can layer a model,
      effort, and provider attributes over a concrete provider harness, or try
@@ -161,6 +169,8 @@
    :prime agent-prime}
   [{:op/keys [runtime args cwd] :as ctx}]
   (require-valid! ::op-context ctx "agent op received an invalid operation context")
+  (when-let [friendly-id (:by-identity args)]
+    (identity/current runtime friendly-id))
   (require-valid!
    ::op-result
    (case (:subcommand args)
@@ -177,9 +187,15 @@
      ["_finished"] (summary (execution/finish-interactive! runtime
                                                            (:run-id args)
                                                            (:exit-code args)))
-     ["list"] (if (:full args)
-                (harness/harnesses runtime)
-                (agent-list runtime))
+     ["list"] (let [requesting-alias
+                    (when-let [friendly-id (:by-identity args)]
+                      (identity-alias runtime friendly-id))
+                    registry (if requesting-alias
+                               (harness/harnesses runtime requesting-alias)
+                               (harness/harnesses runtime))]
+                (if (:full args)
+                  registry
+                  (agent-list runtime registry)))
      ["config" "list"] {:flags (harness/flags runtime)}
      ["config" "set"] {:flag (:flag args)
                        :value (harness/set-flag! runtime (:flag args)
@@ -236,12 +252,23 @@
       (= "harness" (:kind entry)) (assoc :modes (:modes entry)))))
 
 (defn- agent-list
-  [rt]
-  (let [registry (harness/harnesses rt)
-        entries (into {} (map (juxt :name identity)) registry)]
+  [rt registry]
+  (let [entries (into {} (map (juxt :name identity)) (harness/harnesses rt))]
     (->> registry
          (filter :available)
          (mapv #(concise-agent-entry rt entries %)))))
+
+(defn- identity-alias [rt friendly-id]
+  (let [identity (identity/current rt friendly-id)
+        run-ids (mapv :to_strand_id
+                      (graph/outgoing-edges rt [(:id identity)] "performed"))
+        latest-run (->> run-ids
+                        (map #(weaver/show rt %))
+                        (sort-by (juxt :updated_at :id) #(compare %2 %1))
+                        first)]
+    (or (some-> latest-run (attr-get :harness/alias))
+        (fail! "Identity has no associated harness run"
+               {:identity friendly-id}))))
 
 (defn- full-run [rt id]
   (or (weaver/show rt id) (fail! "Agent run not found" {:id id})))
@@ -287,7 +314,8 @@
   (assoc (summary run) :launcher (execution/prepare-interactive! rt run)))
 
 (defn- op-run
-  [rt {:keys [agent interactive prompt append-system-prompt cwd attributes title]
+  [rt {:keys [agent interactive prompt append-system-prompt cwd attributes title
+              by-identity]
        :as args}
    op-cwd]
   (let [effort (if (contains? args :effort) (:effort args) (:thinking args))
@@ -302,7 +330,8 @@
                (some? prompt) (assoc :prompt prompt)
                (some? append-system-prompt)
                (assoc :append-system-prompt append-system-prompt)
-               (some? title) (assoc :title title)))]
+               (some? title) (assoc :title title)
+               (some? by-identity) (assoc :by-identity by-identity)))]
     (if interactive
       (interactive-plan rt run)
       (do
@@ -344,7 +373,9 @@
                (contains? args :cwd) (assoc :cwd (:cwd args))
                (contains? args :attributes)
                (assoc :attributes (overlay-map (:attributes args)))
-               (contains? args :title) (assoc :title (:title args))))]
+               (contains? args :title) (assoc :title (:title args))
+               (contains? args :by-identity)
+               (assoc :by-identity (:by-identity args))))]
     (if (:interactive args)
       (interactive-plan rt run)
       (do

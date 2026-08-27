@@ -17,7 +17,7 @@
 (declare ^:private availability* condition-result json-value? merge-overlays
          new-registry registry name-string normalize-alias-candidate
          normalize-overlay reference-string mode-keyword run-title require-run
-         require-phase)
+         require-phase registry-list visibility-policy visible-registration?)
 
 (defn- overlay-key? [k]
   (let [attribute (if (keyword? k)
@@ -74,12 +74,17 @@
 
               :else false))))
 (s/def ::when ::condition)
+(s/def ::visibility-names
+  (s/and set? #(every? (partial s/valid? ::name-ref) %)))
+(s/def ::allow ::visibility-names)
+(s/def ::deny ::visibility-names)
 (s/def ::alias-candidate
   (s/and (s/keys :req-un [::doc ::parent ::attributes]
-                 :opt-un [::when ::append-system-prompt])
+                 :opt-un [::when ::append-system-prompt ::allow ::deny])
          #(every? #{:doc :parent :model :effort :append-system-prompt
-                    :attributes :when}
+                    :attributes :when :allow :deny}
                   (keys %))
+         #(not (and (contains? % :allow) (contains? % :deny)))
          #(s/valid? ::name-ref (:parent %))
          #(or (not (contains? % :model)) (s/valid? ::model (:model %)))
          #(or (not (contains? % :effort)) (s/valid? ::effort (:effort %)))
@@ -141,13 +146,14 @@
 (s/def ::cwd (s/and string? (complement str/blank?)))
 (s/def ::session-id (s/and string? (complement str/blank?)))
 (s/def ::resumes ::id)
+(s/def ::by-identity ::id)
 (s/def ::create-request
   (s/and
    (s/keys :req-un [::harness]
            :opt-un [::mode ::prompt ::cwd ::attributes ::title ::resumes
-                    ::session-id ::append-system-prompt])
+                    ::session-id ::append-system-prompt ::by-identity])
    #(every? #{:harness :mode :prompt :cwd :attributes :title :resumes
-              :session-id :append-system-prompt}
+              :session-id :append-system-prompt :by-identity}
             (keys %))
    #(or (not (contains? % :attributes))
         (s/valid? ::overlay-attributes (:attributes %)))))
@@ -175,8 +181,8 @@
    #(every? #{:run-id :session-id :identity} (keys %))))
 (s/def ::resume-request
   (s/and
-   (s/keys :opt-un [::prompt ::cwd ::attributes ::mode ::title])
-   #(every? #{:prompt :cwd :attributes :mode :title} (keys %))
+   (s/keys :opt-un [::prompt ::cwd ::attributes ::mode ::title ::by-identity])
+   #(every? #{:prompt :cwd :attributes :mode :title :by-identity} (keys %))
    #(or (not (contains? % :attributes))
         (s/valid? ::overlay-attributes (:attributes %)))))
 (defn set-flag!
@@ -347,27 +353,26 @@
 (s/fdef concrete-harness :args (s/cat :runtime ::runtime :harness-name ::name-ref) :ret ::harness-definition)
 
 (defn harnesses
-  "Return every registration with its current runtime availability."
-  [rt]
-  (require-valid! ::runtime rt "harnesses requires a Weaver runtime")
-  (let [{:keys [harnesses aliases]} (registry rt)]
-    (require-valid!
-     ::registry-list
-     (vec
-      (concat
-       (for [[name definition] (sort-by key @harnesses)]
-         (merge {:name name
-                 :kind "harness"
-                 :modes (mapv clojure.core/name (:modes definition))}
-                (availability rt name)))
-       (for [[name candidates] (sort-by key @aliases)]
-         (merge {:name name
-                 :kind "alias"
-                 :candidates candidates}
-                (availability rt name)))))
-     "harnesses produced an invalid registry listing")))
+  "Return registrations visible to an optional requesting alias.
 
-(s/fdef harnesses :args (s/cat :runtime ::runtime) :ret ::registry-list)
+  With no requesting alias, return every registration. A requesting alias may
+  define either `:allow` or `:deny`; each named registration includes all
+  aliases that currently resolve through it."
+  ([rt]
+   (require-valid! ::runtime rt "harnesses requires a Weaver runtime")
+   (registry-list rt))
+  ([rt requesting-alias]
+   (require-valid! ::runtime rt "harnesses requires a Weaver runtime")
+   (require-valid! ::name-ref requesting-alias
+                   "harnesses requires a valid requesting alias")
+   (let [registrations (registry-list rt)]
+     (if-let [policy (visibility-policy rt requesting-alias)]
+       (filterv #(visible-registration? rt policy (:name %)) registrations)
+       registrations))))
+
+(s/fdef harnesses
+  :args (s/cat :runtime ::runtime :requesting-alias (s/? ::name-ref))
+  :ret ::registry-list)
 
 (defn create!
   "Create and return one pending harness-run strand.
@@ -375,7 +380,7 @@
   Resolves the requested alias, merges provider overrides, assigns a session ID,
   and records frozen reconstruction data. Headless runs require a prompt."
   [rt {:keys [harness mode prompt cwd attributes title resumes session-id
-              append-system-prompt]
+              append-system-prompt by-identity]
        :as request}]
   (require-valid! ::runtime rt "create! requires a Weaver runtime")
   (require-valid! ::create-request request "create! requires a valid run request")
@@ -423,6 +428,13 @@
                               predecessor
                               (assoc :expected-identity
                                      (attr-get predecessor :identity/id))))]
+      (when by-identity
+        (let [caller (identity/current rt by-identity)]
+          (when-not (= (:id caller) (:strand-id identity-binding))
+            (weaver/update!
+             rt (:id caller)
+             {:edges [{:type "parent-of"
+                       :to (:strand-id identity-binding)}]}))))
       (require-valid!
        ::strand
        (weaver/update!
@@ -591,7 +603,7 @@
   "Create a new run that resumes one successful provider session.
 
   The new strand points to its predecessor and reuses its provider session ID."
-  [rt id {:keys [prompt cwd attributes mode title] :as request}]
+  [rt id {:keys [prompt cwd attributes mode title by-identity] :as request}]
   (require-valid! ::runtime rt "resume! requires a Weaver runtime")
   (require-valid! ::id id "resume! requires a predecessor run id")
   (require-valid! ::resume-request request "resume! requires valid continuation options")
@@ -611,7 +623,8 @@
                       :resumes id
                       :session-id session-id}
                (some? prompt) (assoc :prompt prompt)
-               (some? title) (assoc :title title)))))
+               (some? title) (assoc :title title)
+               (some? by-identity) (assoc :by-identity by-identity)))))
 
 (s/fdef resume! :args (s/cat :runtime ::runtime :id ::id :request ::resume-request) :ret ::strand)
 
@@ -663,10 +676,65 @@
       (fail! (str context " must be a non-blank name") {:value v}))))
 
 (defn- normalize-alias-candidate
-  [{:keys [parent attributes] :as candidate}]
-  (assoc candidate
-         :parent (name-string parent "Alias parent")
-         :attributes (normalize-overlay attributes)))
+  [{:keys [parent attributes allow deny] :as candidate}]
+  (cond-> (assoc candidate
+                 :parent (name-string parent "Alias parent")
+                 :attributes (normalize-overlay attributes))
+    allow (assoc :allow (into #{} (map #(name-string % "Allowed name")) allow))
+    deny (assoc :deny (into #{} (map #(name-string % "Denied name")) deny))))
+
+(defn- registry-list [rt]
+  (let [{:keys [harnesses aliases]} (registry rt)]
+    (require-valid!
+     ::registry-list
+     (vec
+      (concat
+       (for [[name definition] (sort-by key @harnesses)]
+         (merge {:name name
+                 :kind "harness"
+                 :modes (mapv clojure.core/name (:modes definition))}
+                (availability rt name)))
+       (for [[name candidates] (sort-by key @aliases)]
+         (merge {:name name
+                 :kind "alias"
+                 :candidates candidates}
+                (availability rt name)))))
+     "harnesses produced an invalid registry listing")))
+
+(defn- visibility-policy [rt requesting-alias]
+  (let [requesting-alias (name-string requesting-alias "Requesting alias")
+        candidates (get @(-> rt registry :aliases) requesting-alias)]
+    (when candidates
+      (let [result (availability rt requesting-alias)
+            index (:selected-candidate result)]
+        (when-not index
+          (fail! "Requesting alias is unavailable"
+                 {:alias requesting-alias
+                  :reasons (:unavailable-reasons result)}))
+        (let [candidate (nth candidates index)]
+          (cond
+            (contains? candidate :allow)
+            {:mode :allow :names (:allow candidate)}
+
+            (contains? candidate :deny)
+            {:mode :deny :names (:deny candidate)}
+
+            :else nil))))))
+
+(defn- registration-descends-from? [rt registration-name roots seen]
+  (condp contains? registration-name
+    roots true
+    seen false
+    (when-let [parent (:selected-parent (availability rt registration-name))]
+      (registration-descends-from? rt parent roots
+                                   (conj seen registration-name)))))
+
+(defn- visible-registration? [rt {:keys [mode names]} registration-name]
+  (let [matched? (boolean
+                  (registration-descends-from? rt registration-name names #{}))]
+    (case mode
+      :allow matched?
+      :deny (not matched?))))
 
 (defn- condition-result [rt expression]
   (if (vector? expression)
