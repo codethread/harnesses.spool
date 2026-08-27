@@ -9,7 +9,7 @@
      :deps/root "."}
     millhouse.spools/identity
     {:git/url "https://github.com/codethread/millhouse.spool.git"
-     :git/sha "f1cdda3b46706b186f547251d285791be650d232"
+     :git/sha "7cfcb235848c0db6231ba2282430913580d66f2e"
      :deps/root "spools/identity"}}
    :jvm-opts ["--enable-native-access=ALL-UNNAMED"]
    :main-opts ["-m" "ct.spools.harnesses.test-runner"]}
