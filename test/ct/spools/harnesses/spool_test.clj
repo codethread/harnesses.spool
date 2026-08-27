@@ -2,6 +2,7 @@
   "Authoring and activation tests for the consolidated Harnesses spool."
   (:require [clojure.test :refer [deftest is testing]]
             [ct.spools.harnesses :as harnesses]
+            [ct.spools.harnesses.agent-bin :as agent-bin]
             [ct.spools.harnesses.agent-cli :as agent-cli]
             [ct.spools.harnesses.execution :as execution]
             [ct.spools.harnesses.internal.process-custody :as custody]
@@ -23,9 +24,9 @@
       (is (= :resource (:kind declaration))))
     (is (= :reconcile (:kind process-custody/harness-process-custody))))
   (testing "core registry forms carry reusable authoring descriptors"
-    (doseq [declaration-var [#'agent-cli/harness
+    (doseq [declaration-var [#'agent-cli/agent
                              #'execution/on-event
-                             #'agent-cli/agent]]
+                             #'agent-bin/agent]]
       (is (map? (:millstrand.api.authoring.alpha/declaration
                  (meta declaration-var)))))))
 
@@ -86,14 +87,14 @@
                          '[millstrand.api.weaver.alpha :as weaver])
                 (let [rt (current/runtime)]
                   {:harnesses (mapv :name (harnesses/harnesses rt))
-                   :operation (:name (weaver/resolve-op rt 'harness))
+                   :operation (:name (weaver/resolve-op rt 'agent))
                    :handler (some #(when (= :on-event (:key %)) %)
                                   (events/handlers rt))
                    :bins (set (map :name (:bins (weaver/op! rt 'bins ["list"]))))
                    :lifecycles (get-in (runtime/status rt)
                                        [:lifecycle/outcomes :harnesses])})))]
         (is (= ["claude" "codex" "cursor" "pi"] harnesses))
-        (is (= "harness" operation))
+        (is (= "agent" operation))
         (is (contains? bins "agent"))
         (is (= #{:strand/added :strand/updated :batch/applied}
                (:types handler)))
@@ -114,7 +115,7 @@
                      (mapv
                       (fn [flag effort]
                         (let [created (millstrand.api.weaver.alpha/op!
-                                       rt 'harness
+                                       rt 'agent
                                        ["run" "pi" "--interactive"
                                         "--cwd" "/tmp" flag effort
                                         "--append-system-prompt"
@@ -229,8 +230,8 @@
                          _ (harnesses/set-flag! rt :seat/fable true)
                          preferred (resolve)
                          _ (millstrand.api.weaver.alpha/op!
-                            rt 'harness ["config" "set"
-                                         "harness/claude" "false"])
+                            rt 'agent ["config" "set"
+                                       "harness/claude" "false"])
                          fallback (resolve)
                          _ (harnesses/set-flag! rt :harness/pi false)
                          unavailable (:available
@@ -239,13 +240,13 @@
                                                %)
                                             (harnesses/harnesses rt)))
                          _ (millstrand.api.weaver.alpha/op!
-                            rt 'harness ["config" "set"
-                                         "harness/pi" "true"])
+                            rt 'agent ["config" "set"
+                                       "harness/pi" "true"])
                          re-enabled (:harness
                                      (harnesses/resolve-harness
                                       rt :fallback-oracle))
                          flag (get-in (millstrand.api.weaver.alpha/op!
-                                       rt 'harness ["config" "list"])
+                                       rt 'agent ["config" "list"])
                                       [:flags "harness/claude"])]
                      {:initial initial
                       :preferred preferred

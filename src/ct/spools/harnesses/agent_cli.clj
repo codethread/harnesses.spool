@@ -1,16 +1,19 @@
 (ns ct.spools.harnesses.agent-cli
-  "CLI operations and interactive bin declaration for tracked harness runs."
+  "CLI operation for tracked coding-agent runs."
   (:refer-clojure :exclude [agent])
   (:require [clojure.spec.alpha :as s]
+            [clojure.string :as str]
             [ct.spools.harnesses :as harness]
             [ct.spools.harnesses.execution :as execution]
             [ct.spools.harnesses.internal.cli :as cli]
+            [millstrand.api.format.alpha :as fmt]
             [millstrand.api.millstrand.alpha :as millstrand]
             [millstrand.api.spool.alpha :refer [attr-get fail! require-valid!]]
             [millstrand.api.weaver.alpha :as weaver]))
 
 (declare ^:private op-run
          ^:private await!
+         ^:private agent-list
          ^:private op-retry
          ^:private op-resume
          ^:private resumable-runs
@@ -42,22 +45,122 @@
 (s/def ::await-result
   (s/keys :req-un [::runs ::timed-out]))
 (s/def ::config-result map?)
+(s/def ::resolution string?)
+(s/def ::provider string?)
+(s/def ::model string?)
+(s/def ::thinking string?)
+(s/def ::description string?)
+(s/def ::modes (s/coll-of ::harness/mode-name :kind vector? :min-count 1))
+(s/def ::agent-list-entry
+  (s/keys :req-un [::harness/name ::harness/kind ::resolution ::provider]
+          :opt-un [::model ::thinking ::description ::modes]))
+(s/def ::agent-list (s/coll-of ::agent-list-entry :kind vector?))
 (s/def ::op-result
   (s/or :run ::run-summary
         :runs ::runs
         :await ::await-result
         :registry ::harness/registry-list
+        :agent-list ::agent-list
         :config ::config-result))
 
-(millstrand/defop harness
-  "Dispatch parsed `strand harness` subcommands.
+(def ^:private agent-prime
+  "Terse runbook projected by `strand prime agent`."
+  (fmt/prose
+   "
+     `agent` runs tracked coding agents. The normal path is headless: select an
+     available provider harness or alias, run it with a prompt, then await its
+     run id.
+
+     List currently usable agents with their resolution, model, thinking level,
+     and guidance:
+
+     ```text
+     strand agent list
+     ```
+
+     Run an agent and collect its work:
+
+     ```sh
+     strand agent run <agent> --prompt <prompt>
+     strand agent await <run-id>
+     ```
+
+     A failed run stays active. Correct its agent selection, cwd, provider
+     attributes, or runtime flags and retry it in place. Resume a successful run
+     when the same provider session should continue with a new prompt.
+     "
+   {}))
+
+(def ^:private agent-about
+  "Detailed orientation projected by `strand about agent`."
+  (fmt/prose
+   "
+     `agent` manages provider-neutral, tracked coding-agent runs. It resolves
+     concrete provider harnesses and workspace-defined aliases into launch
+     settings, records each run as a strand, and exposes one lifecycle across
+     providers. Run `strand help agent <verb>` for a verb's exact arguments and
+     flags.
+
+     Find agents available to run with:
+
+     ```text
+     strand agent list
+     ```
+
+     The default list contains only currently available entries. Each concise
+     record identifies a concrete provider harness or an alias, its selected
+     resolution path, effective provider, model and thinking level, and its
+     description or supported modes. Use `strand agent list --full` for the
+     complete registry, including unavailable candidates and their reasons.
+
+     Workspace startup code registers aliases. An alias can layer a model,
+     effort, and provider attributes over a concrete provider harness, or try
+     ordered candidates selected by runtime flags. The agent passed to `run` may
+     be either an available harness or an available alias.
+
+     The configured effort usually works. Override it with `--effort`, or its
+     `--thinking` synonym, when the user asks or when judgment warrants more
+     reasoning. Values are model-specific, though `high` and `xhigh` are commonly
+     available. `--attributes` applies a provider overlay for that run.
+
+     Runtime flags are process-local and affect agent availability immediately:
+
+     ```text
+     strand agent config list
+     strand agent config set harness/claude false
+     strand agent config set seat/example true
+     strand agent config unset seat/example
+     ```
+
+     Every concrete provider harness has a `harness/<name>` flag and is enabled
+     unless that flag is explicitly false. Alias conditions may refer to
+     additional workspace-defined flags; an unset condition flag is false.
+     `unset` removes an override rather than assigning false. These settings are
+     not persistent configuration, so durable defaults and aliases belong in
+     workspace startup code. List agents again after changing flags to see the
+     resulting alias selection and availability.
+
+     Runs are headless by default, require a prompt, and execute asynchronously.
+     `retry` reuses a failed tracked run after correction; `resume` creates a
+     tracked continuation of a completed provider session.
+
+     Set `--interactive` on `run` or `resume` only when the user asks to work in
+     the provider session. It launches the provider in the caller's terminal;
+     `resumable` lists completed interactive runs available to continue.
+     "
+   {}))
+
+(millstrand/defop agent
+  "Create and manage tracked coding-agent runs.
 
   Run, retry, and resume may schedule asynchronous headless work. `await`
   blocks the CLI thread until each requested run is terminal or its timeout
   expires; every other subcommand returns after its immediate transition."
-  {:arg-spec cli/harness-arg-spec}
+  {:arg-spec cli/agent-arg-spec
+   :about agent-about
+   :prime agent-prime}
   [{:op/keys [runtime args cwd] :as ctx}]
-  (require-valid! ::op-context ctx "harness op received an invalid operation context")
+  (require-valid! ::op-context ctx "agent op received an invalid operation context")
   (require-valid!
    ::op-result
    (case (:subcommand args)
@@ -74,21 +177,74 @@
      ["_finished"] (summary (execution/finish-interactive! runtime
                                                            (:run-id args)
                                                            (:exit-code args)))
-     ["list"] (harness/harnesses runtime)
+     ["list"] (if (:full args)
+                (harness/harnesses runtime)
+                (agent-list runtime))
      ["config" "list"] {:flags (harness/flags runtime)}
      ["config" "set"] {:flag (:flag args)
                        :value (harness/set-flag! runtime (:flag args)
                                                  (:value args))}
      ["config" "unset"] {:flag (:flag args)
                          :removed (harness/unset-flag! runtime (:flag args))})
-   "harness op produced an invalid result"))
+   "agent op produced an invalid result"))
 
-(millstrand/defbin agent
-  "Open a coding agent in the caller's terminal as a tracked interactive run."
-  {:executable [:root "bin/agent"]})
+(defn- resolution-path
+  [entries entry]
+  (loop [current entry
+         path []
+         seen #{}]
+    (let [current-name (:name current)]
+      (when (contains? seen current-name)
+        (fail! "Agent list found a cycle in an available resolution"
+               {:name (:name entry) :path path :cycle current-name}))
+      (if (= "harness" (:kind current))
+        (conj path current-name)
+        (let [parent-name
+              (or (:selected-parent current)
+                  (fail! "Available alias has no selected parent"
+                         {:name current-name}))
+              parent
+              (or (get entries parent-name)
+                  (fail! "Available alias selected an unregistered parent"
+                         {:name current-name :parent parent-name}))]
+          (recur parent
+                 (conj path current-name)
+                 (conj seen current-name)))))))
+
+(defn- selected-candidate
+  [entry]
+  (when (= "alias" (:kind entry))
+    (let [index
+          (or (:selected-candidate entry)
+              (fail! "Available alias has no selected candidate"
+                     {:name (:name entry)}))]
+      (or (get (:candidates entry) index)
+          (fail! "Available alias selected a missing candidate"
+                 {:name (:name entry) :candidate index})))))
+
+(defn- concise-agent-entry
+  [rt entries entry]
+  (let [{:keys [harness generated]} (harness/resolve-harness rt (:name entry))
+        description (:doc (selected-candidate entry))]
+    (cond-> {:name (:name entry)
+             :kind (:kind entry)
+             :resolution (str/join " -> " (resolution-path entries entry))
+             :provider harness}
+      description (assoc :description description)
+      (:harness/model generated) (assoc :model (:harness/model generated))
+      (:harness/effort generated) (assoc :thinking (:harness/effort generated))
+      (= "harness" (:kind entry)) (assoc :modes (:modes entry)))))
+
+(defn- agent-list
+  [rt]
+  (let [registry (harness/harnesses rt)
+        entries (into {} (map (juxt :name identity)) registry)]
+    (->> registry
+         (filter :available)
+         (mapv #(concise-agent-entry rt entries %)))))
 
 (defn- full-run [rt id]
-  (or (weaver/show rt id) (fail! "Harness run not found" {:id id})))
+  (or (weaver/show rt id) (fail! "Agent run not found" {:id id})))
 
 (defn- overlay-map [value]
   (cond
@@ -131,7 +287,7 @@
   (assoc (summary run) :launcher (execution/prepare-interactive! rt run)))
 
 (defn- op-run
-  [rt {:keys [harness interactive prompt append-system-prompt cwd attributes title]
+  [rt {:keys [agent interactive prompt append-system-prompt cwd attributes title]
        :as args}
    op-cwd]
   (let [effort (if (contains? args :effort) (:effort args) (:thinking args))
@@ -139,7 +295,7 @@
                      (some? effort) (assoc :harness/effort effort))
         run (harness/create!
              rt
-             (cond-> {:harness harness
+             (cond-> {:harness agent
                       :mode (if interactive :interactive :headless)
                       :cwd (or cwd op-cwd)
                       :attributes attributes}
@@ -173,7 +329,7 @@
    (harness/retry!
     rt (:run-id args)
     (cond-> {}
-      (contains? args :harness) (assoc :harness (:harness args))
+      (contains? args :agent) (assoc :harness (:agent args))
       (contains? args :cwd) (assoc :cwd (:cwd args))
       (contains? args :attributes)
       (assoc :attributes (overlay-map (:attributes args)))))))

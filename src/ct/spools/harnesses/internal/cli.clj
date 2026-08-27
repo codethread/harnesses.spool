@@ -1,33 +1,34 @@
 (ns ct.spools.harnesses.internal.cli
-  "Static command grammar for the tracked harness operation.")
+  "Static command grammar for the tracked coding-agent operation.")
 
-(def harness-arg-spec
-  "Arg-spec for the provider-neutral `harness` operation."
-  {:op "harness"
-   :doc "Create, await, retry, and resume provider-neutral harness runs."
+(def agent-arg-spec
+  "Arg-spec for the provider-neutral `agent` operation."
+  {:op "agent"
+   :doc "Create, await, retry, and resume tracked coding-agent runs."
    :subcommands
-   {"run" {:doc "Create an asynchronous harness run."
+   {"run" {:doc "Create a tracked agent run."
            :hook-class :mutating
            :deadline-class :standard
            :flags {:interactive {:type :boolean
-                                 :doc "Prepare a host-TTY interactive launcher."}
+                                 :doc "Run the agent interactively in the caller's terminal."}
                    :cwd {:type :string :doc "Execution directory."}
-                   :effort {:type :string :doc "Override the alias effort."}
+                   :effort {:type :string :doc "Override the agent effort."}
                    :thinking {:type :string
-                              :doc "User-facing alias for --effort."}
+                              :doc "Alias for --effort."}
                    :prompt {:type :string :doc "Prompt; required headlessly."}
                    :append-system-prompt
                    {:type :string
                     :doc "Append role or policy text to the system prompt."}
-                   :title {:type :string :doc "Run title."}
+                   :title {:type :string
+                           :doc "Display title; defaults to the first 80 prompt characters or the agent and mode."}
                    :attributes {:type :string
                                 :parse :json
                                 :doc "Provider overlay JSON object."}}
-           :positionals [{:name :harness
+           :positionals [{:name :agent
                           :type :string
                           :required? true
-                          :doc "Concrete harness or alias."}]}
-    "await" {:doc "Wait for runs to reach done or failed."
+                          :doc "Available provider harness or alias."}]}
+    "await" {:doc "Wait for agent runs to reach done or failed."
              :hook-class :read
              :deadline-class :unbounded
              :flags {:timeout-secs {:type :int
@@ -37,10 +38,11 @@
                             :required? true
                             :variadic? true
                             :doc "Run IDs."}]}
-    "retry" {:doc "Retry one failed run in place."
+    "retry" {:doc "Retry one failed agent run in place."
              :hook-class :mutating
              :deadline-class :standard
-             :flags {:harness {:type :string :doc "Replacement alias."}
+             :flags {:agent {:type :string
+                             :doc "Replacement provider harness or alias."}
                      :cwd {:type :string :doc "Replacement cwd."}
                      :attributes {:type :string
                                   :parse :json
@@ -49,10 +51,10 @@
                             :type :string
                             :required? true
                             :doc "Failed run ID."}]}
-    "resumable" {:doc "List completed interactive runs available for resume."
+    "resumable" {:doc "List completed interactive agent runs available for resume."
                  :hook-class :read
                  :deadline-class :standard}
-    "resume" {:doc "Create a new run continuing a completed provider session."
+    "resume" {:doc "Continue a completed session selected by exactly one of run ID, native session ID, or agent identity."
               :hook-class :mutating
               :deadline-class :standard
               :flags {:run-id {:type :string
@@ -62,33 +64,34 @@
                       :identity {:type :string
                                  :doc "Friendly identity's latest completed run."}
                       :interactive {:type :boolean
-                                    :doc "Prepare a host-TTY interactive launcher."}
+                                    :doc "Continue interactively in the caller's terminal."}
                       :cwd {:type :string :doc "Replacement cwd."}
                       :prompt {:type :string
                                :doc "Continuation prompt; required headlessly."}
-                      :title {:type :string :doc "Run title."}
+                      :title {:type :string
+                              :doc "Display title; defaults to the first 80 prompt characters or the agent and mode."}
                       :attributes {:type :string
                                    :parse :json
                                    :doc "Provider overlay merge patch."}}}
-    "self-complete" {:doc "Record best-effort interactive result text."
+    "self-complete" {:doc "Record best-effort result text for an interactive agent run."
                      :hook-class :mutating
                      :deadline-class :standard
                      :positionals [{:name :run-id
                                     :type :string
                                     :required? true
-                                    :doc "Interactive run ID."}
+                                    :doc "Interactive agent run ID."}
                                    {:name :result
                                     :type :string
                                     :required? true
                                     :doc "Final notes."}]}
-    "_started" {:doc "Private wrapper transition: pending to running."
+    "_started" {:doc "Private agent transition: pending to running."
                 :hook-class :mutating
                 :deadline-class :standard
                 :positionals [{:name :run-id
                                :type :string
                                :required? true
-                               :doc "Interactive run ID."}]}
-    "_finished" {:doc "Private wrapper transition: record process exit."
+                               :doc "Interactive agent run ID."}]}
+    "_finished" {:doc "Private agent transition: record process exit."
                  :hook-class :mutating
                  :deadline-class :standard
                  :flags {:exit-code {:type :int
@@ -97,12 +100,14 @@
                  :positionals [{:name :run-id
                                 :type :string
                                 :required? true
-                                :doc "Interactive run ID."}]}
-    "list" {:doc "List registered harnesses, aliases, and availability."
+                                :doc "Interactive agent run ID."}]}
+    "list" {:doc "List available provider harnesses and resolved agent aliases."
             :hook-class :read
-            :deadline-class :standard}
+            :deadline-class :standard
+            :flags {:full {:type :boolean
+                           :doc "Return the complete agent registry, including unavailable entries."}}}
     "config"
-    {:doc "Manage runtime-local harness configuration."
+    {:doc "Manage runtime-local agent availability flags."
      :subcommands
      {"list" {:doc "List runtime-local flags."
               :hook-class :read

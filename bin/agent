@@ -14,24 +14,24 @@ print_help() {
 Launch a tracked interactive coding-agent session.
 
 Usage:
-  mill bin run agent <harness> [options]
+  mill bin run agent <agent> [options]
   mill bin run agent --fzf [options]
   mill bin run agent resume [run-id]
 
-The agent bin creates or resumes an interactive harness run. Pass `--fzf` in
-place of a harness to pick from registered harnesses and aliases. Without a run
+The agent bin creates or resumes an interactive agent run. Pass `--fzf` in
+place of an agent to pick from registered provider harnesses and aliases. Without a run
 ID, `agent resume` presents completed interactive runs in an fzf picker. It
 starts the selected provider in this terminal and records its lifecycle in
 Millstrand.
 
 Arguments:
-  <harness>                   A registered harness or alias.
+  <agent>                     A registered provider harness or alias.
   <run-id>                    A completed interactive run; omit to pick with fzf.
 
 Options:
-  --fzf                       Pick a registered harness or alias with fzf.
+  --fzf                       Pick a registered agent with fzf.
 
-Options forwarded to `strand harness run`:
+Options forwarded to `strand agent run`:
   --cwd <directory>           Execution directory.
   --effort <value>            Override the alias effort.
   --thinking <value>          User-facing alias for --effort.
@@ -40,9 +40,9 @@ Options forwarded to `strand harness run`:
   --attributes <json-object>  Harness configuration overlay.
   -h, --help                  Show this help.
 
-Registered harnesses and aliases:
+Available agents:
 EOF
-  strand_call harness list | jq -r '
+  strand_call agent list --full | jq -r '
     [.[] | select(.available and .kind == "harness")] as $harnesses
     | [.[] | select(.available and .kind == "alias")] as $aliases
     | ($harnesses[] | "  \(.name) — \(.modes | join(", "))")
@@ -82,7 +82,7 @@ done
 
 if [ "${1:-}" = "--fzf" ]; then
   shift
-  selected="$(strand_call harness list | jq -r '
+  selected="$(strand_call agent list --full | jq -r '
     map(select(.available))
     | (map(.name | length) | max) as $name_width
     | .[]
@@ -96,10 +96,10 @@ if [ "${1:-}" = "--fzf" ]; then
            "harness  │  \(.modes | join(", "))"
          end)
       + "\u001b[0m"
-  ' | fzf --ansi --delimiter='\t' --with-nth=2.. --prompt='Harness> ')" || exit $?
+  ' | fzf --ansi --delimiter='\t' --with-nth=2.. --prompt='Agent> ')" || exit $?
   [ -n "$selected" ] || exit 1
-  harness="$(printf '%s\n' "$selected" | cut -f1)"
-  created="$(strand_call harness run "$harness" "$@" --interactive)" || exit $?
+  agent="$(printf '%s\n' "$selected" | cut -f1)"
+  created="$(strand_call agent run "$agent" "$@" --interactive)" || exit $?
 elif [ "${1:-}" = "resume" ]; then
   shift
   if [ "$#" -gt 1 ]; then
@@ -108,7 +108,7 @@ elif [ "${1:-}" = "resume" ]; then
   fi
   predecessor="${1:-}"
   if [ -z "$predecessor" ]; then
-    selected="$(strand_call harness resumable | jq -r '
+    selected="$(strand_call agent resumable | jq -r '
       def clean: tostring | gsub("[\\t\\r\\n]"; " ");
       . as $runs
       | [$runs[] | .resumes] as $resumed
@@ -126,15 +126,15 @@ elif [ "${1:-}" = "resume" ]; then
     [ -n "$selected" ] || exit 1
     predecessor="$(printf '%s\n' "$selected" | cut -f1)"
   fi
-  created="$(strand_call harness resume --run-id "$predecessor" --interactive)" || exit $?
+  created="$(strand_call agent resume --run-id "$predecessor" --interactive)" || exit $?
 else
-  created="$(strand_call harness run "$@" --interactive)" || exit $?
+  created="$(strand_call agent run "$@" --interactive)" || exit $?
 fi
 run_id="$(printf '%s' "$created" | jq -r '.id')"
 launcher="$(printf '%s' "$created" | jq -r '.launcher')"
 
 record_finish() {
-  strand_call harness _finished "$run_id" --exit-code "$1" >/dev/null
+  strand_call agent _finished "$run_id" --exit-code "$1" >/dev/null
 }
 
 interrupted() {
@@ -147,7 +147,7 @@ trap 'interrupted 129' HUP
 trap 'interrupted 130' INT
 trap 'interrupted 143' TERM
 
-strand_call harness _started "$run_id" >/dev/null || exit $?
+strand_call agent _started "$run_id" >/dev/null || exit $?
 "$launcher"
 exit_code=$?
 record_finish "$exit_code" || exit $?

@@ -21,7 +21,7 @@ Activate the complete surface with the bundled selector:
 
 This publishes:
 
-- the `harness` operation;
+- the `agent` operation;
 - the `agent` bin;
 - the headless-run event handler;
 - the core, provider, and execution resources;
@@ -37,6 +37,7 @@ Consumers can import any declaration and select it explicitly:
 ```clojure
 (ns app.harnesses
   (:require [ct.spools.harnesses :as harnesses]
+            [ct.spools.harnesses.agent-bin :as agent-bin]
             [ct.spools.harnesses.agent-cli :as agent-cli]
             [ct.spools.harnesses.execution :as execution]
             [ct.spools.harnesses.process-custody :as process-custody]
@@ -47,9 +48,9 @@ Consumers can import any declaration and select it explicitly:
             [millstrand.api.lifecycle.alpha :as lifecycle]
             [millstrand.api.millstrand.alpha :as millstrand]))
 
-(millstrand/use-op! agent-cli/harness)
+(millstrand/use-op! agent-cli/agent)
 (millstrand/use-handler! execution/on-event)
-(millstrand/use-bin! agent-cli/agent)
+(millstrand/use-bin! agent-bin/agent)
 
 (lifecycle/use-resource!
  harnesses/harness-core-runtime
@@ -130,11 +131,13 @@ replayed when resuming one.
 Runtime flags are intentionally process-local:
 
 ```text
-strand harness config list
-strand harness config set harness/claude false
-strand harness config unset seat/fable
+strand agent config list
+strand agent config set harness/claude false
+strand agent config unset seat/fable
 ```
 
-Use `strand harness list` to inspect all concrete harnesses and aliases with
-their availability, or `mill bin run agent --help` to launch an interactive
+Use `strand agent list` to inspect available provider harnesses and aliases
+with their selected resolution and effective model and thinking level. Pass
+`--full` for the complete registry, including unavailable candidates and their
+reasons. Use `strand agent run <agent> --interactive` to launch an interactive
 tracked session.

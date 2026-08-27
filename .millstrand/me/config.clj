@@ -1,6 +1,7 @@
 (ns me.config
   "Configure the Harnesses spool for this workspace."
   (:require [ct.spools.harnesses :as harnesses]
+            [ct.spools.harnesses.agent-bin :as agent-bin]
             [ct.spools.harnesses.agent-cli :as agent-cli]
             [ct.spools.harnesses.execution :as execution]
             [ct.spools.harnesses.process-custody :as process-custody]
@@ -155,9 +156,9 @@
    :close 'me.config/close-harnesses!
    :after #{:harness-core-runtime}})
 
-(millstrand/use-op! agent-cli/harness)
+(millstrand/use-op! agent-cli/agent)
 (millstrand/use-handler! execution/on-event)
-(millstrand/use-bin! agent-cli/agent)
+(millstrand/use-bin! agent-bin/agent)
 
 (lifecycle/use-resource!
  harnesses/harness-core-runtime
