@@ -4,6 +4,7 @@
             [ct.spools.harnesses :as harnesses]
             [ct.spools.harnesses.agent-cli :as agent-cli]
             [ct.spools.harnesses.execution :as execution]
+            [ct.spools.harnesses.internal.cli :as cli]
             [ct.spools.harnesses.internal.process-custody :as custody]
             [ct.spools.harnesses.process-custody :as process-custody]
             [ct.spools.harnesses.providers.claude :as claude]
@@ -28,6 +29,30 @@
                              #'agent-cli/agent]]
       (is (map? (:millstrand.api.authoring.alpha/declaration
                  (meta declaration-var)))))))
+
+(deftest every-harness-command-accepts-caller-identity
+  (doseq [path [["run"] ["retry"] ["resumable"] ["resume"]
+                ["self-complete"] ["list"]]]
+    (is (contains? (get-in cli/harness-arg-spec
+                           (into [:subcommands]
+                                 (mapcat #(vector % :subcommands) (butlast path))))
+                   (last path)))
+    (is (contains? (get-in cli/harness-arg-spec
+                           (into [:subcommands]
+                                 (concat
+                                  (mapcat #(vector % :subcommands) (butlast path))
+                                  [(last path) :flags])))
+                   :by-identity)))
+  (doseq [path [["await"] ["_started"] ["_finished"] ["config" "list"]
+                ["config" "set"] ["config" "unset"]]]
+    (is (not (contains? (or (get-in cli/harness-arg-spec
+                                    (into [:subcommands]
+                                          (concat
+                                           (mapcat #(vector % :subcommands)
+                                                   (butlast path))
+                                           [(last path) :flags])))
+                            {})
+                        :by-identity)))))
 
 (deftest pending-custody-adoption-is-owner-key-exact
   (let [run {:id "run-a"
@@ -179,6 +204,132 @@
                                    (harnesses/resolve-harness rt :terra))
                         :generated (:generated
                                     (harnesses/resolve-harness rt :reviewer))}))))))
+        (testing "list applies the caller alias visibility policy"
+          (is (= {:allow ["oracle" "reviewer"]
+                  :deny-targets #{}
+                  :deny-keeps-pi true
+                  :plain-list-vector true
+                  :conflict-rejected true}
+                 (test-alpha/repl!
+                  ctx
+                  '(let [rt (millstrand.api.current.alpha/runtime)
+                         _ (harnesses/register-alias!
+                            rt :oracle
+                            {:doc "Use the reviewer."
+                             :parent :reviewer
+                             :attributes {}})
+                         _ (harnesses/register-alias!
+                            rt :allow-seat
+                            {:doc "See reviewer descendants only."
+                             :parent :pi
+                             :allow #{:reviewer}
+                             :attributes {}})
+                         _ (harnesses/register-alias!
+                            rt :deny-seat
+                            {:doc "Hide Terra descendants."
+                             :parent :pi
+                             :deny #{:terra}
+                             :attributes {}})
+                         listing
+                         (fn [alias]
+                           (let [run (harnesses/create!
+                                      rt {:harness alias :mode :interactive})
+                                 friendly-id
+                                 (millstrand.api.spool.alpha/attr-get
+                                  run :identity/id)]
+                             (millstrand.api.weaver.alpha/op!
+                              rt 'harness
+                              ["list" "--by-identity" friendly-id])))
+                         allowed (listing :allow-seat)
+                         denied (listing :deny-seat)]
+                     {:allow (mapv :name allowed)
+                      :deny-targets
+                      (into #{}
+                            (filter #{"terra" "reviewer" "oracle"})
+                            (map :name denied))
+                      :deny-keeps-pi
+                      (contains? (set (map :name denied)) "pi")
+                      :plain-list-vector
+                      (vector? (millstrand.api.weaver.alpha/op!
+                                rt 'harness ["list"]))
+                      :conflict-rejected
+                      (try
+                        (harnesses/register-alias!
+                         rt :invalid-visibility
+                         {:doc "Invalid."
+                          :parent :pi
+                          :allow #{:reviewer}
+                          :deny #{:oracle}
+                          :attributes {}})
+                        false
+                        (catch clojure.lang.ExceptionInfo _ true))})))))
+        (testing "nested agent calls build identity and run provenance"
+          (is (= {:origin-to-child true
+                  :child-to-grandchild true
+                  :origin-performed-run true
+                  :child-performed-run true
+                  :grandchild-performed-runs true
+                  :resume-to-predecessor true}
+                 (test-alpha/repl!
+                  ctx
+                  '(do
+                     (require '[millhouse.spools.identity :as identity]
+                              '[millstrand.api.graph.alpha :as graph]
+                              '[millstrand.api.spool.alpha :as spool]
+                              '[millstrand.api.weaver.alpha :as weaver])
+                     (let [rt (millstrand.api.current.alpha/runtime)
+                           launch #(weaver/op! rt 'harness
+                                               ["run" "reviewer" "--interactive"
+                                                "--cwd" "/tmp"])
+                           origin-run (launch)
+                           origin-id (:identity origin-run)
+                           child-run (weaver/op!
+                                      rt 'harness
+                                      ["run" "reviewer" "--interactive"
+                                       "--cwd" "/tmp"
+                                       "--by-identity" origin-id])
+                           child-id (:identity child-run)
+                           grandchild-run
+                           (weaver/op!
+                            rt 'harness
+                            ["run" "reviewer" "--interactive"
+                             "--cwd" "/tmp"
+                             "--by-identity" child-id])
+                           grandchild-id (:identity grandchild-run)
+                           _ (harnesses/finish!
+                              rt (:id grandchild-run)
+                              {:status :done :exit-code 0})
+                           resumed-run
+                           (weaver/op!
+                            rt 'harness
+                            ["resume" "--run-id" (:id grandchild-run)
+                             "--interactive" "--by-identity" child-id])
+                           identity-strand #(identity/current rt %)
+                           target-ids #(into #{}
+                                             (map :to_strand_id)
+                                             (graph/outgoing-edges
+                                              rt [(:id (identity-strand %))] %2))]
+                       {:origin-to-child
+                        (= #{(:id (identity-strand child-id))}
+                           (target-ids origin-id "parent-of"))
+                        :child-to-grandchild
+                        (= #{(:id (identity-strand grandchild-id))}
+                           (target-ids child-id "parent-of"))
+                        :origin-performed-run
+                        (= #{(:id origin-run)}
+                           (target-ids origin-id "performed"))
+                        :child-performed-run
+                        (= #{(:id child-run)}
+                           (target-ids child-id "performed"))
+                        :grandchild-performed-runs
+                        (= #{(:id grandchild-run) (:id resumed-run)}
+                           (target-ids grandchild-id "performed"))
+                        :resume-to-predecessor
+                        (= #{(:id grandchild-run)}
+                           (into #{}
+                                 (map :to_strand_id)
+                                 (graph/outgoing-edges
+                                  rt [(:id resumed-run)] "resumes")))}))))))
         (testing "ordered definitions follow flags and provider availability"
           (is (= {:initial ["pi" "maximum"]
                   :preferred ["claude" "high"]

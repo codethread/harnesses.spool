@@ -9,6 +9,7 @@ strand_call() {
   fi
 }
 
+
 print_help() {
   cat <<'EOF'
 Launch a tracked interactive coding-agent session.
@@ -43,7 +44,8 @@ Options forwarded to `strand harness run`:
 Registered harnesses and aliases:
 EOF
   strand_call harness list | jq -r '
-    [.[] | select(.available and .kind == "harness")] as $harnesses
+    if type == "array" then . else ."registry-list" end
+    | [.[] | select(.available and .kind == "harness")] as $harnesses
     | [.[] | select(.available and .kind == "alias")] as $aliases
     | ($harnesses[] | "  \(.name) — \(.modes | join(", "))")
     , (if ($aliases | length) > 0 then
@@ -83,7 +85,8 @@ done
 if [ "${1:-}" = "--fzf" ]; then
   shift
   selected="$(strand_call harness list | jq -r '
-    map(select(.available))
+    if type == "array" then . else ."registry-list" end
+    | map(select(.available))
     | (map(.name | length) | max) as $name_width
     | .[]
     | "\(.name)\t"
