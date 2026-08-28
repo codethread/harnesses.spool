@@ -162,6 +162,8 @@
                      :model "reviewer-model"
                      :effort :max
                      :append-system-prompt "Do not edit files."
+                     :env {"CLAUDE_CONFIG_DIR" "~/.config/reviewer"
+                           "REVIEW_MODE" "strict"}
                      :attributes {}}]}
                   :listing
                   {:name "reviewer"
@@ -172,6 +174,8 @@
                      :model "reviewer-model"
                      :effort :max
                      :append-system-prompt "Do not edit files."
+                     :env {"CLAUDE_CONFIG_DIR" "~/.config/reviewer"
+                           "REVIEW_MODE" "strict"}
                      :attributes {}}]
                    :available true
                    :harness "pi"
@@ -183,12 +187,18 @@
                    :harness/effort "high"
                    :harness/appended-system-prompts
                    ["Review changes only."]}
+                  :portable-env
+                  {"CLAUDE_CONFIG_DIR" "~/.config/claude"}
                   :generated
                   {:harness/extra-argv []
                    :harness/model "reviewer-model"
                    :harness/effort "max"
                    :harness/appended-system-prompts
-                   ["Review changes only." "Do not edit files."]}}
+                   ["Review changes only." "Do not edit files."]}
+                  :env
+                  {"CLAUDE_CONFIG_DIR" "~/.config/reviewer"
+                   "REVIEW_MODE" "strict"}
+                  :launcher-env true}
                  (test-alpha/repl!
                   ctx
                   '(do
@@ -202,6 +212,7 @@
                                :model "terra-model"
                                :effort :high
                                :append-system-prompt "Review changes only."
+                               :env {"CLAUDE_CONFIG_DIR" "~/.config/claude"}
                                :attributes {}})
                            registration
                            (harnesses/register-alias!
@@ -211,14 +222,30 @@
                              :model "reviewer-model"
                              :effort :max
                              :append-system-prompt "Do not edit files."
-                             :attributes {}})]
+                             :env {"CLAUDE_CONFIG_DIR" "~/.config/reviewer"
+                                   "REVIEW_MODE" "strict"}
+                             :attributes {}})
+                           portable (harnesses/resolve-harness rt :terra)
+                           resolved (harnesses/resolve-harness rt :reviewer)
+                           run (harnesses/create!
+                                rt {:harness :reviewer :mode :interactive})
+                           launcher (ct.spools.harnesses.execution/prepare-interactive!
+                                     rt run)
+                           script (slurp launcher)]
                        {:registration registration
                         :listing (some #(when (= "reviewer" (:name %)) %)
                                        (harnesses/harnesses rt))
-                        :portable (:generated
-                                   (harnesses/resolve-harness rt :terra))
-                        :generated (:generated
-                                    (harnesses/resolve-harness rt :reviewer))}))))))
+                        :portable (:generated portable)
+                        :portable-env (:env portable)
+                        :generated (:generated resolved)
+                        :env (:env resolved)
+                        :launcher-env
+                        (and (clojure.string/includes?
+                              script
+                              "export CLAUDE_CONFIG_DIR='~/.config/reviewer'")
+                             (clojure.string/includes?
+                              script
+                              "export REVIEW_MODE='strict'"))}))))))
         (testing "list applies the caller alias visibility policy"
           (is (= {:allow ["oracle" "reviewer"]
                   :deny-targets #{}

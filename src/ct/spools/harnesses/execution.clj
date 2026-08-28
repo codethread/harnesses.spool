@@ -288,10 +288,15 @@
   (harness/concrete-harness rt (attr-get run :harness/harness)))
 
 (defn- prepare-launch [rt definition run]
-  (require-valid!
-   ::harness/launch-spec
-   ((callback (:prepare definition)) rt definition run)
-   "Harness prepare must return a valid launch specification"))
+  (let [launch-spec ((callback (:prepare definition)) rt definition run)
+        alias-env (into {}
+                        (map (fn [[name value]]
+                               [(clojure.core/name name) value]))
+                        (or (attr-get run :harness/env) {}))]
+    (require-valid!
+     ::harness/launch-spec
+     (update launch-spec :env #(merge alias-env (or % {})))
+     "Harness prepare must return a valid launch specification")))
 
 (defn- process-spec [run {:keys [argv env stdin]}]
   {:argv argv

@@ -78,11 +78,14 @@
   (s/and set? #(every? (partial s/valid? ::name-ref) %)))
 (s/def ::allow ::visibility-names)
 (s/def ::deny ::visibility-names)
+(s/def ::env
+  (s/map-of (s/and string? #(re-matches #"[A-Za-z_][A-Za-z0-9_]*" %))
+            string?))
 (s/def ::alias-candidate
   (s/and (s/keys :req-un [::doc ::parent ::attributes]
-                 :opt-un [::when ::append-system-prompt ::allow ::deny])
+                 :opt-un [::when ::append-system-prompt ::allow ::deny ::env])
          #(every? #{:doc :parent :model :effort :append-system-prompt
-                    :attributes :when :allow :deny}
+                    :attributes :when :allow :deny :env}
                   (keys %))
          #(not (and (contains? % :allow) (contains? % :deny)))
          #(s/valid? ::name-ref (:parent %))
@@ -100,7 +103,7 @@
 (s/def ::definition ::harness-definition)
 (s/def ::generated ::overlay-attributes)
 (s/def ::resolved-harness
-  (s/keys :req-un [::alias ::harness ::definition ::generated]))
+  (s/keys :req-un [::alias ::harness ::definition ::generated ::env]))
 (s/def ::name string?)
 (s/def ::kind #{"harness" "alias"})
 (s/def ::alias-of string?)
@@ -135,9 +138,6 @@
   (s/coll-of (s/and string? (complement str/blank?))
              :kind vector? :min-count 1))
 (s/def ::stdin (s/nilable string?))
-(s/def ::env
-  (s/map-of (s/and string? #(re-matches #"[A-Za-z_][A-Za-z0-9_]*" %))
-            string?))
 (s/def ::launch-spec
   (s/and
    (s/keys :req-un [::argv ::stdin]
@@ -327,6 +327,7 @@
        {:alias requested
         :harness (:harness result)
         :definition definition
+        :env (apply merge {} (map :env layers))
         :generated (cond-> attributes
                      model (assoc :harness/model model)
                      effort (assoc :harness/effort (name effort))
@@ -385,7 +386,7 @@
   (require-valid! ::runtime rt "create! requires a Weaver runtime")
   (require-valid! ::create-request request "create! requires a valid run request")
   (let [mode (mode-keyword (or mode :headless))
-        {:keys [alias harness definition generated]} (resolve-harness rt harness)
+        {:keys [alias harness definition generated env]} (resolve-harness rt harness)
         overrides (cond-> (normalize-overlay attributes)
                     append-system-prompt
                     (update appended-system-prompts-attribute
@@ -412,6 +413,7 @@
                            :harness/phase "pending"
                            :harness/cwd cwd
                            :harness/session-id session-id
+                           :harness/env env
                            :harness/generated generated
                            :harness/overrides overrides}
                           effective
@@ -525,6 +527,7 @@
         requested (or harness (attr-get run :harness/alias))
         resolved (resolve-harness rt requested)
         generated (:generated resolved)
+        env (:env resolved)
         concrete (:harness resolved)
         _ (concrete-harness rt concrete)
         call-overrides (normalize-overlay attributes)
@@ -549,6 +552,7 @@
        (merge overlay-delta
               {:harness/alias requested
                :harness/harness concrete
+               :harness/env env
                :harness/cwd (or cwd (attr-get run :harness/cwd))
                :harness/phase "pending"
                :harness/generated generated-delta
