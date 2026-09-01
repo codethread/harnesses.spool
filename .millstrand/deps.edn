@@ -1,0 +1,14 @@
+{:deps
+ {millstrand.spools/batteries
+  {:git/url "https://github.com/codethread/millstrand.git"
+   :git/sha "9d3f9ffe9605ccff6262736352dd8ae52d7c7834"
+   :deps/root "spools/batteries"}
+  millhouse.spools/identity
+  {:git/url "https://github.com/codethread/millhouse.spool.git"
+   :git/sha "7cfcb235848c0db6231ba2282430913580d66f2e"
+   :deps/root "spools/identity"}
+  millhouse.spools/kanban
+  {:git/url "https://github.com/codethread/millhouse.spool.git"
+   :git/sha "7cfcb235848c0db6231ba2282430913580d66f2e"
+   :deps/root "spools/kanban"}
+  ct.spools/harnesses {:local/root ".."}}}
