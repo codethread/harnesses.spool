@@ -82,23 +82,22 @@
                        "millhouse/spools/identity.clj")]
     (test-alpha/with-weaver-world
       [ctx {:storage :sqlite-memory
-            :spools-edn
-            {:spools
-             {'ct.spools/harnesses
-              {:local/root (.getCanonicalPath harnesses-root)}
-              'millhouse.spools/identity
-              {:local/root (.getCanonicalPath identity-root)}}}
-            :init
+            :deps-edn
+            (pr-str
+             {:deps
+              {'ct.spools/harnesses
+               {:local/root (.getCanonicalPath harnesses-root)}
+               'millhouse.spools/identity
+               {:local/root (.getCanonicalPath identity-root)}}})
+            :init-clj
             "(require '[millstrand.api.current.alpha :as current]
                        '[millstrand.api.runtime.alpha :as runtime])
              (def rt (current/runtime))
              (runtime/module! rt :identity
                {:ns 'millhouse.spools.identity
-                :spools ['millhouse.spools/identity]
                 :required? true})
              (runtime/module! rt :harnesses
                {:ns 'ct.spools.harnesses.spool
-                :spools ['ct.spools/harnesses 'millhouse.spools/identity]
                 :after [:identity]
                 :required? true})"}]
       (let [{:keys [harnesses operation handler bins lifecycles]}
@@ -117,7 +116,8 @@
                                   (events/handlers rt))
                    :bins (set (map :name (:bins (weaver/op! rt 'bins ["list"]))))
                    :lifecycles (get-in (runtime/status rt)
-                                       [:lifecycle/outcomes :harnesses])})))]
+                                       [:last-refresh :modules :harnesses
+                                        :lifecycle/outcomes])})))]
         (is (= ["claude" "codex" "cursor" "pi"] harnesses))
         (is (= "agent" operation))
         (is (contains? bins "agent"))
