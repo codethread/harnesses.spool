@@ -1,33 +1,17 @@
 {:paths ["src"]
- :deps
- {io.millstrand/millstrand
-  {:git/url "https://github.com/codethread/millstrand.git"
-   :git/sha "9d3f9ffe9605ccff6262736352dd8ae52d7c7834"
-   :deps/root "."}
-  millhouse.spools/identity
-  {:git/url "https://github.com/codethread/millhouse.spool.git"
-   :git/sha "7cfcb235848c0db6231ba2282430913580d66f2e"
-   :deps/root "spools/identity"}}
- :aliases
- {:test
-  {:extra-paths ["test"]
-   :jvm-opts ["--enable-native-access=ALL-UNNAMED"]
-   :main-opts ["-m" "ct.spools.harnesses.test-runner"]}
-  :format
-  {:extra-deps {dev.weavejester/cljfmt {:mvn/version "0.13.1"}}
-   :main-opts ["-m" "cljfmt.main" "check" "src" "test"]}
-  :format/fix
-  {:extra-deps {dev.weavejester/cljfmt {:mvn/version "0.13.1"}}
-   :main-opts ["-m" "cljfmt.main" "fix" "src" "test"]}
-  :lint/clj-kondo
-  {:extra-deps
-   {clj-kondo/clj-kondo {:mvn/version "2025.06.05"}
-    io.millstrand/millstrand
-    {:git/url "https://github.com/codethread/millstrand.git"
-     :git/sha "9d3f9ffe9605ccff6262736352dd8ae52d7c7834"
-     :deps/root "."}}
-   :main-opts ["-m" "clj-kondo.main"]}
-  :lint/splint
-  {:extra-deps {io.github.noahtheduke/splint {:mvn/version "1.21.0"}}
-   :main-opts ["-m" "noahtheduke.splint" "--output" "clj-kondo"
-               "src" "test"]}}}
+ :deps {io.millstrand/millstrand {:git/url "https://github.com/codethread/millstrand.git"
+                                  :git/sha "9d3f9ffe9605ccff6262736352dd8ae52d7c7834"
+                                  :deps/root "."}
+        millhouse.spools/identity {:git/url "https://github.com/codethread/millhouse.spool.git"
+                                   :git/sha "7cfcb235848c0db6231ba2282430913580d66f2e"
+                                   :deps/root "spools/identity"}}
+ :aliases {:test {:extra-paths ["test"]
+                  :jvm-opts ["--enable-native-access=ALL-UNNAMED"]
+                  :main-opts ["-m" "ct.spools.harnesses.test-runner"]}
+           :format {:extra-deps {dev.weavejester/cljfmt {:mvn/version "0.13.1"}}
+                    :main-opts ["-m" "cljfmt.main" "check" "src" "test"]}
+           :format/fix {:extra-deps {dev.weavejester/cljfmt {:mvn/version "0.13.1"}}
+                        :main-opts ["-m" "cljfmt.main" "fix" "src" "test"]}
+           :lint/splint {:extra-deps {io.github.noahtheduke/splint {:mvn/version "1.21.0"}}
+                         :main-opts ["-m" "noahtheduke.splint" "--output" "clj-kondo"
+                                     "src" "test"]}}}
