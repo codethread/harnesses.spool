@@ -68,6 +68,71 @@ resource set when publishing asynchronous execution. Provider resources may be
 selected independently with the core resource when only registration and the
 Clojure API are required.
 
+## Millhouse Workflow adapter
+
+Workflow support is optional and separately activated. Load the Workflow engine
+and complete Harnesses surface first, then activate the adapter selector:
+
+```clojure
+(runtime/module! runtime :workflow/engine
+  {:ns 'millhouse.spools.workflow
+   :required? true})
+(runtime/module! runtime :harnesses
+  {:ns 'ct.spools.harnesses.spool
+   :spools ['ct.spools/harnesses 'millhouse.spools/identity]
+   :required? true})
+(runtime/module! runtime :harnesses/agent-executor
+  {:ns 'ct.spools.harnesses.executors.agent.spool
+   :spools ['ct.spools/harnesses 'millhouse.spools/workflow]
+   :after [:workflow/engine :harnesses]
+   :required? true})
+```
+
+Place modules that register harness aliases before
+`:harnesses/agent-executor`. Its resource performs an initial scan, so every
+alias named by a durable ready gate must already resolve.
+
+The selector publishes only the Workflow `:agent` executor, the
+`stalled-agent-gates` query, and the adapter's event resource. It does not change
+the Harnesses engine or bundled Harnesses activation.
+
+Use waiter `:agent` for a gate fulfilled by a headless tracked run:
+
+```clojure
+(workflow/gate :review
+               "Review the change"
+               :agent
+               :attributes
+               {"harness/alias" "reviewer"
+                "harness/prompt" "Review the current diff and report findings."
+                "harness/cwd" "/path/to/worktree"
+                "harness/effort" "high"})
+```
+
+`harness/alias` is required. `harness/prompt` falls back to
+`workflow/instruction`, `description`, then the gate title. `harness/cwd` is
+optional. Portable overlays (`harness/model`, `harness/effort`,
+`harness/extra-argv`, and `harness/appended-system-prompts`) and provider
+overlays such as `harness.pi/*` pass through to the run. The gate instruction
+remains the main prompt; workflow context and completion guidance are appended
+to the system prompt after any supplied system prompts. Interactive mode is not
+supported because it has no automatic workflow-completion contract.
+
+Before creating a run, the adapter records `agent-executor/spawn-attempt` and a
+private `agent-executor/spawn-session-id` claim on the gate. It then creates the
+run through the unchanged Harnesses API and adds `workflow/run-id` plus a
+`serves` edge itself. After a Weaver interruption, the next scan adopts an
+unlinked run carrying the claimed session ID or resumes creation at the next
+attempt. Three unsuccessful attempts stamp `gate/error`; a successful link
+removes the private session claim and retains the attempt count for audit.
+
+A successful non-blank `harness/result` closes the gate through
+`workflow/complete!`, records the run ID in `workflow/outcome-by`, and copies the
+result onto the gate. A failed run remains active and stalls the gate; retry it
+with `strand agent retry <run-id>`. `stalled-agent-gates` reports failed runs and
+gates carrying `gate/error`. After fixing a spawn request, remove `gate/error`
+to start a fresh bounded attempt series.
+
 ## Providers
 
 The core owns the shared `harness/model`, `harness/effort`, and
