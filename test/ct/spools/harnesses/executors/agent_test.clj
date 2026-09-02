@@ -247,6 +247,8 @@
           (is (= "test-model" (get-in result [:happy :model])))
           (is (= "high" (get-in result [:happy :thinking])))
           (is (= "happy-agent" (get-in result [:happy :workflow-run-id])))
+          (is (re-find #"Do not close or mutate\s+strands in this workflow"
+                       (get-in result [:happy :prompt])))
           (is (str/includes? (get-in result [:happy :prompt])
                              "Return the implementation report.")))
         (testing "a successful run closes the gate and unblocks its dependent"

@@ -260,8 +260,8 @@
      {workflow-run-id}.
 
      Your final message is recorded as the gate result. Do not close or mutate
-     workflow strands; the agent executor closes the gate after this run
-     succeeds.
+     strands in this workflow; the agent executor closes the gate after this
+     run succeeds.
 
      {prompt}
      "
