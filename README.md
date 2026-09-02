@@ -113,7 +113,9 @@ Use waiter `:agent` for a gate fulfilled by a headless tracked run:
 `workflow/instruction`, `description`, then the gate title. `harness/cwd` is
 optional. Portable overlays (`harness/model`, `harness/effort`,
 `harness/extra-argv`, and `harness/appended-system-prompts`) and provider
-overlays such as `harness.pi/*` pass through to the run. Interactive mode is not
+overlays such as `harness.pi/*` pass through to the run. The gate instruction
+remains the main prompt; workflow context and completion guidance are appended
+to the system prompt after any supplied system prompts. Interactive mode is not
 supported because it has no automatic workflow-completion contract.
 
 Before creating a run, the adapter records `agent-executor/spawn-attempt` and a

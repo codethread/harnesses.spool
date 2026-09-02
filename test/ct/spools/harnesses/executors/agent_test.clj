@@ -146,6 +146,8 @@
                          "harness/prompt" "Return the implementation report."
                          "harness/cwd" "/tmp"
                          "harness/model" "test-model"
+                         "harness/appended-system-prompts"
+                         ["Keep this existing policy."]
                          "harness.pi/thinking" "high"})
                        (workflow/step :after "After happy" :self
                                       :depends-on [:delegate]))
@@ -220,6 +222,8 @@
                     :model (attr happy-run :harness/model)
                     :thinking (attr happy-run :harness.pi/thinking)
                     :prompt (attr happy-run :harness/prompt)
+                    :system-prompts
+                    (attr happy-run :harness/appended-system-prompts)
                     :workflow-run-id (attr happy-run :workflow/run-id)
                     :delivered (attr delivered-run :gate/delivered)
                     :gate-state (:state delivered-gate)
@@ -247,10 +251,12 @@
           (is (= "test-model" (get-in result [:happy :model])))
           (is (= "high" (get-in result [:happy :thinking])))
           (is (= "happy-agent" (get-in result [:happy :workflow-run-id])))
+          (is (= "Return the implementation report."
+                 (get-in result [:happy :prompt])))
+          (is (= "Keep this existing policy."
+                 (first (get-in result [:happy :system-prompts]))))
           (is (re-find #"Do not close or mutate\s+strands in this workflow"
-                       (get-in result [:happy :prompt])))
-          (is (str/includes? (get-in result [:happy :prompt])
-                             "Return the implementation report.")))
+                       (second (get-in result [:happy :system-prompts])))))
         (testing "a successful run closes the gate and unblocks its dependent"
           (is (= "true" (get-in result [:happy :delivered])))
           (is (= "closed" (get-in result [:happy :gate-state])))

@@ -253,22 +253,18 @@
       (non-blank (attr gate :description))
       (non-blank (:title gate))))
 
-(defn- agent-prompt [gate workflow-run-id prompt]
+(defn- agent-system-prompt [gate workflow-run-id]
   (format-alpha/prose
    "
      This run fulfils workflow gate {gate-id} ({gate-title}) in workflow run
      {workflow-run-id}.
 
      Your final message is recorded as the gate result. Do not close or mutate
-     strands in this workflow; the agent executor closes the gate after this
-     run succeeds.
-
-     {prompt}
+     strands in this workflow.
      "
    {:gate-id (:id gate)
     :gate-title (:title gate)
-    :workflow-run-id workflow-run-id
-    :prompt prompt}))
+    :workflow-run-id workflow-run-id}))
 
 (defn- attribute-name [key]
   (if (keyword? key)
@@ -354,7 +350,8 @@
         (fail! "Agent gate harness does not support headless runs"
                {:gate (:id gate) :harness alias})))
     (cond-> {:harness alias
-             :prompt (agent-prompt gate workflow-run-id prompt)
+             :prompt prompt
+             :append-system-prompt (agent-system-prompt gate workflow-run-id)
              :attributes (gate-overrides gate)
              :session-id session-id
              :title (str "Agent: " (:title gate))}
