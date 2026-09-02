@@ -4,7 +4,10 @@
                                   :deps/root "."}
         millhouse.spools/identity {:git/url "https://github.com/codethread/millhouse.spool.git"
                                    :git/sha "7cfcb235848c0db6231ba2282430913580d66f2e"
-                                   :deps/root "spools/identity"}}
+                                   :deps/root "spools/identity"}
+        millhouse.spools/workflow {:git/url "https://github.com/codethread/millhouse.spool.git"
+                                   :git/sha "7cfcb235848c0db6231ba2282430913580d66f2e"
+                                   :deps/root "spools/workflow"}}
  :aliases {:test {:extra-paths ["test"]
                   :jvm-opts ["--enable-native-access=ALL-UNNAMED"]
                   :main-opts ["-m" "ct.spools.harnesses.test-runner"]}
