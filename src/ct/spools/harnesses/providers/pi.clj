@@ -1,9 +1,9 @@
 (ns ct.spools.harnesses.providers.pi
   "Pi CLI definition and provider-specific prepare/finish callbacks."
-  (:require [clojure.data.json :as json]
-            [clojure.spec.alpha :as s]
+  (:require [clojure.spec.alpha :as s]
             [clojure.string :as str]
             [ct.spools.harnesses :as harness]
+            [ct.spools.harnesses.providers.internal.outcome :as outcome]
             [millstrand.api.lifecycle.alpha :as lifecycle]
             [millstrand.api.spool.alpha :refer [attr-get fail! require-valid!]]))
 
@@ -83,10 +83,11 @@
                   "Pi finish requires an observed process result")
   (let [mode (attribute run :harness/mode)
         known-session (attribute run :harness/session-id)
-        outcome (if (= "interactive" mode)
-                  (interactive-outcome exit-code known-session run stderr)
-                  (headless-outcome exit-code known-session stdout stderr))]
-    (require-valid! ::harness/outcome outcome
+        resumes? (boolean (attribute run :harness/resumes))
+        result (if (= "interactive" mode)
+                 (interactive-outcome exit-code known-session resumes? run stderr)
+                 (headless-outcome exit-code known-session resumes? stdout stderr))]
+    (require-valid! ::harness/outcome result
                     "Pi finish produced an invalid outcome")))
 
 (s/fdef finish
@@ -138,37 +139,39 @@
       ["pi"]
       (when-not interactive? ["--print" "--mode" "json"])
       (if resumes ["--session" session-id] ["--session-id" session-id])
-      (when (and (not resumes) (not (str/blank? identity-prompt)))
+      ;; Pi reconstructs the system prompt from the launch options every time, so
+      ;; a resumed run drops pinned identity and policy guidance unless it is
+      ;; reapplied here.
+      (when-not (str/blank? identity-prompt)
         ["--append-system-prompt" identity-prompt])
-      (when-not resumes
-        (mapcat #(vector "--append-system-prompt" %)
-                appended-system-prompts))
+      (mapcat #(vector "--append-system-prompt" %) appended-system-prompts)
       (when model ["--model" model])
       (when effort ["--thinking" effort])
       extra
       (when (and interactive? (not (str/blank? prompt))) [prompt])))))
 
-(defn- clipped [s]
-  (when-not (str/blank? s)
-    (subs s 0 (min 4000 (count s)))))
+;; Pi is pinned: --session-id names the session Pi creates if missing, so a
+;; clean exit is itself evidence the id resolves to real history.
+(defn- session-of [observed-id known-session resumes? exit-code]
+  (outcome/session-evidence {:observed-id observed-id
+                             :known-id known-session
+                             :resumes? resumes?
+                             :pinned? true
+                             :exit-code exit-code}))
 
-(defn- interactive-outcome [exit-code known-session run stderr]
-  (if (zero? exit-code)
-    {:status :done
-     :exit-code exit-code
-     :result (attribute run :harness/result)
-     :session-id known-session}
-    {:status :failed
-     :exit-code exit-code
-     :session-id known-session
-     :error (or (clipped stderr) (str "Pi exited " exit-code))}))
-
-(defn- jsonl-events [stdout]
-  (mapv #(json/read-str % :key-fn keyword)
-        (remove str/blank? (str/split-lines (or stdout "")))))
+(defn- interactive-outcome [exit-code known-session resumes? run stderr]
+  (let [session (session-of nil known-session resumes? exit-code)]
+    (if (zero? exit-code)
+      (outcome/done {:exit-code exit-code
+                     :result (attribute run :harness/result)
+                     :session session})
+      (outcome/failed {:exit-code exit-code
+                       :session session
+                       :error (or (outcome/clipped stderr)
+                                  (str "Pi exited " exit-code))}))))
 
 (defn- event-session-id [events]
-  (some #(when (= "session" (:type %)) (:id %)) events))
+  (outcome/native-session-id events #(when (= "session" (:type %)) (:id %))))
 
 (defn- event-result [events]
   (some->> events
@@ -177,42 +180,38 @@
                     (some-> (get-in % [:message :content]) first :text)))
            last))
 
-(defn- headless-outcome [exit-code known-session stdout stderr]
-  (if-not (zero? exit-code)
-    {:status :failed
-     :exit-code exit-code
-     :session-id known-session
-     :error (or (clipped stderr) (clipped stdout) (str "Pi exited " exit-code))}
-    (try
-      (let [events (jsonl-events stdout)
-            result (event-result events)
-            session-id (event-session-id events)]
-        (cond
-          (str/blank? session-id)
-          {:status :failed
-           :exit-code exit-code
-           :session-id known-session
-           :error (str "Pi returned no session id: "
-                       (or (clipped stdout) "<blank>"))}
+(defn- headless-outcome [exit-code known-session resumes? stdout stderr]
+  (let [{:keys [records truncated?] :as decoded} (outcome/jsonl-records stdout)
+        ;; The session record is the first line Pi writes, so it survives a run
+        ;; that was killed or errored partway through its stream.
+        session (session-of (event-session-id records) known-session resumes?
+                            exit-code)
+        result (event-result records)
+        fail (fn [error]
+               (outcome/failed {:exit-code exit-code
+                                :result result
+                                :session session
+                                :error error}))]
+    (cond
+      (not (zero? exit-code))
+      (fail (or (outcome/clipped stderr) (outcome/clipped stdout)
+                (str "Pi exited " exit-code)))
 
-          (str/blank? result)
-          {:status :failed
-           :exit-code exit-code
-           :session-id session-id
-           :error (str "Pi returned no assistant message: "
-                       (or (clipped stdout) "<blank>"))}
+      truncated?
+      (fail (outcome/undecodable-error "Pi" decoded stdout))
 
-          :else
-          {:status :done
-           :exit-code exit-code
-           :result result
-           :session-id session-id}))
-      (catch Exception e
-        {:status :failed
-         :exit-code exit-code
-         :session-id known-session
-         :error (str "Pi JSONL parse failed: " (ex-message e)
-                     (when-let [output (clipped stdout)] (str "\n" output)))}))))
+      ;; Pi always streams its session record, so a clean headless run that
+      ;; never announced one has not proven the pinned id names real history.
+      (not= :observed (:origin session))
+      (fail (str "Pi returned no session id: "
+                 (or (outcome/clipped stdout) "<blank>")))
+
+      (str/blank? result)
+      (fail (str "Pi returned no assistant message: "
+                 (or (outcome/clipped stdout) "<blank>")))
+
+      :else
+      (outcome/done {:exit-code exit-code :result result :session session}))))
 
 (lifecycle/defresource pi-harness-runtime
   "Own the Pi harness registration for the module lifetime."

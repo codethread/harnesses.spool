@@ -37,10 +37,14 @@
                    "--skip-git-repo-check"]
             :stdin "Do the work\n"}
            (codex/prepare runtime definition (run "headless")))))
-  (testing "headless resume names the provider session"
+  (testing "headless resume names the session and reapplies pinned guidance"
     (is (= {:argv ["codex" "exec" "resume" "--json"
                    "--model" "gpt-test"
                    "--config" "model_reasoning_effort=light"
+                   "--config"
+                   (str "developer_instructions=\"You are agent tidy-brave-swan."
+                        "\\n\\nReview changes only."
+                        "\\n\\nDo not edit files.\"")
                    "--skip-git-repo-check" "provisional" "-"]
             :stdin "Do the work\n"}
            (codex/prepare runtime definition
@@ -49,6 +53,10 @@
     (is (= {:argv ["codex" "resume"
                    "--model" "gpt-test"
                    "--config" "model_reasoning_effort=light"
+                   "--config"
+                   (str "developer_instructions=\"You are agent tidy-brave-swan."
+                        "\\n\\nReview changes only."
+                        "\\n\\nDo not edit files.\"")
                    "--skip-git-repo-check" "provisional" "Do the work"]
             :stdin nil}
            (codex/prepare runtime definition
@@ -93,3 +101,53 @@
                                 {:exit-code 0 :stdout "{nope}\n" :stderr ""})]
       (is (= :failed (:status outcome)))
       (is (re-find #"JSONL parse failed" (:error outcome))))))
+
+(deftest finish-preserves-native-thread-through-abnormal-exits
+  (testing "a nonzero exit still reports the thread Codex announced"
+    (let [outcome (codex/finish
+                   runtime definition (run "headless")
+                   {:exit-code 137
+                    :stdout "{\"type\":\"thread.started\",\"thread_id\":\"thread-1\"}\n"
+                    :stderr "killed"})]
+      (is (= :failed (:status outcome)))
+      (is (= "thread-1" (:session-id outcome)))))
+  (testing "records before a truncated final line remain valid evidence"
+    (let [outcome (codex/finish
+                   runtime definition (run "headless")
+                   {:exit-code 0
+                    :stdout (str "{\"type\":\"thread.started\",\"thread_id\":\"thread-1\"}\n"
+                                 "{\"type\":\"item.completed\",\"item\":"
+                                 "{\"type\":\"agent_message\",\"text\":\"partial\"}}\n"
+                                 "{\"type\":\"turn.comp")
+                    :stderr ""})]
+      (is (= :failed (:status outcome)))
+      (is (= "thread-1" (:session-id outcome)))
+      (is (= "partial" (:result outcome)))
+      (is (re-find #"truncated JSONL" (:error outcome)))))
+  (testing "a new run never reports its provisional id as a native thread"
+    (let [outcome (codex/finish runtime definition (run "headless")
+                                {:exit-code 1 :stdout "" :stderr "boom"})]
+      (is (= :failed (:status outcome)))
+      (is (nil? (:session-id outcome)))))
+  (testing "a resumed run keeps the frozen thread it was launched against"
+    (let [outcome (codex/finish runtime definition
+                                (run "interactive" {:harness/resumes "prior"})
+                                {:exit-code 130 :stdout "" :stderr "interrupted"})]
+      (is (= :failed (:status outcome)))
+      (is (= "provisional" (:session-id outcome))))))
+
+(deftest finish-rejects-a-failed-turn-that-already-streamed-text
+  (let [outcome (codex/finish
+                 runtime definition (run "headless")
+                 {:exit-code 0
+                  :stdout (str "{\"type\":\"thread.started\",\"thread_id\":\"thread-1\"}\n"
+                               "{\"type\":\"item.completed\",\"item\":"
+                               "{\"type\":\"agent_message\",\"text\":\"here is my plan\"}}\n"
+                               "{\"type\":\"turn.failed\",\"error\":"
+                               "{\"message\":\"usage limit reached\"}}\n")
+                  :stderr ""})]
+    (is (= :failed (:status outcome)))
+    (is (re-find #"usage limit reached" (:error outcome)))
+    (testing "the partial answer and thread survive for a later resume"
+      (is (= "here is my plan" (:result outcome)))
+      (is (= "thread-1" (:session-id outcome))))))

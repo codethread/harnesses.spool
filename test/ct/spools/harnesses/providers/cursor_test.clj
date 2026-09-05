@@ -38,11 +38,14 @@
                        "Review changes only.\n\nDo not edit files.")}
             :stdin "Do the work\n"}
            (cursor/prepare runtime definition (run "headless")))))
-  (testing "resumed headless runs select the recorded Cursor chat"
+  (testing "resumed headless runs select the chat and reapply pinned guidance"
     (is (= {:argv ["agent" "--print" "--output-format" "json"
                    "--resume" "provisional"
                    "--model" "composer-2.5"
                    "--plugin-dir" plugin-dir "--yolo" "--trust"]
+            :env {"MILLSTRAND_HARNESS_CURSOR_SYS_PROMPT"
+                  (str "You are agent tidy-brave-swan.\n\n"
+                       "Review changes only.\n\nDo not edit files.")}
             :stdin "Do the work\n"}
            (cursor/prepare runtime definition
                            (run "headless" {:harness/resumes "prior"})))))
@@ -95,3 +98,34 @@
                                  {:exit-code 0 :stdout "{nope}" :stderr ""})]
       (is (= :failed (:status outcome)))
       (is (re-find #"JSON parse failed" (:error outcome))))))
+
+(deftest finish-preserves-native-chat-through-abnormal-exits
+  (testing "a nonzero exit still reports the chat Cursor printed"
+    (let [outcome (cursor/finish
+                   runtime definition (run "headless")
+                   {:exit-code 137
+                    :stdout "{\"result\":\"partial\",\"session_id\":\"session-1\"}"
+                    :stderr "killed"})]
+      (is (= :failed (:status outcome)))
+      (is (= "session-1" (:session-id outcome)))
+      (is (= "partial" (:result outcome)))))
+  (testing "an error result keeps the chat and the partial text"
+    (let [outcome (cursor/finish
+                   runtime definition (run "headless")
+                   {:exit-code 0
+                    :stdout (str "{\"is_error\":true,\"result\":\"nope\","
+                                 "\"session_id\":\"session-1\"}")
+                    :stderr ""})]
+      (is (= "session-1" (:session-id outcome)))
+      (is (= "nope" (:result outcome)))))
+  (testing "a new run never reports its provisional id as a native chat"
+    (let [outcome (cursor/finish runtime definition (run "headless")
+                                 {:exit-code 1 :stdout "" :stderr "boom"})]
+      (is (= :failed (:status outcome)))
+      (is (nil? (:session-id outcome)))))
+  (testing "a resumed run keeps the frozen chat it was launched against"
+    (let [outcome (cursor/finish runtime definition
+                                 (run "interactive" {:harness/resumes "prior"})
+                                 {:exit-code 130 :stdout "" :stderr "interrupted"})]
+      (is (= :failed (:status outcome)))
+      (is (= "provisional" (:session-id outcome))))))

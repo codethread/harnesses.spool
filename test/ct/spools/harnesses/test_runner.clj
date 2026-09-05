@@ -5,6 +5,7 @@
             [ct.spools.harnesses.providers.claude-test]
             [ct.spools.harnesses.providers.codex-test]
             [ct.spools.harnesses.providers.cursor-test]
+            [ct.spools.harnesses.providers.internal.outcome-test]
             [ct.spools.harnesses.providers.pi-test]
             [ct.spools.harnesses.spool-test]))
 
@@ -13,6 +14,7 @@
     ct.spools.harnesses.providers.claude-test
     ct.spools.harnesses.providers.codex-test
     ct.spools.harnesses.providers.cursor-test
+    ct.spools.harnesses.providers.internal.outcome-test
     ct.spools.harnesses.providers.pi-test
     ct.spools.harnesses.spool-test])
 

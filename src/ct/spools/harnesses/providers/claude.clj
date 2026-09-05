@@ -4,6 +4,7 @@
             [clojure.spec.alpha :as s]
             [clojure.string :as str]
             [ct.spools.harnesses :as harness]
+            [ct.spools.harnesses.providers.internal.outcome :as outcome]
             [millstrand.api.lifecycle.alpha :as lifecycle]
             [millstrand.api.spool.alpha :refer [attr-get fail! require-valid!]]))
 
@@ -75,10 +76,11 @@
                   "Claude finish requires an observed process result")
   (let [mode (attribute run :harness/mode)
         known-session (attribute run :harness/session-id)
-        outcome (if (= "interactive" mode)
-                  (interactive-outcome exit-code known-session run stderr)
-                  (headless-outcome exit-code known-session stdout stderr))]
-    (require-valid! ::harness/outcome outcome
+        resumes? (boolean (attribute run :harness/resumes))
+        result (if (= "interactive" mode)
+                 (interactive-outcome exit-code known-session resumes? run stderr)
+                 (headless-outcome exit-code known-session resumes? stdout stderr))]
+    (require-valid! ::harness/outcome result
                     "Claude finish produced an invalid outcome")))
 
 (s/fdef finish
@@ -143,56 +145,75 @@
     ["claude"]
     (when (= "headless" mode) ["--print" "--output-format" "json"])
     (if resumes ["--resume" session-id] ["--session-id" session-id])
-    (when (and (not resumes) (not (str/blank? identity-prompt)))
+    ;; Claude rebuilds the system prompt from flags on every launch, including
+    ;; --resume, so pinned identity and policy guidance must be reapplied or a
+    ;; resumed run silently loses it.
+    (when-not (str/blank? identity-prompt)
       ["--append-system-prompt" identity-prompt])
-    (when-not resumes
-      (mapcat #(vector "--append-system-prompt" %)
-              appended-system-prompts))
+    (mapcat #(vector "--append-system-prompt" %) appended-system-prompts)
     (when model ["--model" model])
     (when effort ["--effort" effort])
     extra
     (when (and (= "interactive" mode) (not (str/blank? prompt))) [prompt]))))
 
-(defn- clipped [s]
-  (when-not (str/blank? s)
-    (subs s 0 (min 4000 (count s)))))
+;; Claude is pinned: --session-id names the session the CLI creates, so a clean
+;; exit is itself evidence the id resolves to real history.
+(defn- session-of [observed-id known-session resumes? exit-code]
+  (outcome/session-evidence {:observed-id observed-id
+                             :known-id known-session
+                             :resumes? resumes?
+                             :pinned? true
+                             :exit-code exit-code}))
 
-(defn- interactive-outcome [exit-code known-session run stderr]
-  (if (zero? exit-code)
-    {:status :done
-     :exit-code exit-code
-     :result (attribute run :harness/result)
-     :session-id known-session}
-    {:status :failed
-     :exit-code exit-code
-     :session-id known-session
-     :error (or (clipped stderr) (str "Claude exited " exit-code))}))
+(defn- interactive-outcome [exit-code known-session resumes? run stderr]
+  (let [session (session-of nil known-session resumes? exit-code)]
+    (if (zero? exit-code)
+      (outcome/done {:exit-code exit-code
+                     :result (attribute run :harness/result)
+                     :session session})
+      (outcome/failed {:exit-code exit-code
+                       :session session
+                       :error (or (outcome/clipped stderr)
+                                  (str "Claude exited " exit-code))}))))
 
-(defn- headless-outcome [exit-code known-session stdout stderr]
-  (if-not (zero? exit-code)
-    {:status :failed
-     :exit-code exit-code
-     :session-id known-session
-     :error (or (clipped stderr) (clipped stdout) (str "Claude exited " exit-code))}
-    (try
-      (let [parsed (json/read-str stdout :key-fn keyword)
-            result (:result parsed)
-            session-id (or (:session_id parsed) known-session)]
-        (if (str/blank? result)
-          {:status :failed
-           :exit-code exit-code
-           :session-id session-id
-           :error (str "Claude returned no result: " (or (clipped stdout) "<blank>"))}
-          {:status :done
-           :exit-code exit-code
-           :result result
-           :session-id session-id}))
-      (catch Exception e
-        {:status :failed
-         :exit-code exit-code
-         :session-id known-session
-         :error (str "Claude JSON parse failed: " (ex-message e)
-                     (when-let [output (clipped stdout)] (str "\n" output)))}))))
+(defn- parse-stdout [stdout]
+  (try
+    {:parsed (json/read-str stdout :key-fn keyword)}
+    (catch Exception e
+      {:parse-error (ex-message e)})))
+
+(defn- headless-outcome [exit-code known-session resumes? stdout stderr]
+  (let [{:keys [parsed parse-error]} (parse-stdout stdout)
+        ;; Claude prints its result envelope before exiting nonzero, so the
+        ;; session id is recoverable from a failed run as readily as a clean one.
+        session (session-of (:session_id parsed) known-session resumes? exit-code)
+        result (:result parsed)
+        fail (fn [error]
+               (outcome/failed {:exit-code exit-code
+                                :result (when-not (str/blank? result) result)
+                                :session session
+                                :error error}))]
+    (cond
+      parse-error
+      (fail (str "Claude JSON parse failed: " parse-error
+                 (when-let [output (outcome/clipped stdout)] (str "\n" output))))
+
+      (not (zero? exit-code))
+      (fail (or (outcome/clipped stderr) (outcome/clipped stdout)
+                (str "Claude exited " exit-code)))
+
+      ;; A nonblank :result is not success on its own; Claude reports refusals,
+      ;; turn limits and execution errors as result text under is_error.
+      (:is_error parsed)
+      (fail (or (outcome/clipped result)
+                (str "Claude reported an error result: "
+                     (or (:subtype parsed) "unknown"))))
+
+      (str/blank? result)
+      (fail (str "Claude returned no result: " (or (outcome/clipped stdout) "<blank>")))
+
+      :else
+      (outcome/done {:exit-code exit-code :result result :session session}))))
 
 (lifecycle/defresource claude-harness-runtime
   "Own the Claude harness registration for the module lifetime."

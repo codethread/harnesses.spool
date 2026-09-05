@@ -5,6 +5,7 @@
             [clojure.spec.alpha :as s]
             [clojure.string :as str]
             [ct.spools.harnesses :as harness]
+            [ct.spools.harnesses.providers.internal.outcome :as outcome]
             [millstrand.api.lifecycle.alpha :as lifecycle]
             [millstrand.api.spool.alpha :refer [attr-get fail! require-valid!]]))
 
@@ -86,10 +87,11 @@
                   "Cursor finish requires an observed process result")
   (let [mode (attribute run :harness/mode)
         known-session (attribute run :harness/session-id)
-        outcome (if (= "interactive" mode)
-                  (interactive-outcome exit-code known-session run stderr)
-                  (headless-outcome exit-code known-session stdout stderr))]
-    (require-valid! ::harness/outcome outcome
+        resumes? (boolean (attribute run :harness/resumes))
+        result (if (= "interactive" mode)
+                 (interactive-outcome exit-code known-session resumes? run stderr)
+                 (headless-outcome exit-code known-session resumes? stdout stderr))]
+    (require-valid! ::harness/outcome result
                     "Cursor finish produced an invalid outcome")))
 
 (s/fdef finish
@@ -128,14 +130,15 @@
      :effort (attribute run :harness/effort)
      :fast (attribute run :harness.cursor/fast)
      :plugin-dir (cursor-plugin-dir)
+     ;; The harness plugin's sessionStart hook fires on every launch, including
+     ;; --resume, and reads this env var fresh, so resumed runs need the pinned
+     ;; identity and policy guidance supplied again.
      :system-prompt
-     (when-not resumes
-       (str/join "\n\n"
-                 (remove str/blank?
-                         (cons (attribute run :identity/prompt)
-                               (or (attribute run
-                                              :harness/appended-system-prompts)
-                                   [])))))
+     (str/join "\n\n"
+               (remove str/blank?
+                       (cons (attribute run :identity/prompt)
+                             (or (attribute run :harness/appended-system-prompts)
+                                 []))))
      :prompt (attribute run :harness/prompt)
      :extra (or (attribute run :harness/extra-argv) [])}))
 
@@ -191,61 +194,68 @@
       (option-argv options)
       (when (and interactive? (not (str/blank? prompt))) [prompt])))))
 
-(defn- clipped [s]
-  (when-not (str/blank? s)
-    (subs s 0 (min 4000 (count s)))))
+;; Cursor mints its own chat id and only ever receives one through --resume, so
+;; a new run's harness/session-id names no native session and must never be
+;; reported as confirmed.
+(defn- session-of [observed-id known-session resumes? exit-code]
+  (outcome/session-evidence {:observed-id observed-id
+                             :known-id known-session
+                             :resumes? resumes?
+                             :pinned? false
+                             :exit-code exit-code}))
 
-(defn- interactive-outcome [exit-code known-session run stderr]
-  (if (zero? exit-code)
-    {:status :done
-     :exit-code exit-code
-     :result (attribute run :harness/result)
-     :session-id known-session}
-    {:status :failed
-     :exit-code exit-code
-     :session-id known-session
-     :error (or (clipped stderr) (str "Cursor exited " exit-code))}))
+(defn- interactive-outcome [exit-code known-session resumes? run stderr]
+  ;; An interactive run prints no envelope, so only a resumed chat id is
+  ;; established; a new one stays provisional however cleanly Cursor exited.
+  (let [session (session-of nil known-session resumes? exit-code)]
+    (if (zero? exit-code)
+      (outcome/done {:exit-code exit-code
+                     :result (attribute run :harness/result)
+                     :session session})
+      (outcome/failed {:exit-code exit-code
+                       :session session
+                       :error (or (outcome/clipped stderr)
+                                  (str "Cursor exited " exit-code))}))))
 
-(defn- headless-outcome [exit-code known-session stdout stderr]
-  (if-not (zero? exit-code)
-    {:status :failed
-     :exit-code exit-code
-     :session-id known-session
-     :error (or (clipped stderr) (clipped stdout) (str "Cursor exited " exit-code))}
-    (try
-      (let [{:keys [is_error result session_id]} (json/read-str stdout :key-fn keyword)]
-        (cond
-          is_error
-          {:status :failed
-           :exit-code exit-code
-           :session-id (or session_id known-session)
-           :error (or (clipped result) "Cursor returned an error result")}
+(defn- parse-stdout [stdout]
+  (try
+    {:parsed (json/read-str stdout :key-fn keyword)}
+    (catch Exception e
+      {:parse-error (ex-message e)})))
 
-          (str/blank? session_id)
-          {:status :failed
-           :exit-code exit-code
-           :session-id known-session
-           :error (str "Cursor returned no session id: "
-                       (or (clipped stdout) "<blank>"))}
+(defn- headless-outcome [exit-code known-session resumes? stdout stderr]
+  (let [{:keys [parsed parse-error]} (parse-stdout stdout)
+        {:keys [is_error result session_id]} parsed
+        ;; Cursor prints its envelope before exiting nonzero, so the chat id is
+        ;; recoverable from a failed run as readily as a clean one.
+        session (session-of session_id known-session resumes? exit-code)
+        fail (fn [error]
+               (outcome/failed {:exit-code exit-code
+                                :result (when-not (str/blank? result) result)
+                                :session session
+                                :error error}))]
+    (cond
+      parse-error
+      (fail (str "Cursor JSON parse failed: " parse-error
+                 (when-let [output (outcome/clipped stdout)] (str "\n" output))))
 
-          (str/blank? result)
-          {:status :failed
-           :exit-code exit-code
-           :session-id session_id
-           :error (str "Cursor returned no result: "
-                       (or (clipped stdout) "<blank>"))}
+      (not (zero? exit-code))
+      (fail (or (outcome/clipped stderr) (outcome/clipped stdout)
+                (str "Cursor exited " exit-code)))
 
-          :else
-          {:status :done
-           :exit-code exit-code
-           :result result
-           :session-id session_id}))
-      (catch Exception e
-        {:status :failed
-         :exit-code exit-code
-         :session-id known-session
-         :error (str "Cursor JSON parse failed: " (ex-message e)
-                     (when-let [output (clipped stdout)] (str "\n" output)))}))))
+      is_error
+      (fail (or (outcome/clipped result) "Cursor returned an error result"))
+
+      (str/blank? session_id)
+      (fail (str "Cursor returned no session id: "
+                 (or (outcome/clipped stdout) "<blank>")))
+
+      (str/blank? result)
+      (fail (str "Cursor returned no result: "
+                 (or (outcome/clipped stdout) "<blank>")))
+
+      :else
+      (outcome/done {:exit-code exit-code :result result :session session}))))
 
 (lifecycle/defresource cursor-harness-runtime
   "Own the Cursor harness registration for the module lifetime."

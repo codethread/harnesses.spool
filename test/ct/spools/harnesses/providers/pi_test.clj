@@ -36,9 +36,12 @@
                    "--skip-git-repo-check"]
             :stdin "Do the work\n"}
            (pi/prepare runtime definition (run "headless")))))
-  (testing "resumed headless runs select the recorded Pi session"
+  (testing "resumed headless runs select the session and reapply pinned guidance"
     (is (= {:argv ["pi" "--print" "--mode" "json"
                    "--session" "provisional"
+                   "--append-system-prompt" "You are agent tidy-brave-swan."
+                   "--append-system-prompt" "Review changes only."
+                   "--append-system-prompt" "Do not edit files."
                    "--model" "gpt-test" "--thinking" "adaptive"
                    "--skip-git-repo-check"]
             :stdin "Do the work\n"}
@@ -82,3 +85,31 @@
                              {:exit-code 0 :stdout "{nope}\n" :stderr ""})]
       (is (= :failed (:status outcome)))
       (is (re-find #"JSONL parse failed" (:error outcome))))))
+
+(deftest finish-preserves-native-session-through-abnormal-exits
+  (testing "a nonzero exit still reports the session Pi announced"
+    (let [outcome (pi/finish runtime definition (run "headless")
+                             {:exit-code 137
+                              :stdout "{\"type\":\"session\",\"id\":\"session-1\"}\n"
+                              :stderr "killed"})]
+      (is (= :failed (:status outcome)))
+      (is (= "session-1" (:session-id outcome)))))
+  (testing "records before a truncated final line remain valid evidence"
+    (let [outcome (pi/finish
+                   runtime definition (run "headless")
+                   {:exit-code 0
+                    :stdout (str "{\"type\":\"session\",\"id\":\"session-1\"}\n"
+                                 "{\"type\":\"message_end\",\"message\":"
+                                 "{\"role\":\"assistant\",\"content\":"
+                                 "[{\"type\":\"text\",\"text\":\"partial\"}]}}\n"
+                                 "{\"type\":\"message_e")
+                    :stderr ""})]
+      (is (= :failed (:status outcome)))
+      (is (= "session-1" (:session-id outcome)))
+      (is (= "partial" (:result outcome)))
+      (is (re-find #"truncated JSONL" (:error outcome)))))
+  (testing "an unproven pinned id is still named because Pi was given it"
+    (let [outcome (pi/finish runtime definition (run "interactive")
+                             {:exit-code 130 :stdout "" :stderr "interrupted"})]
+      (is (= :failed (:status outcome)))
+      (is (= "provisional" (:session-id outcome))))))

@@ -36,8 +36,12 @@
                    "--dangerously-skip-permissions"]
             :stdin "Do the work\n"}
            (claude/prepare runtime definition (run "headless")))))
-  (testing "interactive resumes select the recorded Claude session"
-    (is (= {:argv ["claude" "--resume" "provisional" "--model" "sonnet"
+  (testing "interactive resumes select the session and reapply pinned guidance"
+    (is (= {:argv ["claude" "--resume" "provisional"
+                   "--append-system-prompt" "You are agent tidy-brave-swan."
+                   "--append-system-prompt" "Review changes only."
+                   "--append-system-prompt" "Do not edit files."
+                   "--model" "sonnet"
                    "--effort" "adaptive" "--dangerously-skip-permissions"
                    "Do the work"]
             :stdin nil}
@@ -67,3 +71,34 @@
                                  {:exit-code 0 :stdout "{nope}" :stderr ""})]
       (is (= :failed (:status outcome)))
       (is (re-find #"JSON parse failed" (:error outcome))))))
+
+(deftest finish-rejects-an-error-envelope-that-carries-text
+  (testing "result text under is_error is a failure, not a completed answer"
+    (let [outcome (claude/finish
+                   runtime definition (run "headless")
+                   {:exit-code 0
+                    :stdout (str "{\"is_error\":true,\"subtype\":\"error_max_turns\","
+                                 "\"result\":\"ran out of turns\","
+                                 "\"session_id\":\"session-1\"}")
+                    :stderr ""})]
+      (is (= :failed (:status outcome)))
+      (is (re-find #"ran out of turns" (:error outcome)))
+      (testing "the partial answer and session survive for a later resume"
+        (is (= "ran out of turns" (:result outcome)))
+        (is (= "session-1" (:session-id outcome)))))))
+
+(deftest finish-preserves-native-session-through-abnormal-exits
+  (testing "a nonzero exit still reports the session Claude printed"
+    (let [outcome (claude/finish
+                   runtime definition (run "headless")
+                   {:exit-code 1
+                    :stdout "{\"result\":\"partial\",\"session_id\":\"session-1\"}"
+                    :stderr "boom"})]
+      (is (= :failed (:status outcome)))
+      (is (= "session-1" (:session-id outcome)))
+      (is (= "partial" (:result outcome)))))
+  (testing "an unproven pinned id is still named because Claude was given it"
+    (let [outcome (claude/finish runtime definition (run "interactive")
+                                 {:exit-code 130 :stdout "" :stderr "interrupted"})]
+      (is (= :failed (:status outcome)))
+      (is (= "provisional" (:session-id outcome))))))

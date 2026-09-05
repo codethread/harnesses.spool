@@ -4,6 +4,7 @@
             [clojure.spec.alpha :as s]
             [clojure.string :as str]
             [ct.spools.harnesses :as harness]
+            [ct.spools.harnesses.providers.internal.outcome :as outcome]
             [millstrand.api.lifecycle.alpha :as lifecycle]
             [millstrand.api.spool.alpha :refer [attr-get fail! require-valid!]]))
 
@@ -78,10 +79,11 @@
                   "Codex finish requires an observed process result")
   (let [mode (attribute run :harness/mode)
         known-session (attribute run :harness/session-id)
-        outcome (if (= "interactive" mode)
-                  (interactive-outcome exit-code known-session run stderr)
-                  (headless-outcome exit-code known-session stdout stderr))]
-    (require-valid! ::harness/outcome outcome
+        resumes? (boolean (attribute run :harness/resumes))
+        result (if (= "interactive" mode)
+                 (interactive-outcome exit-code known-session resumes? run stderr)
+                 (headless-outcome exit-code known-session resumes? stdout stderr))]
+    (require-valid! ::harness/outcome result
                     "Codex finish produced an invalid outcome")))
 
 (s/fdef finish
@@ -140,12 +142,14 @@
            {:extra-argv extra})))
 
 (defn- option-argv
-  [{:keys [resumes model effort identity-prompt appended-system-prompts extra]}]
-  (let [system-prompt (when-not resumes
-                        (str/join "\n\n"
-                                  (remove str/blank?
-                                          (cons identity-prompt
-                                                appended-system-prompts))))]
+  [{:keys [model effort identity-prompt appended-system-prompts extra]}]
+  ;; developer_instructions is rebuilt from config on every launch and
+  ;; `exec resume` accepts -c/--config, so resumed runs must reapply the pinned
+  ;; identity and policy guidance rather than inherit it.
+  (let [system-prompt (str/join "\n\n"
+                                (remove str/blank?
+                                        (cons identity-prompt
+                                              appended-system-prompts)))]
     (vec
      (concat
       (when model ["--model" model])
@@ -174,27 +178,32 @@
       (when (and resumes (not interactive?)) ["-"])
       (when (and interactive? (not (str/blank? prompt))) [prompt])))))
 
-(defn- clipped [s]
-  (when-not (str/blank? s)
-    (subs s 0 (min 4000 (count s)))))
+;; Codex mints its own thread id and only ever receives one when resuming, so a
+;; new run's harness/session-id names no native thread and must never be
+;; reported as confirmed.
+(defn- session-of [observed-id known-session resumes? exit-code]
+  (outcome/session-evidence {:observed-id observed-id
+                             :known-id known-session
+                             :resumes? resumes?
+                             :pinned? false
+                             :exit-code exit-code}))
 
-(defn- interactive-outcome [exit-code known-session run stderr]
-  (if (zero? exit-code)
-    {:status :done
-     :exit-code exit-code
-     :result (attribute run :harness/result)
-     :session-id known-session}
-    {:status :failed
-     :exit-code exit-code
-     :session-id known-session
-     :error (or (clipped stderr) (str "Codex exited " exit-code))}))
-
-(defn- jsonl-events [stdout]
-  (mapv #(json/read-str % :key-fn keyword)
-        (remove str/blank? (str/split-lines (or stdout "")))))
+(defn- interactive-outcome [exit-code known-session resumes? run stderr]
+  ;; An interactive run yields no parseable stream, so only a resumed thread id
+  ;; is established; a new one stays provisional however cleanly Codex exited.
+  (let [session (session-of nil known-session resumes? exit-code)]
+    (if (zero? exit-code)
+      (outcome/done {:exit-code exit-code
+                     :result (attribute run :harness/result)
+                     :session session})
+      (outcome/failed {:exit-code exit-code
+                       :session session
+                       :error (or (outcome/clipped stderr)
+                                  (str "Codex exited " exit-code))}))))
 
 (defn- event-session-id [events]
-  (some #(when (= "thread.started" (:type %)) (:thread_id %)) events))
+  (outcome/native-session-id
+   events #(when (= "thread.started" (:type %)) (:thread_id %))))
 
 (defn- event-result [events]
   (some->> events
@@ -203,42 +212,47 @@
                     (get-in % [:item :text])))
            last))
 
-(defn- headless-outcome [exit-code known-session stdout stderr]
-  (if-not (zero? exit-code)
-    {:status :failed
-     :exit-code exit-code
-     :session-id known-session
-     :error (or (clipped stderr) (clipped stdout) (str "Codex exited " exit-code))}
-    (try
-      (let [events (jsonl-events stdout)
-            result (event-result events)
-            session-id (event-session-id events)]
-        (cond
-          (str/blank? session-id)
-          {:status :failed
-           :exit-code exit-code
-           :session-id known-session
-           :error (str "Codex returned no thread id: "
-                       (or (clipped stdout) "<blank>"))}
+(defn- terminal-error [events]
+  (some #(when (#{"turn.failed" "error"} (:type %))
+           (or (get-in % [:error :message]) (:message %) (:type %)))
+        events))
 
-          (str/blank? result)
-          {:status :failed
-           :exit-code exit-code
-           :session-id session-id
-           :error (str "Codex returned no agent message: "
-                       (or (clipped stdout) "<blank>"))}
+(defn- headless-outcome [exit-code known-session resumes? stdout stderr]
+  (let [{:keys [records truncated?] :as decoded} (outcome/jsonl-records stdout)
+        ;; thread.started is the first record Codex writes, so a run that was
+        ;; killed or failed mid-turn still proves which thread now exists.
+        session (session-of (event-session-id records) known-session resumes?
+                            exit-code)
+        result (event-result records)
+        failure (terminal-error records)
+        fail (fn [error]
+               (outcome/failed {:exit-code exit-code
+                                :result result
+                                :session session
+                                :error error}))]
+    (cond
+      (not (zero? exit-code))
+      (fail (or (outcome/clipped stderr) (outcome/clipped stdout)
+                (str "Codex exited " exit-code)))
 
-          :else
-          {:status :done
-           :exit-code exit-code
-           :result result
-           :session-id session-id}))
-      (catch Exception e
-        {:status :failed
-         :exit-code exit-code
-         :session-id known-session
-         :error (str "Codex JSONL parse failed: " (ex-message e)
-                     (when-let [output (clipped stdout)] (str "\n" output)))}))))
+      ;; turn.failed and error are terminal even when the turn already streamed
+      ;; an agent message, so text alone cannot stand in for success.
+      failure
+      (fail (str "Codex reported a failed turn: " failure))
+
+      truncated?
+      (fail (outcome/undecodable-error "Codex" decoded stdout))
+
+      (not= :observed (:origin session))
+      (fail (str "Codex returned no thread id: "
+                 (or (outcome/clipped stdout) "<blank>")))
+
+      (str/blank? result)
+      (fail (str "Codex returned no agent message: "
+                 (or (outcome/clipped stdout) "<blank>")))
+
+      :else
+      (outcome/done {:exit-code exit-code :result result :session session}))))
 
 (lifecycle/defresource codex-harness-runtime
   "Own the Codex harness registration for the module lifetime."
