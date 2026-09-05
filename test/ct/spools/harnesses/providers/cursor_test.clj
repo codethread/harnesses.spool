@@ -74,7 +74,8 @@
     (is (= {:status :done
             :exit-code 0
             :result "final"
-            :session-id "session-1"}
+            :session-id "session-1"
+            :session-usable true}
            (cursor/finish runtime definition (run "headless")
                           {:exit-code 0 :stdout stdout :stderr ""})))))
 

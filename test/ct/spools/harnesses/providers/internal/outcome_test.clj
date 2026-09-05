@@ -30,6 +30,30 @@
     (is (= {:id nil :usable? false :origin :provisional}
            (evidence {:known-id "" :resumes? true})))))
 
+(deftest outcomes-emit-session-usable-directly
+  (testing "done carries usable evidence straight through"
+    (is (= {:status :done
+            :exit-code 0
+            :result "fine"
+            :session-id "native-1"
+            :session-usable true}
+           (outcome/done {:exit-code 0 :result "fine"
+                          :session {:id "native-1" :usable? true :origin :observed}}))))
+  (testing "failed keeps unusable evidence visible for a later decision"
+    (is (= {:status :failed
+            :exit-code 1
+            :result "partial"
+            :session-id "provisional"
+            :session-usable false
+            :error "boom"}
+           (outcome/failed {:exit-code 1 :result "partial" :error "boom"
+                            :session {:id "provisional" :usable? false
+                                      :origin :unproven}}))))
+  (testing "a provisional session emits usable false and no null session id"
+    (is (= {:status :failed :exit-code 1 :session-usable false :error "boom"}
+           (outcome/failed {:exit-code 1 :error "boom"
+                            :session {:id nil :usable? false :origin :provisional}})))))
+
 (deftest jsonl-records-keeps-whole-records-before-a-truncated-tail
   (is (= {:records [{:type "session"} {:type "message_end"}] :truncated? true}
          (outcome/jsonl-records

@@ -52,7 +52,8 @@
   (is (= {:status :done
           :exit-code 0
           :result "final"
-          :session-id "session-1"}
+          :session-id "session-1"
+          :session-usable true}
          (claude/finish runtime definition (run "headless")
                         {:exit-code 0
                          :stdout "{\"result\":\"final\",\"session_id\":\"session-1\"}"

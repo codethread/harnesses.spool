@@ -173,12 +173,37 @@
 (defn- event-session-id [events]
   (outcome/native-session-id events #(when (= "session" (:type %)) (:id %))))
 
+(defn- assistant-messages [events]
+  (keep (fn [event]
+          (let [message (:message event)]
+            (when (and (map? message) (= "assistant" (:role message)))
+              message)))
+        events))
+
 (defn- event-result [events]
   (some->> events
            (keep #(when (and (= "message_end" (:type %))
                              (= "assistant" (get-in % [:message :role])))
                     (some-> (get-in % [:message :content]) first :text)))
            last))
+
+(defn- terminal-error
+  "Return the failing stop of the final assistant message, or nil when the run
+  ended on a completed turn.
+
+  A terminal provider failure (usage limit, auth, transport) surfaces as
+  stopReason \"error\" or \"aborted\" on the last assistant message, possibly
+  with an errorMessage, while Pi itself still exits 0 and earlier turns have
+  already streamed text. Nonblank assistant text must not turn such a run into
+  a done outcome."
+  [events]
+  (let [{:keys [stopReason errorMessage]} (last (assistant-messages events))]
+    (when (#{"error" "aborted"} stopReason)
+      (let [detail (cond
+                     (string? errorMessage) (outcome/clipped errorMessage)
+                     (some? errorMessage) (pr-str errorMessage)
+                     :else nil)]
+        (or detail (str "Pi turn ended with stopReason " stopReason))))))
 
 (defn- headless-outcome [exit-code known-session resumes? stdout stderr]
   (let [{:keys [records truncated?] :as decoded} (outcome/jsonl-records stdout)
@@ -187,6 +212,7 @@
         session (session-of (event-session-id records) known-session resumes?
                             exit-code)
         result (event-result records)
+        failure (terminal-error records)
         fail (fn [error]
                (outcome/failed {:exit-code exit-code
                                 :result result
@@ -196,6 +222,11 @@
       (not (zero? exit-code))
       (fail (or (outcome/clipped stderr) (outcome/clipped stdout)
                 (str "Pi exited " exit-code)))
+
+      ;; error and aborted are terminal even when a message_end already streamed
+      ;; text, so a nonblank assistant answer alone cannot stand in for success.
+      failure
+      (fail failure)
 
       truncated?
       (fail (outcome/undecodable-error "Pi" decoded stdout))

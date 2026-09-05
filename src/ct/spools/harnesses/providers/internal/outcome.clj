@@ -9,9 +9,7 @@
   These helpers keep that distinction explicit so every adapter classifies
   evidence the same way."
   (:require [clojure.data.json :as json]
-            [clojure.spec.alpha :as s]
-            [clojure.string :as str]
-            [ct.spools.harnesses :as harness]))
+            [clojure.string :as str]))
 
 (def ^:private clip-limit 4000)
 
@@ -55,21 +53,18 @@
            (when-not (str/blank? id) id))
         records))
 
-;; The core outcome spec is a closed key set. Until the amendment tracked in
-;; coordinator note 5lq1t lands, emitting :session-usable would fail
-;; require-valid!, so probe the live spec once and drop the key while core is
-;; still narrow. Nothing else changes when core widens.
-(def ^:private core-accepts-session-usable?
-  (delay (s/valid? ::harness/outcome {:status :failed :session-usable true})))
-
-(defn- prune [outcome]
-  (cond-> (into {} (remove (comp nil? val)) outcome)
-    (not @core-accepts-session-usable?) (dissoc :session-usable)))
+(defn- clean
+  "Drop nil-valued keys so provisional evidence never emits a null id."
+  [outcome]
+  (into {} (remove (comp nil? val)) outcome))
 
 (defn done
-  "Build a successful outcome. `session` is a map from `session-evidence`."
+  "Build a successful outcome. `session` is a map from `session-evidence`.
+
+  Core's outcome contract now carries :session-usable, so usable? evidence is
+  emitted straight through rather than withheld behind a runtime spec probe."
   [{:keys [exit-code result session]}]
-  (prune {:status :done
+  (clean {:status :done
           :exit-code exit-code
           :result result
           :session-id (:id session)
@@ -78,7 +73,7 @@
 (defn failed
   "Build a failure outcome preserving partial result text and session evidence."
   [{:keys [exit-code error result session]}]
-  (prune {:status :failed
+  (clean {:status :failed
           :exit-code exit-code
           :result result
           :session-id (:id session)

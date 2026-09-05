@@ -82,7 +82,8 @@
     (is (= {:status :done
             :exit-code 0
             :result "final"
-            :session-id "thread-1"}
+            :session-id "thread-1"
+            :session-usable true}
            (codex/finish runtime definition (run "headless")
                          {:exit-code 0 :stdout stdout :stderr ""})))))
 

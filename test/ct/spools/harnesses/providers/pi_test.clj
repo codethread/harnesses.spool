@@ -66,9 +66,76 @@
     (is (= {:status :done
             :exit-code 0
             :result "final"
-            :session-id "session-1"}
+            :session-id "session-1"
+            :session-usable true}
            (pi/finish runtime definition (run "headless")
                       {:exit-code 0 :stdout stdout :stderr ""})))))
+
+(deftest finish-rejects-terminal-stop-reason-despite-assistant-text
+  (testing "stopReason error on the final message fails a run that streamed text"
+    (let [outcome (pi/finish
+                   runtime definition (run "headless")
+                   {:exit-code 0
+                    :stdout (str "{\"type\":\"session\",\"id\":\"session-1\"}\n"
+                                 "{\"type\":\"message_end\",\"message\":"
+                                 "{\"role\":\"assistant\",\"content\":"
+                                 "[{\"type\":\"text\",\"text\":\"here is my plan\"}]}}\n"
+                                 "{\"type\":\"message_end\",\"message\":"
+                                 "{\"role\":\"assistant\",\"content\":[],\"stopReason\":\"error\","
+                                 "\"errorMessage\":\"Codex error: The usage limit has been reached\"}}\n")
+                    :stderr ""})]
+      (is (= :failed (:status outcome)))
+      (is (re-find #"usage limit has been reached" (:error outcome)))
+      (testing "the partial answer and session survive for a later resume"
+        (is (= "here is my plan" (:result outcome)))
+        (is (= "session-1" (:session-id outcome))))))
+  (testing "stopReason aborted with text still fails the run"
+    (let [outcome (pi/finish
+                   runtime definition (run "headless")
+                   {:exit-code 0
+                    :stdout (str "{\"type\":\"session\",\"id\":\"session-1\"}\n"
+                                 "{\"type\":\"message_end\",\"message\":"
+                                 "{\"role\":\"assistant\",\"content\":"
+                                 "[{\"type\":\"text\",\"text\":\"almost done\"}],\"stopReason\":\"aborted\","
+                                 "\"errorMessage\":\"Request was aborted\"}}\n")
+                    :stderr ""})]
+      (is (= :failed (:status outcome)))
+      (is (= "Request was aborted" (:error outcome)))
+      (is (= "almost done" (:result outcome)))
+      (is (= "session-1" (:session-id outcome)))))
+  (testing "an error stop without errorMessage falls back to a descriptive error"
+    (let [outcome (pi/finish
+                   runtime definition (run "headless")
+                   {:exit-code 0
+                    :stdout (str "{\"type\":\"session\",\"id\":\"session-1\"}\n"
+                                 "{\"type\":\"message_end\",\"message\":"
+                                 "{\"role\":\"assistant\",\"content\":[],\"stopReason\":\"error\"}}\n")
+                    :stderr ""})]
+      (is (= :failed (:status outcome)))
+      (is (= "Pi turn ended with stopReason error" (:error outcome)))))
+  (testing "a non-string errorMessage fails instead of throwing into the parse path"
+    (let [outcome (pi/finish
+                   runtime definition (run "headless")
+                   {:exit-code 0
+                    :stdout (str "{\"type\":\"session\",\"id\":\"session-1\"}\n"
+                                 "{\"type\":\"message_end\",\"message\":"
+                                 "{\"role\":\"assistant\",\"content\":[],\"stopReason\":\"error\","
+                                 "\"errorMessage\":429}}\n")
+                    :stderr ""})]
+      (is (= :failed (:status outcome)))
+      (is (= "429" (:error outcome)))))
+  (testing "a clean terminal message stays done whatever text it carries"
+    (let [outcome (pi/finish
+                   runtime definition (run "headless")
+                   {:exit-code 0
+                    :stdout (str "{\"type\":\"session\",\"id\":\"session-1\"}\n"
+                                 "{\"type\":\"message_end\",\"message\":"
+                                 "{\"role\":\"assistant\",\"content\":"
+                                 "[{\"type\":\"text\",\"text\":\"all done\"}],\"stopReason\":\"stop\"}}\n")
+                    :stderr ""})]
+      (is (= :done (:status outcome)))
+      (is (= "all done" (:result outcome)))
+      (is (= "session-1" (:session-id outcome))))))
 
 (deftest finish-fails-loudly-on-incomplete-success-output
   (testing "a successful process without a provider session cannot be resumed safely"
