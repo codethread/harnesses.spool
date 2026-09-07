@@ -1,1 +1,4 @@
-{"configFormat":"alpha"}
+{
+  "configFormat": "alpha",
+  "autoStart": true
+}

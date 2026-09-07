@@ -37,7 +37,7 @@
             delegated focussed tasks. Be explicit with tight success criteria.
             Well behaved, does not need imposed limitations
 
-            default choice for sub coordinator roles" {}),
+            Prefer tightly scoped execution over coordination." {}),
     :parent :pi,
     :model "openai-codex/gpt-5.6-luna"
     :effort :high,
@@ -50,9 +50,9 @@
 
             Claude Opus. Greenfield features, API design, and critical seams;
             archaeology-first and strongest on known-work code quality. Keep
-            cross-vendor GPT sign-off for Opus-authored changes. Suitable for
+            independent review for authored changes. Suitable for
             agent-facing docs or first pass human docs, but keep it to outline
-            and review heavily via a gpt seat.
+            and review heavily with a prose-capable reviewer.
             " {}),
     :parent :claude,
     :model "opus"
@@ -68,8 +68,20 @@
             Provide details up front to minimise required exploration. Present
             intent or concrete issues, not solutions." {}),
     :parent :claude,
-    :when :seat/fable
     :model "claude-fable-5"
+    :effort :high,
+    :attributes {}},
+   :astra
+   {:doc (format-alpha/prose
+          "
+            gpt-6-astra. Reserve for extreme diagnosis, top-level coordination,
+            architectural guidance, and user-facing prose where writing is the
+            product. Provide relevant details up front; present intent or
+            concrete issues rather than prescribing solutions.
+
+            Default oracle for high-stakes guidance." {}),
+    :parent :pi,
+    :model "openai-codex/gpt-6-astra"
     :effort :high,
     :attributes {}},
    :sol
@@ -99,21 +111,17 @@
     :effort :medium,
     :attributes {}},
    :grok
-   {:doc "Grok agent, similar to opus, use when claude unavailable"
+   {:doc "Grok. Use for greenfield implementation, API design, and critical code review."
     :parent :cursor
     :model "cursor-grok-4.6"
     :effort :high
     :attributes {:harness.cursor/fast true}},
 
    :oracle
-   [{:doc "Default guidance seat using Fable."
-     :parent :fable
-     :effort :high
-     :attributes {}}
-    {:doc "Fallback guidance seat using Sol."
-     :parent :sol
-     :effort :max
-     :attributes {}}],
+   {:doc "Default seat for high-stakes guidance, extreme diagnosis, and architectural decisions."
+    :parent :astra
+    :effort :high
+    :attributes {}},
    :reviewer
    {:doc "default choice for targetted reviews"
     :parent :terra
@@ -138,8 +146,8 @@
 (defn open-harnesses!
   "Register the shared Codethread-inspired harness seat map."
   [{:keys [runtime]}]
-  (when (nil? (harnesses/flag runtime :seat/fable))
-    (harnesses/set-flag! runtime :seat/fable true))
+  (doseq [provider-flag [:harness/claude :harness/cursor]]
+    (harnesses/set-flag! runtime provider-flag false))
   (let [registrations
         (mapv (fn [[alias descriptor]]
                 (harnesses/register-alias! runtime alias descriptor))
