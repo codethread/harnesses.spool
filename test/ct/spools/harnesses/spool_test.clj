@@ -100,7 +100,7 @@
                {:ns 'ct.spools.harnesses.spool
                 :after [:identity]
                 :required? true})"}]
-      (let [{:keys [harnesses operation handler bins lifecycles]}
+      (let [{:keys [harnesses operation handler bins agent-bin-plan lifecycles]}
             (test-alpha/repl!
              ctx
              '(do
@@ -115,12 +115,16 @@
                    :handler (some #(when (= :on-event (:key %)) %)
                                   (events/handlers rt))
                    :bins (set (map :name (:bins (weaver/op! rt 'bins ["list"]))))
+                   :agent-bin-plan (weaver/op! rt 'bins ["plan" "agent"])
                    :lifecycles (get-in (runtime/status rt)
                                        [:last-refresh :modules :harnesses
                                         :lifecycle/outcomes])})))]
         (is (= ["claude" "codex" "cursor" "pi"] harnesses))
         (is (= "agent" operation))
         (is (contains? bins "agent"))
+        (is (= (.getCanonicalPath (java.io.File. harnesses-root "bin/agent"))
+               (get-in agent-bin-plan [:exec :path])))
+        (is (true? (:runnable agent-bin-plan)))
         (is (= #{:strand/added :strand/updated :batch/applied}
                (:types handler)))
         (doseq [effect [:harness-core-runtime

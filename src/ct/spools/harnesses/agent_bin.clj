@@ -5,4 +5,4 @@
 
 (millstrand/defbin agent
   "Open a coding agent in the caller's terminal as a tracked interactive run."
-  {:executable [:root "bin/agent"]})
+  {:executable [:family "bin/agent"]})
