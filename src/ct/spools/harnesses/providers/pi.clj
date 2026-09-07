@@ -73,7 +73,11 @@
   :ret ::harness/launch-spec)
 
 (defn finish
-  "Normalize Pi's process result into the core outcome."
+  "Normalize Pi's process result into the core outcome.
+
+  Success uses only the final ended assistant message. Failed execution may
+  retain the latest useful message as a partial `:result`; it is never promoted
+  to success when the final message has no text."
   [_rt resolved-harness run {:keys [exit-code stdout stderr] :as process-result}]
   (require-valid! ::harness/runtime _rt "Pi finish requires a Weaver runtime")
   (require-valid! ::harness/harness-definition resolved-harness
@@ -180,12 +184,21 @@
               message)))
         events))
 
-(defn- event-result [events]
-  (some->> events
-           (keep #(when (and (= "message_end" (:type %))
-                             (= "assistant" (get-in % [:message :role])))
-                    (some-> (get-in % [:message :content]) first :text)))
-           last))
+(defn- ended-assistant-messages [events]
+  (assistant-messages (filter #(= "message_end" (:type %)) events)))
+
+(defn- message-text
+  "Join a message's nonblank text blocks as ordered paragraphs.
+
+  Thinking and tool blocks are not result text. Preserve authored whitespace
+  within each text block; blank blocks contribute no paragraph."
+  [message]
+  (let [texts (keep #(when (and (= "text" (:type %))
+                                (not (str/blank? (:text %))))
+                       (:text %))
+                    (:content message))]
+    (when (seq texts)
+      (str/join "\n\n" texts))))
 
 (defn- terminal-error
   "Return the failing stop of the final assistant message, or nil when the run
@@ -211,35 +224,38 @@
         ;; that was killed or errored partway through its stream.
         session (session-of (event-session-id records) known-session resumes?
                             exit-code)
-        result (event-result records)
+        messages (ended-assistant-messages records)
+        result (message-text (last messages))
+        partial-result (last (keep message-text messages))
         failure (terminal-error records)
-        fail (fn [error]
+        fail (fn [error partial-text]
                (outcome/failed {:exit-code exit-code
-                                :result result
+                                :result partial-text
                                 :session session
                                 :error error}))]
     (cond
       (not (zero? exit-code))
       (fail (or (outcome/clipped stderr) (outcome/clipped stdout)
-                (str "Pi exited " exit-code)))
+                (str "Pi exited " exit-code))
+            partial-result)
 
       ;; error and aborted are terminal even when a message_end already streamed
       ;; text, so a nonblank assistant answer alone cannot stand in for success.
       failure
-      (fail failure)
+      (fail failure partial-result)
 
       truncated?
-      (fail (outcome/undecodable-error "Pi" decoded stdout))
+      (fail (outcome/undecodable-error "Pi" decoded stdout) partial-result)
 
       ;; Pi always streams its session record, so a clean headless run that
       ;; never announced one has not proven the pinned id names real history.
       (not= :observed (:origin session))
       (fail (str "Pi returned no session id: "
-                 (or (outcome/clipped stdout) "<blank>")))
+                 (or (outcome/clipped stdout) "<blank>"))
+            result)
 
       (str/blank? result)
-      (fail (str "Pi returned no assistant message: "
-                 (or (outcome/clipped stdout) "<blank>")))
+      (fail "Pi final assistant message returned no text" nil)
 
       :else
       (outcome/done {:exit-code exit-code :result result :session session}))))

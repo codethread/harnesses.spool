@@ -60,9 +60,11 @@
 (deftest finish-normalizes-final-message-and-provider-session
   (let [stdout (str "{\"type\":\"session\",\"id\":\"session-1\"}\n"
                     "{\"type\":\"message_end\",\"message\":"
-                    "{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"draft\"}]}}\n"
+                    "{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"initial acknowledgement\"}]}}\n"
                     "{\"type\":\"message_end\",\"message\":"
-                    "{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"final\"}]}}\n")]
+                    "{\"role\":\"assistant\",\"stopReason\":\"stop\",\"content\":"
+                    "[{\"type\":\"thinking\",\"thinking\":\"private reasoning\"},"
+                    "{\"type\":\"text\",\"text\":\"final\"}]}}\n")]
     (is (= {:status :done
             :exit-code 0
             :result "final"
@@ -70,6 +72,39 @@
             :session-usable true}
            (pi/finish runtime definition (run "headless")
                       {:exit-code 0 :stdout stdout :stderr ""})))))
+
+(deftest finish-joins-all-final-text-blocks-in-order
+  (let [stdout (str "{\"type\":\"session\",\"id\":\"session-1\"}\n"
+                    "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\","
+                    "\"stopReason\":\"stop\",\"content\":["
+                    "{\"type\":\"thinking\",\"thinking\":\"private\"},"
+                    "{\"type\":\"text\",\"text\":\"First paragraph\"},"
+                    "{\"type\":\"text\",\"text\":\"  \\n\"},"
+                    "{\"type\":\"toolCall\",\"name\":\"read\",\"arguments\":{}},"
+                    "{\"type\":\"text\",\"text\":\"Second paragraph\"}]}}\n")]
+    (is (= {:status :done
+            :exit-code 0
+            :result "First paragraph\n\nSecond paragraph"
+            :session-id "session-1"
+            :session-usable true}
+           (pi/finish runtime definition (run "headless")
+                      {:exit-code 0 :stdout stdout :stderr ""})))))
+
+(deftest finish-does-not-reuse-earlier-text-for-textless-success
+  (let [stdout (str "{\"type\":\"session\",\"id\":\"session-1\"}\n"
+                    "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\","
+                    "\"content\":[{\"type\":\"text\",\"text\":\"initial acknowledgement\"}]}}\n"
+                    "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\","
+                    "\"stopReason\":\"stop\",\"content\":["
+                    "{\"type\":\"thinking\",\"thinking\":\"private\"},"
+                    "{\"type\":\"text\",\"text\":\" \\n\"}]}}\n")
+        outcome (pi/finish runtime definition (run "headless")
+                           {:exit-code 0 :stdout stdout :stderr ""})]
+    (is (= :failed (:status outcome)))
+    (is (= "Pi final assistant message returned no text" (:error outcome)))
+    (is (not (contains? outcome :result)))
+    (is (= "session-1" (:session-id outcome)))
+    (is (true? (:session-usable outcome)))))
 
 (deftest finish-rejects-terminal-stop-reason-despite-assistant-text
   (testing "stopReason error on the final message fails a run that streamed text"
@@ -88,7 +123,8 @@
       (is (re-find #"usage limit has been reached" (:error outcome)))
       (testing "the partial answer and session survive for a later resume"
         (is (= "here is my plan" (:result outcome)))
-        (is (= "session-1" (:session-id outcome))))))
+        (is (= "session-1" (:session-id outcome)))
+        (is (true? (:session-usable outcome))))))
   (testing "stopReason aborted with text still fails the run"
     (let [outcome (pi/finish
                    runtime definition (run "headless")
@@ -157,10 +193,16 @@
   (testing "a nonzero exit still reports the session Pi announced"
     (let [outcome (pi/finish runtime definition (run "headless")
                              {:exit-code 137
-                              :stdout "{\"type\":\"session\",\"id\":\"session-1\"}\n"
+                              :stdout (str "{\"type\":\"session\",\"id\":\"session-1\"}\n"
+                                           "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\","
+                                           "\"content\":[{\"type\":\"thinking\",\"thinking\":\"private\"},"
+                                           "{\"type\":\"text\",\"text\":\"partial before kill\"}]}}\n")
                               :stderr "killed"})]
       (is (= :failed (:status outcome)))
-      (is (= "session-1" (:session-id outcome)))))
+      (is (= "partial before kill" (:result outcome)))
+      (is (= "killed" (:error outcome)))
+      (is (= "session-1" (:session-id outcome)))
+      (is (true? (:session-usable outcome)))))
   (testing "records before a truncated final line remain valid evidence"
     (let [outcome (pi/finish
                    runtime definition (run "headless")
@@ -174,6 +216,7 @@
       (is (= :failed (:status outcome)))
       (is (= "session-1" (:session-id outcome)))
       (is (= "partial" (:result outcome)))
+      (is (true? (:session-usable outcome)))
       (is (re-find #"truncated JSONL" (:error outcome)))))
   (testing "an unproven pinned id is still named because Pi was given it"
     (let [outcome (pi/finish runtime definition (run "interactive")
