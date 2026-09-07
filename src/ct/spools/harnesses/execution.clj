@@ -2,8 +2,11 @@
   "Asynchronous and interactive execution for provider-neutral harness runs."
   (:require [clojure.spec.alpha :as s]
             [ct.spools.harnesses :as harness]
+            [ct.spools.harnesses.assignment :as assignment]
             [ct.spools.harnesses.internal.launcher :as launcher]
+            [ct.spools.harnesses.internal.lifecycle :as life]
             [ct.spools.harnesses.internal.process-custody :as custody]
+            [ct.spools.harnesses.internal.runs :as runs]
             [millstrand.api.current.alpha :as current]
             [millstrand.api.lifecycle.alpha :as lifecycle]
             [millstrand.api.millstrand.alpha :as millstrand]
@@ -17,17 +20,19 @@
 
 (declare schedule!
          inspect-owned!
+         launch-in-flight?
          ^:private finish-process!
          ^:private state
          ^:private activate-state!
          ^:private deactivate-state!
-         ^:private pending-headless
+         ^:private ready-headless
          ^:private claim!
          ^:private release!
          ^:private launch-headless!
          ^:private full-run
          ^:private resolved-definition
          ^:private prepare-launch
+         ^:private enforce-stop!
          ^:private callback)
 
 (s/def ::event
@@ -52,21 +57,35 @@
   :ret ::claimed-run-ids)
 
 (defn open-execution!
-  "Open harness execution resources and recover existing work."
+  "Open harness execution resources and recover existing work.
+
+  Custody reconciliation is attempted but is not a precondition of opening.
+  Mill's process registry is not necessarily readable at the moment execution
+  opens — during Weaver startup it is not yet admitting requests — and a
+  workspace holding old running rows must still be able to boot so it can
+  reconcile them. The deferred error is retained and the recurring
+  reconcile pass retries."
   [{:keys [runtime]}]
   (require-valid! ::harness/runtime runtime
                   "harness execution open received an invalid runtime")
-  (activate-state! runtime)
-  (try
-    (inspect-owned! runtime)
-    {:opened :harness-execution
-     :claimed (schedule! runtime)}
-    (catch Throwable error
-      (try
-        ((:close-fn (deactivate-state! runtime)))
-        (catch Throwable close-error
-          (.addSuppressed error close-error)))
-      (throw error))))
+  (let [opened (activate-state! runtime)]
+    (try
+      (harness/migrate-runs! runtime)
+      (let [recovery (try
+                       (inspect-owned! runtime)
+                       nil
+                       (catch Throwable error
+                         (reset! (:deferred-recovery opened) error)
+                         error))]
+        (cond-> {:opened :harness-execution
+                 :claimed (schedule! runtime)}
+          recovery (assoc :deferred-recovery (ex-message recovery))))
+      (catch Throwable error
+        (try
+          ((:close-fn (deactivate-state! runtime)))
+          (catch Throwable close-error
+            (.addSuppressed error close-error)))
+        (throw error)))))
 
 (defn close-execution!
   "Stop harness execution resources."
@@ -75,9 +94,9 @@
   {:closed :harness-execution})
 
 (defn schedule!
-  "Claim and asynchronously launch every ready pending headless run."
+  "Claim and asynchronously launch every published, ready headless run."
   [rt]
-  (let [claimed (filterv #(claim! rt (:id %)) (pending-headless rt))
+  (let [claimed (filterv #(claim! rt (:id %)) (ready-headless rt))
         executor (:executor (state rt))]
     (doseq [run claimed]
       (.execute executor ^Runnable #(launch-headless! rt (:id run))))
@@ -96,18 +115,21 @@
       (launcher/write! rt run (:argv launch-spec) (:env launch-spec)))
     (catch Exception e
       (harness/finish! rt (:id run) {:status :failed
+                                     :evidence {:settled false
+                                                :settlement "no-terminal-evidence"
+                                                :failure-class "launch"}
                                      :error (str (ex-message e)
                                                  (when-let [data (ex-data e)]
                                                    (str " " (pr-str data))))})
       (throw e))))
 
 (defn mark-interactive-running!
-  "Mark an interactive harness run as started."
+  "Mark an interactive harness run as started, minting its fencing token."
   [rt id]
   (let [run (full-run rt id)]
     (when-not (= "interactive" (attr-get run :harness/mode))
       (fail! "_started applies only to interactive harness runs" {:id id}))
-    (harness/mark-running! rt id)))
+    (:strand (harness/begin-attempt! rt id))))
 
 (defn finish-interactive!
   "Finish an interactive run through its provider callback."
@@ -120,40 +142,39 @@
             outcome ((callback (:finish definition))
                      rt definition run
                      {:exit-code exit-code :stdout nil :stderr nil})]
-        (harness/finish! rt id outcome))
+        (harness/finish! rt id (assoc outcome
+                                      :invocation (life/invocation run)
+                                      :evidence (life/settlement-evidence
+                                                 {:exit-code exit-code}))))
       (catch Exception e
         (harness/finish! rt id {:status :failed
                                 :exit-code exit-code
+                                :invocation (life/invocation run)
+                                :evidence (assoc (life/settlement-evidence
+                                                  {:exit-code exit-code})
+                                                 :failure-class "execution")
                                 :error (str (ex-message e)
                                             (when-let [data (ex-data e)]
                                               (str " " (pr-str data))))})))))
 
 (defn launch-in-flight?
-  "Return whether an active run still has an in-process launch claim."
+  "Return whether this worker still owns an unfinished launch for `run`.
+
+  The claim covers the window between minting the attempt and Mill returning a
+  listable custody record. It is scoped to the one run: an unrelated in-flight
+  launch must never stop another run from being reconciled."
   [rt run]
-  (and (= "pending" (attr-get run :harness/process-handle))
+  (and (contains? #{nil "pending"} (attr-get run :harness/process-handle))
        (contains? @(:in-flight (state rt)) (:id run))))
 
 (defn inspect-owned!
-  "Inspect and advance active headless runs backed by Mill process custody."
+  "Inspect and advance headless runs backed by Mill process custody."
   [rt]
-  (let [runs (filter #(and (= "true" (attr-get % :harness/run))
-                           (= "running" (attr-get % :harness/phase))
-                           (= "headless" (attr-get % :harness/mode))
-                           ;; The launching worker owns the pending marker
-                           ;; until Mill has returned a listable record. Only a
-                           ;; replacement with no in-flight claim may recover
-                           ;; it from owner/key custody listing.
-                           (not (launch-in-flight? rt %)))
-                     (weaver/list rt
-                                  [:and [:= :state "active"]
-                                   [:= [:attr "harness/run"] "true"]
-                                   [:= [:attr "harness/phase"] "running"]]
-                                  {}))]
-    (when (seq runs)
+  (let [owned (runs/inspectable-headless rt #(launch-in-flight? rt %))]
+    (when (seq owned)
       (let [records (custody/list-owned rt)
             transition-errors (atom [])]
-        (doseq [run runs]
+        (doseq [run owned]
           (try
             (let [record (custody/record-for "harness" run records)
                   durable (custody/durable-attributes "harness"
@@ -166,11 +187,18 @@
               (when (= "pending" (attr-get run :harness/process-handle))
                 (weaver/update! rt (:id run) {:attributes durable}))
               (if (= :terminal (:phase record))
-                (finish-process! rt run (resolved-definition rt run) record)
-                (.schedule ^java.util.concurrent.ScheduledExecutorService
-                 (:scheduler (state rt))
-                           ^Runnable #(inspect-owned! rt)
-                           100 TimeUnit/MILLISECONDS)))
+                (finish-process! rt (full-run rt (:id run))
+                                 (resolved-definition rt (full-run rt (:id run)))
+                                 record)
+                (do
+                  ;; Stop intent is durable and idempotent, so re-requesting
+                  ;; cancellation on every inspection is safe and is what makes
+                  ;; a stop survive a worker restart.
+                  (enforce-stop! rt run record)
+                  (.schedule ^java.util.concurrent.ScheduledExecutorService
+                   (:scheduler (state rt))
+                             ^Runnable #(inspect-owned! rt)
+                             100 TimeUnit/MILLISECONDS))))
             (catch Throwable error
               (let [id (:id run)
                     message (str "process custody reconciliation failed: "
@@ -180,6 +208,11 @@
                     transition-error (try
                                        (harness/finish! rt id
                                                         {:status :failed
+                                                         :invocation (life/invocation run)
+                                                         :evidence
+                                                         {:settled false
+                                                          :settlement "no-terminal-evidence"
+                                                          :failure-class "reconciliation"}
                                                          :error message})
                                        nil
                                        (catch Throwable transition-error
@@ -191,8 +224,7 @@
                   ;; inspection work left to schedule.
                   (when (and record
                              (not= :terminal (:phase record))
-                             (= "running"
-                                (attr-get (full-run rt id) :harness/phase)))
+                             (= "running" (life/status (full-run rt id))))
                     (.schedule ^java.util.concurrent.ScheduledExecutorService
                      (:scheduler (state rt))
                                ^Runnable #(inspect-owned! rt)
@@ -226,6 +258,7 @@
         scheduler (java.util.concurrent.ScheduledThreadPoolExecutor. 1
                                                                      (daemon-thread-factory))]
     {:in-flight (atom #{})
+     :deferred-recovery (atom nil)
      :executor executor
      :scheduler scheduler
      :close-fn (fn []
@@ -263,20 +296,23 @@
 (defn- run? [run]
   (= "true" (attr-get run :harness/run)))
 
-(defn- pending-headless [rt]
+(defn- ready-headless
+  "Return runs eligible to launch.
+
+  Publication is the gate: an unpublished run is still being created and has no
+  identity, target link, or request binding yet, so it must never be launched
+  or reconciled by anyone."
+  [rt]
   (filterv #(and (run? %)
-                 (= "pending" (attr-get % :harness/phase))
-                 (= "headless" (attr-get % :harness/mode)))
+                 (life/published? %)
+                 (= "ready" (life/status %))
+                 (= "headless" (attr-get % :harness/mode))
+                 (assignment/launch-ready? rt %))
            (weaver/ready rt)))
 
 (defn- claim! [rt id]
-  (let [claimed? (atom false)]
-    (swap! (:in-flight (state rt))
-           (fn [ids]
-             (if (contains? ids id)
-               ids
-               (do (reset! claimed? true) (conj ids id)))))
-    @claimed?))
+  (let [[before _] (swap-vals! (:in-flight (state rt)) conj id)]
+    (not (contains? before id))))
 
 (defn- release! [rt id]
   (swap! (:in-flight (state rt)) disj id))
@@ -298,76 +334,148 @@
      (update launch-spec :env #(merge alias-env (or % {})))
      "Harness prepare must return a valid launch specification")))
 
-(defn- process-spec [run {:keys [argv env stdin]}]
+(defn- process-spec [rt run {:keys [argv env stdin]}]
   {:argv argv
    :cwd (attr-get run :harness/cwd)
-   :env (cond-> (or env {})
+   :env (cond-> (assoc (or env {})
+                       "MILLSTRAND_RUN_ID" (:id run)
+                       "MILLSTRAND_WORKSPACE" (launcher/workspace rt))
           (attr-get run :identity/id)
           (assoc "MILLSTRAND_AGENT_ID" (attr-get run :identity/id)))
    :stdin stdin})
 
-(defn- finish-process! [rt run definition record]
+(defn- finish-process!
+  "Record one terminal custody fact as a fenced outcome plus settlement evidence.
+
+  Evidence is derived from the raw observation, before the exit code is
+  defaulted for the provider callback: a cancellation with no retained exit is
+  the case where the provider's own backend may still hold the session, and
+  flattening it to `exit 1` would forge the proof that it does not."
+  [rt run definition record]
   (weaver/update! rt (:id run)
                   {:attributes (custody/durable-attributes "harness"
                                                            (:id run)
                                                            (attr-get run :harness/attempt)
                                                            record)})
-  (let [observed (select-keys (custody/terminal-observed record)
-                              [:exit-code :stdout :stderr])
+  (let [raw (custody/terminal-observed record)
+        evidence (cond-> (life/settlement-evidence raw)
+                   (:cancellation raw) (assoc :cancelled? true))
+        observed (select-keys raw [:exit-code :stdout :stderr])
         observed (if (some? (:exit-code observed))
                    observed
                    (assoc observed :exit-code 1
                           :stderr (or (:stderr observed)
-                                      (custody/terminal-error observed)
+                                      (custody/terminal-error raw)
                                       "Process custody terminal failure")))
         outcome ((callback (:finish definition)) rt definition run observed)]
-    (harness/finish! rt (:id run) outcome)
+    (if (life/terminal? (full-run rt (:id run)))
+      (harness/settle-outcome! rt (:id run) outcome evidence)
+      (harness/finish! rt (:id run)
+                       (assoc outcome
+                              :invocation (life/invocation run)
+                              :evidence evidence)))
     (custody/acknowledge! rt record)))
+
+(defn- enforce-stop!
+  "Ask Mill to cancel one run's owned process tree when a stop is outstanding.
+
+  The process is addressed only by its owner, key, and opaque handle. No PID is
+  ever guessed, so a recycled PID cannot be signalled by mistake."
+  [rt run record]
+  (when (and (life/stop-requested? run) (not= :terminal (:phase record)))
+    (custody/cancel! rt record)))
+
+(defn stop!
+  "Request a durable stop of one run and enforce it against process custody.
+
+  The durable request is recorded first, so intent survives a crash between
+  recording and killing. The run stays `running` until a terminal custody fact
+  settles it: asking a process to stop is not evidence that it has."
+  [rt id request]
+  (let [stopped (harness/stop! rt id request)]
+    (when (= "running" (life/status stopped))
+      (when-let [record (try
+                          (custody/record-for "harness" stopped
+                                              (custody/list-owned rt))
+                          (catch Throwable _
+                            ;; No readable custody fact yet. The recurring
+                            ;; inspection re-enforces the durable request.
+                            nil))]
+        (enforce-stop! rt stopped record))
+      (inspect-owned! rt))
+    stopped))
 
 (defn- launch-headless!
   "Launch one already-claimed pending headless run."
   [rt id]
   (try
-    (let [attempt (inc (or (attr-get (full-run rt id) :harness/attempt) 0))]
-      (harness/mark-running! rt id)
-      (let [run (full-run rt id)
-            definition (resolved-definition rt run)
-            launch-spec (prepare-launch rt definition run)
-            _ (weaver/update! rt id
-                              {:attributes
-                               (merge
-                                {:harness/attempt attempt
-                                 :harness/started-at (str (java.time.Instant/now))}
-                                (custody/durable-attributes
-                                 "harness" id attempt
-                                 {:handle "pending" :phase :starting}))})
-            record (custody/launch! rt id attempt (process-spec run launch-spec))]
-        (weaver/update! rt id
-                        {:attributes
-                         (custody/durable-attributes "harness" id attempt record)})
-        (if (= :terminal (:phase record))
-          (finish-process! rt (full-run rt id) definition record)
-          (inspect-owned! rt))))
+    (let [candidate (full-run rt id)]
+      ;; The ready set is only a snapshot. Recheck both the run phase and its
+      ;; target while holding the scheduler claim so a delayed worker cannot
+      ;; start, or fail, the attempt already owned by a newer worker.
+      (when-not (and (= "ready" (life/status candidate))
+                     (assignment/launch-ready? rt candidate))
+        (throw (ex-info "Harness run is no longer ready to launch"
+                        {:run-id id :deferred true}))))
+    ;; The attempt and its fencing invocation are minted in one durable
+    ;; transition. Only failures after this point belong to this worker, and
+    ;; they are published with this exact invocation rather than one read from
+    ;; mutable durable state.
+    (let [{:keys [attempt invocation]} (harness/begin-attempt! rt id)]
+      (try
+        (let [run (full-run rt id)
+              definition (resolved-definition rt run)
+              launch-spec (prepare-launch rt definition run)
+              _ (weaver/update! rt id
+                                {:attributes
+                                 (custody/durable-attributes
+                                  "harness" id attempt
+                                  {:handle "pending" :phase :starting})})
+              record (custody/launch! rt id attempt
+                                      (process-spec rt run launch-spec))]
+          (weaver/update! rt id
+                          {:attributes
+                           (custody/durable-attributes "harness" id attempt record)})
+          (if (= :terminal (:phase record))
+            (finish-process! rt (full-run rt id) definition record)
+            (do
+              (enforce-stop! rt (full-run rt id) record)
+              (inspect-owned! rt)))
+          invocation)
+        (catch Exception e
+          (if (life/terminal? (full-run rt id))
+            (throw e)
+            (let [current (full-run rt id)
+                  message (str (ex-message e)
+                               (when-let [data (ex-data e)]
+                                 (str " " (pr-str data))))
+                  transition-error
+                  (try
+                    (harness/finish!
+                     rt id
+                     {:status :failed
+                      :invocation invocation
+                      :evidence {:settled false
+                                 :settlement "no-terminal-evidence"
+                                 :failure-class
+                                 (if (attr-get current :harness/process-handle)
+                                   "execution"
+                                   "launch")}
+                      :error message})
+                    nil
+                    (catch Throwable finish-error finish-error))]
+              (when transition-error
+                (throw (ex-info "Unable to persist harness launch failure"
+                                {:run-id id
+                                 :launch-error {:message (ex-message e)
+                                                :data (ex-data e)}
+                                 :failure-transition-error
+                                 {:message (ex-message transition-error)
+                                  :data (ex-data transition-error)}}
+                                transition-error))))))))
     (catch Exception e
-      (if (= "failed" (attr-get (full-run rt id) :harness/phase))
-        (throw e)
-        (let [message (str (ex-message e)
-                           (when-let [data (ex-data e)]
-                             (str " " (pr-str data))))
-              transition-error (try
-                                 (harness/finish! rt id {:status :failed
-                                                         :error message})
-                                 nil
-                                 (catch Throwable finish-error finish-error))]
-          (when transition-error
-            (throw (ex-info "Unable to persist harness launch failure"
-                            {:run-id id
-                             :launch-error {:message (ex-message e)
-                                            :data (ex-data e)}
-                             :failure-transition-error
-                             {:message (ex-message transition-error)
-                              :data (ex-data transition-error)}}
-                            transition-error))))))
+      (when-not (:deferred (ex-data e))
+        (throw e)))
     (finally
       (release! rt id)
       (inspect-owned! rt)
@@ -377,7 +485,8 @@
   "Own asynchronous and interactive harness execution resources."
   {:open 'ct.spools.harnesses.execution/open-execution!
    :close 'ct.spools.harnesses.execution/close-execution!
-   :after #{:claude-harness-runtime
+   :after #{:assignment-runtime
+            :claude-harness-runtime
             :codex-harness-runtime
             :cursor-harness-runtime
             :pi-harness-runtime}})

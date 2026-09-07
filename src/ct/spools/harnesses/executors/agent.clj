@@ -7,6 +7,7 @@
   (:require [clojure.spec.alpha :as s]
             [clojure.string :as str]
             [ct.spools.harnesses :as harnesses]
+            [ct.spools.harnesses.internal.lifecycle :as life]
             [millhouse.spools.workflow :as workflow]
             [millstrand.api.current.alpha :as current]
             [millstrand.api.events.alpha :as events]
@@ -56,12 +57,12 @@
 (s/def ::gate-view (s/keys :req-un [::id]))
 (s/def ::gate non-blank-string?)
 (s/def ::run non-blank-string?)
-(s/def ::phase #{"failed"})
+(s/def ::status #{"failed"})
 (s/def ::error any?)
 (s/def ::stall-detail
   (s/nilable
    (s/or :gate-error (s/keys :req-un [::gate ::error])
-         :run-error (s/keys :req-un [::gate ::run ::phase]
+         :run-error (s/keys :req-un [::gate ::run ::status]
                             :opt-un [::error]))))
 
 (def ^:private stalled-gates-query
@@ -72,7 +73,7 @@
     [:exists [:attr "gate/error"]]
     [:edge/in "serves"
      [:and [:= [:attr "harness/run"] "true"]
-      [:= [:attr "harness/phase"] "failed"]]]]])
+      [:= [:attr "harness/status"] "failed"]]]]])
 
 (declare ^:private attr deliver-run! finished-undelivered-runs serving-run
          spawn-ready-gates!)
@@ -106,10 +107,10 @@
                  (some? (attr gate :gate/error))
                  {:gate (:id gate) :error (attr gate :gate/error)}
 
-                 (= "failed" (attr run :harness/phase))
+                 (= "failed" (life/status run))
                  {:gate (:id gate)
                   :run (:id run)
-                  :phase "failed"
+                  :status "failed"
                   :error (attr run :harness/error)})]
     (require-valid! ::stall-detail result "Invalid agent gate stall detail")))
 
@@ -171,12 +172,15 @@
    {}))
 
 (defn- serving-run [gate-id]
-  (let [runs (serving-runs gate-id)]
-    (case (count runs)
-      0 nil
-      1 (first runs)
-      (fail! "Agent gate has multiple serving harness runs"
-             {:gate gate-id :runs (mapv :id runs)}))))
+  (let [runs (serving-runs gate-id)
+        reserving (filterv life/reserving? runs)]
+    (case (count reserving)
+      0 (->> runs
+             (sort-by (juxt :created_at :id) #(compare %2 %1))
+             first)
+      1 (first reserving)
+      (fail! "Agent gate has multiple reserving harness runs"
+             {:gate gate-id :runs (mapv :id reserving)}))))
 
 (defn- served-gate-id [run-id]
   (let [gate-ids (mapv :to_strand_id
@@ -196,7 +200,8 @@
    [:and
     [:= :state "closed"]
     [:= [:attr "harness/run"] "true"]
-    [:= [:attr "harness/phase"] "done"]
+    [:= [:attr "harness/status"] "stopped"]
+    [:= [:attr "harness/substatus"] "completed"]
     [:edge/out "serves" [:= [:attr "workflow/gate"] "agent"]]
     [:missing [:attr "gate/delivered"]]]
    {}))
@@ -322,8 +327,9 @@
   (weaver/update!
    (rt)
    (:id run)
-   {:attributes {"workflow/run-id" workflow-run-id}
-    :edges [{:type "serves" :to gate-id}]})
+   (cond-> {:attributes {"workflow/run-id" workflow-run-id}}
+     (nil? (served-gate-id (:id run)))
+     (assoc :edges [{:type "serves" :to gate-id}])))
   (clear-spawn-claim! gate-id)
   run)
 
@@ -354,6 +360,9 @@
              :append-system-prompt (agent-system-prompt gate workflow-run-id)
              :attributes (gate-overrides gate)
              :session-id session-id
+             :target (:id gate)
+             :context {:workflow/run-id workflow-run-id
+                       :workflow/gate-id (:id gate)}
              :title (str "Agent: " (:title gate))}
       (some? (attr gate :harness/cwd))
       (assoc :cwd (attr gate :harness/cwd)))))

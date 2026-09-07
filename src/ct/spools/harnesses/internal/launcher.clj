@@ -2,7 +2,7 @@
   "Host-TTY launcher materialization for interactive harness runs."
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
-            [millstrand.api.spool.alpha :refer [attr-get]])
+            [millstrand.api.spool.alpha :refer [attr-get fail!]])
   (:import [java.nio.file Files]
            [java.nio.file.attribute PosixFilePermissions]))
 
@@ -20,11 +20,17 @@
   (doto (io/file (get-in runtime [:metadata :state-dir]) "harness-launchers")
     (.mkdirs)))
 
+(defn workspace
+  "Return the authoritative workspace configured for `runtime`."
+  [runtime]
+  (or (get-in runtime [:metadata :config-dir])
+      (fail! "Harness runtime has no configured workspace" {})))
+
 (defn write!
   "Write and return a private launcher script for one interactive run."
   [runtime run argv env]
   (let [file (io/file (launcher-dir runtime) (str (:id run) ".sh"))
-        workspace (get-in runtime [:metadata :config-dir])
+        workspace (workspace runtime)
         provider-exports (->> env
                               (sort-by key)
                               (map (fn [[name value]]

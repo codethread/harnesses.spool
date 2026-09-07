@@ -1,19 +1,36 @@
 (ns ct.spools.harnesses.internal.cli
-  "Static command grammar for the tracked coding-agent operation.")
+  "Static command grammar for the tracked coding-agent operation."
+  (:require [ct.spools.harnesses.assignment.cli :as assignment-cli]))
 
 (def ^:private by-identity-flag
   {:by-identity {:type :string
                  :doc "Friendly identity performing this operation."}})
 
+(def ^:private assignment-flags
+  "Generic work binding recorded atomically when a run is created.
+
+  `--target` is any strand the run serves; `--context` is durable caller data
+  the run carries; `--request-id` makes the call idempotent, so a repeat of the
+  same request returns the same run instead of launching a second agent."
+  {:target {:type :string
+            :doc "Strand this run serves."}
+   :context {:type :string
+             :parse :json
+             :doc "Durable caller context JSON object."}
+   :request-id {:type :string
+                :doc "Caller idempotency key for this run request."}})
+
 (def agent-arg-spec
   "Arg-spec for the provider-neutral `agent` operation."
   {:op "agent"
-   :doc "Create, await, retry, and resume tracked coding-agent runs."
+   :doc "Create, inspect, stop, retry, and resume tracked coding-agent runs."
    :subcommands
-   {"run" {:doc "Create a tracked agent run."
+   {"assign" assignment-cli/assign-subcommand
+    "run" {:doc "Create a tracked agent run."
            :hook-class :mutating
            :deadline-class :standard
            :flags (merge by-identity-flag
+                         assignment-flags
                          {:interactive
                           {:type :boolean
                            :doc "Run the agent interactively in the caller's terminal."}
@@ -37,17 +54,35 @@
                           :type :string
                           :required? true
                           :doc "Available provider harness or alias."}]}
-    "await" {:doc "Wait for agent runs to reach done or failed."
-             :hook-class :read
-             :deadline-class :unbounded
-             :flags {:timeout-secs
-                     {:type :int
-                      :doc "Timeout in seconds; defaults to 300."}}
-             :positionals [{:name :run-ids
-                            :type :string
-                            :required? true
-                            :variadic? true
-                            :doc "Run IDs."}]}
+    "show" {:doc "Show one agent run, or the run serving a task or request."
+            :hook-class :read
+            :deadline-class :standard
+            :flags (merge by-identity-flag
+                          {:task {:type :string
+                                  :doc "Show the run serving this strand."}
+                           :request {:type :string
+                                     :doc "Show the run holding this request id."}})
+            :positionals [{:name :run-id
+                           :type :string
+                           :doc "Run ID."}]}
+    "runs" {:doc "List agent runs compactly."
+            :hook-class :read
+            :deadline-class :standard
+            :flags (merge by-identity-flag
+                          {:active {:type :boolean
+                                    :doc "Only runs that are ready or running."}
+                           :task {:type :string
+                                  :doc "Only runs serving this strand."}})}
+    "stop" {:doc "Request a durable stop of one running agent run."
+            :hook-class :mutating
+            :deadline-class :standard
+            :flags (merge by-identity-flag
+                          {:reason {:type :string
+                                    :doc "Why the run is being stopped."}})
+            :positionals [{:name :run-id
+                           :type :string
+                           :required? true
+                           :doc "Exact run ID to stop."}]}
     "retry" {:doc "Retry one failed agent run in place."
              :hook-class :mutating
              :deadline-class :standard
@@ -69,32 +104,33 @@
                  :deadline-class :standard
                  :flags by-identity-flag}
     "resume"
-    {:doc "Continue a completed session selected by exactly one of run ID, native session ID, or agent identity."
+    {:doc "Continue a settled native session from exactly one accepted lineage head."
      :hook-class :mutating
      :deadline-class :standard
      :flags (merge by-identity-flag
                    {:run-id {:type :string
-                             :doc "Exact completed predecessor run ID."}
+                             :doc "Exact settled predecessor run ID."}
                     :session-id
                     {:type :string
                      :doc "Native session's latest completed run."}
                     :identity
                     {:type :string
                      :doc "Friendly identity's latest completed run."}
+                    :logical-id
+                    {:type :string
+                     :doc "Accepted logical assignment lineage head."}
                     :interactive
                     {:type :boolean
                      :doc "Continue interactively in the caller's terminal."}
-                    :cwd {:type :string :doc "Replacement cwd."}
                     :prompt
                     {:type :string
-                     :doc "Continuation prompt; required headlessly."}
+                     :doc "New continuation prompt; required headlessly."}
                     :title
                     {:type :string
                      :doc "Display title; defaults to the first 80 prompt characters or the agent and mode."}
-                    :attributes
+                    :request-id
                     {:type :string
-                     :parse :json
-                     :doc "Provider overlay merge patch."}})}
+                     :doc "Caller idempotency key for this continuation."}})}
     "self-complete"
     {:doc "Record best-effort result text for an interactive agent run."
      :hook-class :mutating
@@ -108,7 +144,7 @@
                     :type :string
                     :required? true
                     :doc "Final notes."}]}
-    "_started" {:doc "Private agent transition: pending to running."
+    "_started" {:doc "Private agent transition: ready to running."
                 :hook-class :mutating
                 :deadline-class :standard
                 :positionals [{:name :run-id

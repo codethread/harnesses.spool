@@ -32,8 +32,9 @@
                  (meta declaration-var)))))))
 
 (deftest every-agent-command-accepts-caller-identity
-  (doseq [path [["run"] ["retry"] ["resumable"] ["resume"]
-                ["self-complete"] ["list"]]]
+  (is (not (contains? (:subcommands cli/agent-arg-spec) "await")))
+  (doseq [path [["run"] ["show"] ["runs"] ["stop"] ["retry"] ["resumable"]
+                ["resume"] ["self-complete"] ["list"]]]
     (is (contains? (get-in cli/agent-arg-spec
                            (into [:subcommands]
                                  (mapcat #(vector % :subcommands) (butlast path))))
@@ -44,7 +45,7 @@
                                   (mapcat #(vector % :subcommands) (butlast path))
                                   [(last path) :flags])))
                    :by-identity)))
-  (doseq [path [["await"] ["_started"] ["_finished"] ["config" "list"]
+  (doseq [path [["_started"] ["_finished"] ["config" "list"]
                 ["config" "set"] ["config" "unset"]]]
     (is (not (contains? (or (get-in cli/agent-arg-spec
                                     (into [:subcommands]
@@ -100,13 +101,14 @@
                {:ns 'ct.spools.harnesses.spool
                 :after [:identity]
                 :required? true})"}]
-      (let [{:keys [harnesses operation handler bins agent-bin-plan lifecycles]}
+      (let [{:keys [harnesses operation handler bins lifecycles queries]}
             (test-alpha/repl!
              ctx
              '(do
                 (require '[ct.spools.harnesses :as harnesses]
                          '[millstrand.api.current.alpha :as current]
                          '[millstrand.api.events.alpha :as events]
+                         '[millstrand.api.graph.alpha :as graph]
                          '[millstrand.api.runtime.alpha :as runtime]
                          '[millstrand.api.weaver.alpha :as weaver])
                 (let [rt (current/runtime)]
@@ -115,16 +117,20 @@
                    :handler (some #(when (= :on-event (:key %)) %)
                                   (events/handlers rt))
                    :bins (set (map :name (:bins (weaver/op! rt 'bins ["list"]))))
-                   :agent-bin-plan (weaver/op! rt 'bins ["plan" "agent"])
+                   :queries (set (keys (graph/queries rt)))
                    :lifecycles (get-in (runtime/status rt)
                                        [:last-refresh :modules :harnesses
                                         :lifecycle/outcomes])})))]
         (is (= ["claude" "codex" "cursor" "pi"] harnesses))
         (is (= "agent" operation))
         (is (contains? bins "agent"))
-        (is (= (.getCanonicalPath (java.io.File. harnesses-root "bin/agent"))
-               (get-in agent-bin-plan [:exec :path])))
-        (is (true? (:runnable agent-bin-plan)))
+        (doseq [query ["agent-run-terminal" "agent-run-settled"
+                       "agent-run-active" "agent-runs-active"
+                       "agent-runs-for-target" "agent-work-complete"
+                       "agent-work-complete-or-intervention"
+                       "agent-work-root-complete"
+                       "agent-work-root-complete-or-intervention"]]
+          (is (contains? queries query)))
         (is (= #{:strand/added :strand/updated :batch/applied}
                (:types handler)))
         (doseq [effect [:harness-core-runtime
@@ -344,7 +350,8 @@
                            grandchild-id (:identity grandchild-run)
                            _ (harnesses/finish!
                               rt (:id grandchild-run)
-                              {:status :done :exit-code 0})
+                              {:status :done :exit-code 0
+                               :session-usable true})
                            resumed-run
                            (weaver/op!
                             rt 'agent
@@ -453,15 +460,14 @@
                    (test-alpha/repl!
                     ctx
                     '(do
-                       (require '[ct.spools.harnesses.execution :as execution]
+                       (require '[ct.spools.harnesses :as harnesses]
+                                '[ct.spools.harnesses.execution :as execution]
                                 '[millstrand.api.current.alpha :as current])
                        (let [context {:runtime (current/runtime)}
-                             inspect-var (ns-resolve
-                                          'ct.spools.harnesses.execution
-                                          'inspect-owned!)]
+                             migrate-var #'harnesses/migrate-runs!]
                          (execution/close-execution! context)
                          [(with-redefs-fn
-                            {inspect-var
+                            {migrate-var
                              (fn [_runtime]
                                (throw (ex-info "forced open failure" {})))}
                             #(try
@@ -471,7 +477,7 @@
                                  (ex-message error))))
                           (execution/open-execution! context)])))))
             (testing "core continuation selectors resolve the latest completed run"
-              (let [{:keys [first-id second-id by-run by-session by-identity]}
+              (let [{:keys [second-id by-run by-session by-identity]}
                     (test-alpha/repl!
                      ctx
                      '(do
@@ -487,21 +493,22 @@
                                          rt {:harness :fake :mode :interactive})
                               first-run (harnesses/finish!
                                          rt (:id first-run)
-                                         {:status :done :exit-code 0})
+                                         {:status :done :exit-code 0
+                                          :session-usable true})
                               second-run (harnesses/resume! rt (:id first-run) {})
                               second-run (harnesses/finish!
                                           rt (:id second-run)
-                                          {:status :done :exit-code 0})
+                                          {:status :done :exit-code 0
+                                           :session-usable true})
                               session-id (get-in second-run
                                                  [:attributes :harness/session-id])
                               identity (get-in second-run [:attributes :identity/id])]
                           {:first-id (:id first-run)
                            :second-id (:id second-run)
                            :by-run (:id (harnesses/resolve-resume-run
-                                         rt {:run-id (:id first-run)}))
+                                         rt {:run-id (:id second-run)}))
                            :by-session (:id (harnesses/resolve-resume-run
                                              rt {:session-id session-id}))
                            :by-identity (:id (harnesses/resolve-resume-run
                                               rt {:identity identity}))})))]
-                (is (= first-id by-run))
-                (is (= second-id by-session by-identity))))))))))
+                (is (= second-id by-run by-session by-identity))))))))))

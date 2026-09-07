@@ -4,8 +4,10 @@
   (:require [clojure.spec.alpha :as s]
             [clojure.string :as str]
             [ct.spools.harnesses :as harness]
+            [ct.spools.harnesses.assignment.cli :as assignment-cli]
             [ct.spools.harnesses.execution :as execution]
             [ct.spools.harnesses.internal.cli :as cli]
+            [ct.spools.harnesses.internal.lifecycle :as life]
             [millhouse.spools.identity :as identity]
             [millstrand.api.format.alpha :as fmt]
             [millstrand.api.graph.alpha :as graph]
@@ -14,11 +16,13 @@
             [millstrand.api.weaver.alpha :as weaver]))
 
 (declare ^:private op-run
-         ^:private await!
+         ^:private op-assign
          ^:private agent-list
          ^:private identity-alias
          ^:private op-retry
          ^:private op-resume
+         ^:private op-show
+         ^:private op-runs
          ^:private resumable-runs
          ^:private summary)
 
@@ -29,7 +33,8 @@
 (s/def ::alias string?)
 (s/def ::harness string?)
 (s/def ::mode #{"headless" "interactive"})
-(s/def ::phase #{"pending" "running" "done" "failed"})
+(s/def ::status life/statuses)
+(s/def ::substatus (s/nilable life/substatuses))
 (s/def ::session-id string?)
 (s/def ::launcher string?)
 (s/def ::exit-code int?)
@@ -38,15 +43,25 @@
 (s/def ::resumes string?)
 (s/def ::identity string?)
 (s/def ::updated-at string?)
+(s/def ::settled boolean?)
+(s/def ::settlement string?)
+(s/def ::settlement-gap string?)
+(s/def ::resumable boolean?)
+(s/def ::resume-reason string?)
+(s/def ::stop-reason string?)
+(s/def ::logical-id string?)
+(s/def ::target string?)
+(s/def ::request-id string?)
+(s/def ::attempt int?)
 (s/def ::run-summary
   (s/keys :req-un [::harness/id ::harness/title ::harness/state
-                   ::alias ::harness ::mode ::phase ::session-id]
+                   ::alias ::harness ::mode ::status ::substatus ::session-id
+                   ::settled]
           :opt-un [::launcher ::exit-code ::result ::error ::resumes
-                   ::identity ::updated-at]))
+                   ::identity ::updated-at ::settlement ::settlement-gap
+                   ::resumable ::resume-reason ::stop-reason ::logical-id
+                   ::target ::request-id ::attempt]))
 (s/def ::runs (s/coll-of ::run-summary :kind vector?))
-(s/def ::timed-out (s/coll-of ::harness/id :kind vector?))
-(s/def ::await-result
-  (s/keys :req-un [::runs ::timed-out]))
 (s/def ::config-result map?)
 (s/def ::resolution string?)
 (s/def ::provider string?)
@@ -61,7 +76,6 @@
 (s/def ::op-result
   (s/or :run ::run-summary
         :runs ::runs
-        :await ::await-result
         :registry ::harness/registry-list
         :agent-list ::agent-list
         :config ::config-result))
@@ -71,7 +85,7 @@
   (fmt/prose
    "
      `agent` runs tracked coding agents. The normal path is headless: select an
-     available provider harness or alias, run it with a prompt, then await its
+     available provider harness or alias, run it with a prompt, then wait on its
      run id.
 
      List currently usable agents with their resolution, model, thinking level,
@@ -81,15 +95,38 @@
      strand agent list
      ```
 
-     Run an agent and collect its work:
+     Assign a provider to an explicit work target:
+
+     ```sh
+     strand agent assign <agent> --task <feature-id> --cwd <workdir> --policy <name>
+     ```
+
+     The agent claims the target itself. Assignment does not create a worktree
+     or close the target when the process exits.
+
+     Run an ad-hoc agent and collect its work:
 
      ```sh
      strand agent run <agent> --prompt <prompt>
-     strand agent await <run-id>
+     strand await --query agent-run-terminal --param run-id=<run-id> --min-count 1
+     strand agent show <run-id>
      ```
 
+     Waiting is `strand await` on a named query, not an agent verb. Each query
+     selects the run only once its condition actually holds, so a run id that
+     does not exist can never satisfy a wait. Use `agent-run-terminal` for
+     work being finished, and `agent-run-settled` when you additionally need
+     proof the provider process is gone, which is what a native resume requires.
+
+     Inspect with `agent show <run-id>` (or `--task`/`--request`) and
+     `agent runs --active`. Neither dumps logs.
+
+     Stop one run by exact id with `agent stop <run-id> --reason <why>`. The
+     request is durable and idempotent, and the run stays `running` until
+     settlement is observed. Stopping a run does not close the work it serves.
+
      A failed run stays active. Correct its agent selection, cwd, provider
-     attributes, or runtime flags and retry it in place. Resume a successful run
+     attributes, or runtime flags and retry it in place. Resume a settled run
      when the same provider session should continue with a new prompt.
      "
    {}))
@@ -149,8 +186,27 @@
      resulting alias selection and availability.
 
      Runs are headless by default, require a prompt, and execute asynchronously.
-     `retry` reuses a failed tracked run after correction; `resume` creates a
-     tracked continuation of a completed provider session.
+     A run carries a `status` of `ready`, `running`, `stopped`, or `failed`, and
+     a `substatus` saying why: `pending` for a ready run, `completed` or
+     `requested` once stopped, and `launch`, `execution`, or `reconciliation`
+     once failed. A running run has no substatus unless a stop is in flight.
+     `settled` is separate and stronger: it means a terminal
+     process fact was observed, so the provider session is provably free. A
+     failed run is not automatically settled.
+
+     `--target` binds a run to the strand it serves, `--context` carries durable
+     caller data, and `--request-id` makes creation idempotent: repeating a
+     request returns the same run, and reusing the key for different work fails
+     and names the run already holding it. `assign` requires an explicit cwd,
+     freezes the registered policy name and exact prose, and queues blocked
+     targets until their dependencies close.
+
+     `retry` reuses a failed ad hoc run after correction, and refuses runs bound
+     to a request id or target, which should be continued or requested afresh
+     instead. `resume` creates a *new* run continuing a settled provider
+     session, reusing the predecessor's exact provider, session, and initial
+     guidance rather than resolving its alias again. An ineligible predecessor
+     fails loudly; it never falls back to a silent fresh run.
 
      Set `--interactive` on `run` or `resume` only when the user asks to work in
      the provider session. It launches the provider in the caller's terminal;
@@ -161,9 +217,9 @@
 (millstrand/defop agent
   "Create and manage tracked coding-agent runs.
 
-  Run, retry, and resume may schedule asynchronous headless work. `await`
-  blocks the CLI thread until each requested run is terminal or its timeout
-  expires; every other subcommand returns after its immediate transition."
+  Run, retry, and resume may schedule asynchronous headless work. Every
+  subcommand returns after its immediate transition; nothing here blocks. Wait
+  with `strand await` on the `agent-run-*` named queries."
   {:arg-spec cli/agent-arg-spec
    :about agent-about
    :prime agent-prime}
@@ -174,8 +230,12 @@
   (require-valid!
    ::op-result
    (case (:subcommand args)
+     ["assign"] (op-assign runtime args)
      ["run"] (op-run runtime args cwd)
-     ["await"] (await! runtime (:run-ids args) (or (:timeout-secs args) 300))
+     ["show"] (op-show runtime args)
+     ["runs"] (op-runs runtime args)
+     ["stop"] (summary (execution/stop! runtime (:run-id args)
+                                        (select-keys args [:reason])))
      ["retry"] (op-retry runtime args)
      ["resumable"] (resumable-runs runtime)
      ["resume"] (op-resume runtime args)
@@ -279,15 +339,41 @@
     (map? value) value
     :else (fail! "--attributes must be a JSON object" {:attributes value})))
 
-(defn- summary [run]
+(defn- overlay-context [value]
+  (cond
+    (nil? value) nil
+    (map? value) value
+    :else (fail! "--context must be a JSON object" {:context value})))
+
+(defn- summary
+  "Project one run into the compact record every agent verb returns.
+
+  It carries state, settlement evidence, and identifiers, and never the run's
+  output logs: `--result` text is included because it is the run's answer, but
+  stdout and stderr stay in custody where they belong."
+  [run]
   (cond-> {:id (:id run)
            :title (:title run)
            :state (:state run)
            :alias (attr-get run :harness/alias)
            :harness (attr-get run :harness/harness)
            :mode (attr-get run :harness/mode)
-           :phase (attr-get run :harness/phase)
+           :status (life/status run)
+           :substatus (life/substatus run)
+           :settled (life/settled? run)
            :session-id (attr-get run :harness/session-id)}
+    (attr-get run :harness/settlement)
+    (assoc :settlement (attr-get run :harness/settlement))
+    (attr-get run :harness/settlement-gap)
+    (assoc :settlement-gap (attr-get run :harness/settlement-gap))
+    (attr-get run :harness/stop-reason)
+    (assoc :stop-reason (attr-get run :harness/stop-reason))
+    (attr-get run :harness/logical-id)
+    (assoc :logical-id (attr-get run :harness/logical-id))
+    (attr-get run :harness/target) (assoc :target (attr-get run :harness/target))
+    (attr-get run :harness/request-id)
+    (assoc :request-id (attr-get run :harness/request-id))
+    (attr-get run :harness/attempt) (assoc :attempt (attr-get run :harness/attempt))
     (some? (attr-get run :harness/exit-code))
     (assoc :exit-code (attr-get run :harness/exit-code))
     (attr-get run :harness/result) (assoc :result (attr-get run :harness/result))
@@ -296,26 +382,80 @@
     (attr-get run :identity/id) (assoc :identity (attr-get run :identity/id))
     (:updated_at run) (assoc :updated-at (:updated_at run))))
 
-(defn- resumable-runs [rt]
+(defn- detailed
+  "Return `summary` plus the run's resume eligibility and its reason."
+  [rt run]
+  (let [{:keys [eligible? reason]} (harness/resume-eligibility rt (:id run))]
+    (assoc (summary run) :resumable eligible? :resume-reason reason)))
+
+(defn- op-show
+  "Show exactly one run, selected by id, served target, or request id."
+  [rt {:keys [run-id task request]}]
+  (let [selectors (remove nil? [run-id task request])]
+    (when-not (= 1 (count selectors))
+      (fail! "agent show requires exactly one of a run id, --task, or --request"
+             {:run-id run-id :task task :request request}))
+    (detailed
+     rt
+     (cond
+       run-id (full-run rt run-id)
+
+       :else
+       (let [clause (if task
+                      [:edge/out "serves" [:= :id task]]
+                      [:= [:attr "harness/request-id"] request])
+             matches (weaver/list rt
+                                  [:and [:= [:attr "harness/run"] "true"] clause]
+                                  {})]
+         (case (count matches)
+           0 (fail! "No agent run matches the selector"
+                    {:task task :request request})
+           1 (first matches)
+           ;; Several runs may have served one target over time; the caller
+           ;; asked for a run, so name them rather than picking one silently.
+           (fail! "Selector matches multiple agent runs"
+                  {:task task :request request :runs (mapv :id matches)})))))))
+
+(defn- op-runs
+  "List runs compactly, optionally narrowed to active ones or to one target."
+  [rt {:keys [active task]}]
+  (let [clauses (cond-> [[:= [:attr "harness/run"] "true"]]
+                  task (conj [:edge/out "serves" [:= :id task]]))
+        runs (weaver/list rt (into [:and] clauses) {})]
+    (->> runs
+         (filter #(if active (life/active? %) true))
+         (sort-by (juxt :created_at :id) #(compare %2 %1))
+         (mapv summary))))
+
+(defn- resumable-runs
+  "List settled interactive lineage heads that can still be continued."
+  [rt]
   (let [runs (weaver/list rt
                           [:and
-                           [:= :state "closed"]
                            [:= [:attr "harness/run"] "true"]
                            [:= [:attr "harness/mode"] "interactive"]
-                           [:= [:attr "harness/phase"] "done"]]
+                           [:= [:attr "harness/settled"] "true"]]
                           {})
-        resumed-run-ids (into #{} (keep #(attr-get % :harness/resumes)) runs)]
+        continued (into #{} (keep #(attr-get % :harness/resumes)) runs)]
     (->> runs
-         (remove #(contains? resumed-run-ids (:id %)))
-         (sort-by :updated_at #(compare %2 %1))
-         (mapv summary))))
+         (remove #(contains? continued (:id %)))
+         (map #(detailed rt %))
+         (filter :resumable)
+         (sort-by :updated-at #(compare %2 %1))
+         vec)))
 
 (defn- interactive-plan [rt run]
   (assoc (summary run) :launcher (execution/prepare-interactive! rt run)))
 
+(defn- op-assign
+  [rt args]
+  (let [accepted (assignment-cli/op-assign rt args)]
+    (execution/schedule! rt)
+    accepted))
+
 (defn- op-run
   [rt {:keys [agent interactive prompt append-system-prompt cwd attributes title
-              by-identity]
+              by-identity target context request-id]
        :as args}
    op-cwd]
   (let [effort (if (contains? args :effort) (:effort args) (:thinking args))
@@ -331,27 +471,15 @@
                (some? append-system-prompt)
                (assoc :append-system-prompt append-system-prompt)
                (some? title) (assoc :title title)
-               (some? by-identity) (assoc :by-identity by-identity)))]
+               (some? by-identity) (assoc :by-identity by-identity)
+               (some? target) (assoc :target target)
+               (some? context) (assoc :context (overlay-context context))
+               (some? request-id) (assoc :request-id request-id)))]
     (if interactive
       (interactive-plan rt run)
       (do
         (execution/schedule! rt)
         (summary run)))))
-
-(defn- terminal? [run]
-  (#{"done" "failed"} (attr-get run :harness/phase)))
-
-(defn- await!
-  "Wait for run IDs to reach done or failed, returning structured summaries."
-  [rt ids timeout-secs]
-  (let [deadline (+ (System/nanoTime) (* 1000000000 (long timeout-secs)))]
-    (loop []
-      (let [runs (mapv #(full-run rt %) ids)
-            unfinished (remove terminal? runs)]
-        (if (or (empty? unfinished) (>= (System/nanoTime) deadline))
-          {:runs (mapv summary runs)
-           :timed-out (mapv :id unfinished)}
-          (do (Thread/sleep 100) (recur)))))))
 
 (defn- op-retry [rt args]
   (summary
@@ -365,17 +493,17 @@
 
 (defn- op-resume [rt args]
   (let [predecessor (harness/resolve-resume-run
-                     rt (select-keys args [:run-id :session-id :identity]))
+                     rt (select-keys args [:run-id :session-id :identity
+                                           :logical-id]))
         run (harness/resume!
              rt (:id predecessor)
              (cond-> {:mode (if (:interactive args) :interactive :headless)}
                (contains? args :prompt) (assoc :prompt (:prompt args))
-               (contains? args :cwd) (assoc :cwd (:cwd args))
-               (contains? args :attributes)
-               (assoc :attributes (overlay-map (:attributes args)))
                (contains? args :title) (assoc :title (:title args))
                (contains? args :by-identity)
-               (assoc :by-identity (:by-identity args))))]
+               (assoc :by-identity (:by-identity args))
+               (contains? args :request-id)
+               (assoc :request-id (:request-id args))))]
     (if (:interactive args)
       (interactive-plan rt run)
       (do

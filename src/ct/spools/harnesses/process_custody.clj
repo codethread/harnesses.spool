@@ -9,10 +9,15 @@
   "Read active headless harness runs requiring process inspection."
   [{:keys [runtime]}]
   (->> (weaver/list runtime
-                    [:and [:= :state "active"]
+                    [:and
                      [:= [:attr "harness/run"] "true"]
                      [:= [:attr "harness/mode"] "headless"]
-                     [:= [:attr "harness/phase"] "running"]]
+                     [:= [:attr "harness/published"] "true"]
+                     [:or
+                      [:= [:attr "harness/status"] "running"]
+                      [:and
+                       [:in [:attr "harness/status"] ["stopped" "failed"]]
+                       [:not [:= [:attr "harness/settled"] "true"]]]]]
                     {})
        (remove #(execution/launch-in-flight? runtime %))
        (mapv #(select-keys % [:id :state :attributes]))))

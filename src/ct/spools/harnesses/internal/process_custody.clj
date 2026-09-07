@@ -92,11 +92,14 @@
 (defn terminal-observed
   "Read Mill-retained output and project one terminal record for an engine."
   [record]
-  (let [{:keys [stdout-ref stderr-ref]} (:output record)]
-    {:exit-code (some-> (:exit record) :code)
+  (let [{:keys [stdout-ref stderr-ref]} (:output record)
+        cancellation (:cancellation record)
+        observed-exit (or (:observed-exit cancellation)
+                          (:exit record))]
+    {:exit-code (some-> observed-exit :code)
      :stdout (slurp (io/file stdout-ref))
      :stderr (slurp (io/file stderr-ref))
-     :cancellation (:cancellation record)
+     :cancellation cancellation
      :launch-failure (:launch-failure record)}))
 
 (defn acknowledge!

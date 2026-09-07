@@ -3,6 +3,7 @@
   (:require [ct.spools.harnesses :as harnesses]
             [ct.spools.harnesses.agent-bin :as agent-bin]
             [ct.spools.harnesses.agent-cli :as agent-cli]
+            [ct.spools.harnesses.assignment :as assignment]
             [ct.spools.harnesses.execution :as execution]
             [ct.spools.harnesses.process-custody :as process-custody]
             [ct.spools.harnesses.providers.claude :as claude]
@@ -174,6 +175,7 @@
 
 (lifecycle/use-resource!
  harnesses/harness-core-runtime
+ assignment/assignment-runtime
  claude/claude-harness-runtime
  codex/codex-harness-runtime
  cursor/cursor-harness-runtime

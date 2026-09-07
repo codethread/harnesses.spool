@@ -1,7 +1,7 @@
 {:deps
  {millstrand.spools/batteries
   {:git/url "https://github.com/codethread/millstrand.git"
-   :git/sha "9d3f9ffe9605ccff6262736352dd8ae52d7c7834"
+   :git/sha "310368dff9174bd889ad21d4ed8196952684eaf9"
    :deps/root "spools/batteries"}
   millhouse.spools/identity
   {:git/url "https://github.com/codethread/millhouse.spool.git"

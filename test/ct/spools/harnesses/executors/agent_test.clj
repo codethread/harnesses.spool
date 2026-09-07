@@ -191,12 +191,13 @@
                                 (weaver/list-query
                                  rt 'stalled-agent-gates {})))
                       retried (harnesses/retry! rt (:id failed-run) {})
-                      phase-after-retry (attr retried :harness/phase)
+                      status-after-retry (attr retried :harness/status)
+                      substatus-after-retry (attr retried :harness/substatus)
                       _ (agent/scan!)
                       retry-run-ids (mapv :id
                                           (runs-for-gate (:id failed-gate)))
-                      phase-after-scan
-                      (attr (weaver/show rt (:id failed-run)) :harness/phase)
+                      status-after-scan
+                      (attr (weaver/show rt (:id failed-run)) :harness/status)
                       _ (harnesses/finish!
                          rt (:id failed-run)
                          {:status :done
@@ -236,8 +237,9 @@
                                                 (:id failed-gate))
                     :retry-run-ids retry-run-ids
                     :run-id (:id failed-run)
-                    :phase-after-retry phase-after-retry
-                    :phase-after-scan phase-after-scan
+                    :status-after-retry status-after-retry
+                    :substatus-after-retry substatus-after-retry
+                    :status-after-scan status-after-scan
                     :gate-state (:state recovered-gate)
                     :result (attr recovered-gate :harness/result)}
                    :missing
@@ -265,13 +267,14 @@
           (is (= (get-in result [:happy :run-id])
                  (get-in result [:happy :outcome-by]))))
         (testing "a failed serving run stalls until retrying that same run"
-          (is (= "failed" (get-in result [:failed :stall :phase])))
+          (is (= "failed" (get-in result [:failed :stall :status])))
           (is (= "provider failed" (get-in result [:failed :stall :error])))
           (is (true? (get-in result [:failed :query-contains?])))
           (is (= [(get-in result [:failed :run-id])]
                  (get-in result [:failed :retry-run-ids])))
-          (is (= "pending" (get-in result [:failed :phase-after-retry])))
-          (is (= "pending" (get-in result [:failed :phase-after-scan])))
+          (is (= "ready" (get-in result [:failed :status-after-retry])))
+          (is (= "pending" (get-in result [:failed :substatus-after-retry])))
+          (is (= "ready" (get-in result [:failed :status-after-scan])))
           (is (= "closed" (get-in result [:failed :gate-state])))
           (is (= "recovered" (get-in result [:failed :result]))))
         (testing "an invalid request is durable and creates no run"

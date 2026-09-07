@@ -24,6 +24,7 @@ This publishes:
 - the `agent` operation;
 - the `agent` bin;
 - the headless-run event handler;
+- named `agent-run-*` wait and inspection queries;
 - the core, provider, and execution resources;
 - process-custody reconciliation.
 
@@ -236,3 +237,40 @@ user-only agent bin does not supply agent identity.
 
 Use `strand agent run <agent> --interactive` to launch an interactive tracked
 session.
+
+## Assignment
+
+`strand agent assign` accepts an assignment and publishes a ready headless run
+serving a work target. The
+agent claims the target itself; the bridge does not claim cards or create
+worktrees. `--cwd` is explicit and required.
+
+```text
+strand agent assign luna --task F --cwd /worktrees/feature-f --policy NAME
+```
+
+The policy name and exact registered prose are frozen when accepted. Policy
+names do not imply behavior: custom prose registered under a built-in name is
+used verbatim. Process exit never closes the target or releases its dependency
+chain. The launched process receives reserved `MILLSTRAND_AGENT_ID` and
+`MILLSTRAND_RUN_ID` values, which override user environment values.
+
+Blocked targets are accepted but remain queued until their `depends-on`
+blockers close. Independent targets launch concurrently, and scheduling
+rechecks target readiness. Wait with positive-evidence queries:
+
+```text
+strand await --query agent-run-terminal --param run-id=<id> --min-count 1
+strand await --query agent-run-settled --param run-id=<id> --min-count 1
+strand await --query agent-work-complete --param target=<feature-id> --min-count 1
+strand await --query agent-work-complete-or-intervention \\
+  --param target=<feature-id> --min-count 1
+```
+
+Work queries require positive closed-card or failed-run evidence. An empty
+active set, a stopped run, and a resumed predecessor are not completion
+evidence. After stopping, await settlement, update the feature and tasks with
+a primer that explicitly supersedes old instructions, then resume explicitly
+against that primer. Native resume preserves the concrete provider, native
+session, target, settings, and frozen guidance; `--after` is the explicit fresh
+continuation and never an implicit fallback.
