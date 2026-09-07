@@ -161,11 +161,13 @@
 (s/def ::exit-code (s/nilable int?))
 (s/def ::result (s/nilable string?))
 (s/def ::error (s/nilable string?))
+(s/def ::session-usable boolean?)
 (s/def ::outcome
   (s/and
    (s/keys :req-un [::status]
-           :opt-un [::exit-code ::result ::session-id ::error])
-   #(every? #{:status :exit-code :result :session-id :error} (keys %))))
+           :opt-un [::exit-code ::result ::session-id ::session-usable ::error])
+   #(every? #{:status :exit-code :result :session-id :session-usable :error}
+            (keys %))))
 (s/def ::retry-request
   (s/and
    (s/keys :opt-un [::harness ::cwd ::attributes])
