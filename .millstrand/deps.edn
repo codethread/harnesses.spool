@@ -5,10 +5,10 @@
    :deps/root "spools/batteries"}
   millhouse.spools/identity
   {:git/url "https://github.com/codethread/millhouse.spool.git"
-   :git/sha "7cfcb235848c0db6231ba2282430913580d66f2e"
+   :git/sha "f7356aaf8d3b0d3c992969d28b9beb85ee967069"
    :deps/root "spools/identity"}
   millhouse.spools/kanban
   {:git/url "https://github.com/codethread/millhouse.spool.git"
-   :git/sha "7cfcb235848c0db6231ba2282430913580d66f2e"
+   :git/sha "f7356aaf8d3b0d3c992969d28b9beb85ee967069"
    :deps/root "spools/kanban"}
   ct.spools/harnesses {:local/root ".."}}}
