@@ -10,6 +10,7 @@
             [ct.spools.harnesses.providers.codex :as codex]
             [ct.spools.harnesses.providers.cursor :as cursor]
             [ct.spools.harnesses.providers.pi :as pi]
+            [ct.spools.harnesses.queries :as queries]
             [millstrand.api.format.alpha :as format-alpha]
             [millstrand.api.lifecycle.alpha :as lifecycle]
             [millstrand.api.millstrand.alpha :as millstrand]))
@@ -172,6 +173,16 @@
 (millstrand/use-op! agent-cli/agent)
 (millstrand/use-handler! execution/on-event)
 (millstrand/use-bin! agent-bin/agent)
+(millstrand/use-query!
+ queries/agent-run-terminal
+ queries/agent-run-settled
+ queries/agent-run-active
+ queries/agent-runs-active
+ queries/agent-runs-for-target
+ queries/agent-work-complete
+ queries/agent-work-complete-or-intervention
+ queries/agent-work-root-complete
+ queries/agent-work-root-complete-or-intervention)
 
 (lifecycle/use-resource!
  harnesses/harness-core-runtime
