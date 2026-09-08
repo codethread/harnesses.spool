@@ -310,6 +310,54 @@
           (is (re-find #"ambiguous work-card parents"
                        (get-in result [:malformed :ambiguous]))))))))
 
+(deftest custody-inspection-accepts-terminal-runs-without-an-invocation
+  (with-core-world
+    (fn [ctx]
+      (let [result
+            (test-alpha/repl!
+             ctx
+             '(do
+                (require '[ct.spools.harnesses :as harnesses]
+                         '[ct.spools.harnesses.execution :as execution]
+                         '[ct.spools.harnesses.internal.process-custody :as custody]
+                         '[millstrand.api.current.alpha :as current]
+                         '[millstrand.api.spool.alpha :as spool]
+                         '[millstrand.api.weaver.alpha :as weaver])
+                (let [rt (current/runtime)
+                      _ (harnesses/register-harness!
+                         rt :fake
+                         {:modes #{:headless}
+                          :prepare 'ct.spools.harnesses/create!
+                          :finish 'ct.spools.harnesses/finish!})
+                      run (harnesses/create!
+                           rt {:harness :fake :mode :headless :cwd "/tmp"
+                               :prompt "Do not launch this failed run."
+                               :title "Unsettled terminal run"})
+                      id (:id run)
+                      _ (harnesses/finish!
+                         rt id {:status :failed :error "prior failure"})
+                      _ (weaver/update!
+                         rt id
+                         {:attributes {:harness/attempt 1
+                                       :harness/process-owner "agent-harness/run"
+                                       :harness/process-key (str id "/attempt-1")
+                                       :harness/process-handle "missing"}})]
+                  (with-redefs [custody/list-owned (constantly [])]
+                    (let [opened (execution/open-execution! {:runtime rt})]
+                      (try
+                        (execution/inspect-owned! rt)
+                        (let [retained (weaver/show rt id)]
+                          {:deferred? (contains? opened :deferred-recovery)
+                           :status (spool/attr-get retained :harness/status)
+                           :settled (spool/attr-get retained :harness/settled)
+                           :invocation (spool/attr-get retained :harness/invocation)
+                           :error (spool/attr-get retained :harness/error)})
+                        (finally
+                          (execution/close-execution! {:runtime rt}))))))))]
+        (is (= {:deferred? false :status "failed" :settled "false"
+                :invocation nil :error "prior failure"}
+               result))))))
+
 (deftest late-successful-settlement-preserves-primary-failure
   (with-core-world
     (fn [ctx]

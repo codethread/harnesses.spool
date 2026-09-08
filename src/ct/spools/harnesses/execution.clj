@@ -206,14 +206,16 @@
                     record (some #(when (= (:key %) (attr-get run :harness/process-key)) %)
                                  records)
                     transition-error (try
-                                       (harness/finish! rt id
-                                                        {:status :failed
-                                                         :invocation (life/invocation run)
-                                                         :evidence
-                                                         {:settled false
-                                                          :settlement "no-terminal-evidence"
-                                                          :failure-class "reconciliation"}
-                                                         :error message})
+                                       (harness/finish!
+                                        rt id
+                                        (cond-> {:status :failed
+                                                 :evidence
+                                                 {:settled false
+                                                  :settlement "no-terminal-evidence"
+                                                  :failure-class "reconciliation"}
+                                                 :error message}
+                                          (some? (life/invocation run))
+                                          (assoc :invocation (life/invocation run))))
                                        nil
                                        (catch Throwable transition-error
                                          transition-error))]
