@@ -23,3 +23,8 @@
                  {:file "me/config.clj"
                   :after [:millhouse/spools-identity]
                   :required? true})
+
+(runtime/module! runtime :module-me-reviewers
+                 {:file "me/reviewers.clj"
+                  :after [:module-me-config]
+                  :required? true})

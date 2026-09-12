@@ -1,0 +1,5 @@
+{:hooks
+ {:analyze-call
+  {ct.spools.harnesses.reviewers/defreviewer hooks.millstrand/defvalue
+   ct.spools.harnesses.reviewers/defreviewer! hooks.millstrand/defvalue
+   ct.spools.harnesses.reviewers/use-reviewer! hooks.millstrand/use-vars}}}

@@ -17,6 +17,18 @@
      strand agent list
      ```
 
+     List declared review lenses, then asynchronously review the current change:
+
+     ```text
+     strand agent reviewers
+     strand agent review
+     ```
+
+     Review captures one bounded, immutable diff and returns ready run IDs. Use
+     repeated `--agent` reviewer names or repeated `--label` values to select
+     lenses. Supply literal patch content through `--git :stdin` or
+     `--git :payload/diff`; this is data and is never executed.
+
      Assign an available provider harness or alias to a pending feature. Put
      the instructions and completion criteria on the target first, and prepare
      its worktree before assigning. Do not preclaim it for the worker:
@@ -117,6 +129,12 @@
      ```text
      strand agent list
      ```
+
+     `agent reviewers` lists declarative review lenses and their currently
+     selected aliases. `agent review` captures a repository change and creates
+     all matching headless runs before scheduling them together. Results remain
+     ordinary tracked runs for `agent show` and the `agent-run-*` wait queries;
+     there is no built-in synthesis or semantic pass/fail step.
 
      The default list contains only currently available entries. Each concise
      record identifies a concrete provider harness or an alias, its selected

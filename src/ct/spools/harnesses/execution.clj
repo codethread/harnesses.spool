@@ -15,24 +15,16 @@
             [millstrand.api.weaver.alpha :as weaver])
   (:import [java.util.concurrent Executors ThreadFactory TimeUnit]))
 
-(def ^:private state-version 3)
+(def ^:private state-version 4)
 (def ^:private event-types #{:strand/added :strand/updated :batch/applied})
 
-(declare schedule!
-         inspect-owned!
-         launch-in-flight?
-         ^:private finish-process!
-         ^:private state
-         ^:private activate-state!
-         ^:private deactivate-state!
-         ^:private ready-headless
-         ^:private claim!
-         ^:private release!
-         ^:private launch-headless!
-         ^:private full-run
-         ^:private resolved-definition
-         ^:private prepare-launch
-         ^:private enforce-stop!
+(declare schedule! inspect-owned! launch-in-flight?
+         ^:private finish-process! ^:private state
+         ^:private activate-state! ^:private deactivate-state!
+         ^:private ready-headless ^:private claim! ^:private release!
+         ^:private launch-headless! ^:private full-run
+         ^:private resolved-definition ^:private prepare-launch
+         ^:private enforce-stop! ^:private schedule-inspection!
          ^:private callback)
 
 (s/def ::event
@@ -173,7 +165,9 @@
   (let [owned (runs/inspectable-headless rt #(launch-in-flight? rt %))]
     (when (seq owned)
       (let [records (custody/list-owned rt)
-            transition-errors (atom [])]
+            recur? (atom false)
+            transition-errors (atom [])
+            failures (:reconciliation-failures (state rt))]
         (doseq [run owned]
           (try
             (let [record (custody/record-for "harness" run records)
@@ -181,9 +175,7 @@
                                                       (:id run)
                                                       (attr-get run :harness/attempt)
                                                       record)]
-              ;; `pending` is the durable launch claim, never a relaunch signal.
-              ;; Bind the one owner/key-matched opaque handle before continuing
-              ;; to terminal observation or scheduling another inspection.
+              (swap! failures dissoc (:id run))
               (when (= "pending" (attr-get run :harness/process-handle))
                 (weaver/update! rt (:id run) {:attributes durable}))
               (if (= :terminal (:phase record))
@@ -191,46 +183,42 @@
                                  (resolved-definition rt (full-run rt (:id run)))
                                  record)
                 (do
-                  ;; Stop intent is durable and idempotent, so re-requesting
-                  ;; cancellation on every inspection is safe and is what makes
-                  ;; a stop survive a worker restart.
                   (enforce-stop! rt run record)
-                  (.schedule ^java.util.concurrent.ScheduledExecutorService
-                   (:scheduler (state rt))
-                             ^Runnable #(inspect-owned! rt)
-                             100 TimeUnit/MILLISECONDS))))
+                  (reset! recur? true))))
             (catch Throwable error
               (let [id (:id run)
                     message (str "process custody reconciliation failed: "
                                  (ex-message error) " " (pr-str (ex-data error)))
                     record (some #(when (= (:key %) (attr-get run :harness/process-key)) %)
                                  records)
-                    transition-error (try
-                                       (harness/finish!
-                                        rt id
-                                        (cond-> {:status :failed
-                                                 :evidence
-                                                 {:settled false
-                                                  :settlement "no-terminal-evidence"
-                                                  :failure-class "reconciliation"}
-                                                 :error message}
-                                          (some? (life/invocation run))
-                                          (assoc :invocation (life/invocation run))))
-                                       nil
-                                       (catch Throwable transition-error
-                                         transition-error))]
+                    signature [(:id run) (attr-get run :harness/process-key) message]
+                    repeated? (and (nil? record)
+                                   (life/terminal? run)
+                                   (not (life/settled? run))
+                                   (= signature (get @failures id)))
+                    transition-error
+                    (when-not repeated?
+                      (try
+                        (harness/finish!
+                         rt id
+                         (cond-> {:status :failed
+                                  :evidence
+                                  {:settled false
+                                   :settlement "no-terminal-evidence"
+                                   :failure-class "reconciliation"}
+                                  :error message}
+                           (some? (life/invocation run))
+                           (assoc :invocation (life/invocation run))))
+                        (swap! failures assoc id signature)
+                        nil
+                        (catch Throwable transition-error
+                          transition-error)))]
                 (release! rt id)
                 (when transition-error
-                  ;; Retry only when the owner is still running and the custody
-                  ;; fact is still nonterminal. A committed failed owner has no
-                  ;; inspection work left to schedule.
                   (when (and record
                              (not= :terminal (:phase record))
                              (= "running" (life/status (full-run rt id))))
-                    (.schedule ^java.util.concurrent.ScheduledExecutorService
-                     (:scheduler (state rt))
-                               ^Runnable #(inspect-owned! rt)
-                               100 TimeUnit/MILLISECONDS))
+                    (reset! recur? true))
                   (swap! transition-errors conj
                          (ex-info "Unable to persist harness custody failure"
                                   {:run-id id
@@ -241,6 +229,8 @@
                                    {:message (ex-message transition-error)
                                     :data (ex-data transition-error)}}
                                   transition-error)))))))
+        (when @recur?
+          (schedule-inspection! rt))
         (when (seq @transition-errors)
           (if (= 1 (count @transition-errors))
             (throw (first @transition-errors))
@@ -261,6 +251,8 @@
                                                                      (daemon-thread-factory))]
     {:in-flight (atom #{})
      :deferred-recovery (atom nil)
+     :reconciliation-failures (atom {})
+     :inspection-scheduled? (atom false)
      :executor executor
      :scheduler scheduler
      :close-fn (fn []
@@ -290,6 +282,15 @@
     (when-not (and opened (compare-and-set! active opened nil))
       (fail! "Harness execution resources are not open" {}))
     opened))
+
+(defn- schedule-inspection! [rt]
+  (let [{:keys [inspection-scheduled? scheduler]} (state rt)]
+    (when (compare-and-set! inspection-scheduled? false true)
+      (.schedule ^java.util.concurrent.ScheduledExecutorService scheduler
+                 ^Runnable #(do
+                              (reset! inspection-scheduled? false)
+                              (inspect-owned! rt))
+                 100 TimeUnit/MILLISECONDS))))
 
 (defn- callback [symbol]
   (or (requiring-resolve symbol)

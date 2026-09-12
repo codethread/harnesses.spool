@@ -10,6 +10,8 @@
             [ct.spools.harnesses.providers.cursor-test]
             [ct.spools.harnesses.providers.internal.outcome-test]
             [ct.spools.harnesses.providers.pi-test]
+            [ct.spools.harnesses.review-git-test]
+            [ct.spools.harnesses.reviewers-test]
             [ct.spools.harnesses.spool-test]))
 
 (def ^:private test-namespaces
@@ -21,6 +23,8 @@
     ct.spools.harnesses.providers.cursor-test
     ct.spools.harnesses.providers.internal.outcome-test
     ct.spools.harnesses.providers.pi-test
+    ct.spools.harnesses.review-git-test
+    ct.spools.harnesses.reviewers-test
     ct.spools.harnesses.spool-test])
 
 (defn -main

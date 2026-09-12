@@ -1,4 +1,4 @@
-{:paths ["src"]
+{:paths ["src" "resources"]
  :deps {io.millstrand/millstrand {:git/url "https://github.com/codethread/millstrand.git"
                                   :git/sha "310368dff9174bd889ad21d4ed8196952684eaf9"
                                   :deps/root "."}

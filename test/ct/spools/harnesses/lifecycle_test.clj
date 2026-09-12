@@ -358,6 +358,72 @@
                 :invocation nil :error "prior failure"}
                result))))))
 
+(deftest custody-inspection-coalesces-and-deduplicates-failures
+  (with-core-world
+    (fn [ctx]
+      (let [result
+            (test-alpha/repl!
+             ctx
+             '(do
+                (require '[ct.spools.harnesses :as harnesses]
+                         '[ct.spools.harnesses.execution :as execution]
+                         '[ct.spools.harnesses.internal.process-custody :as custody]
+                         '[ct.spools.harnesses.internal.runs :as runs]
+                         '[millstrand.api.current.alpha :as current])
+                (let [rt (current/runtime)
+                      running (mapv (fn [id]
+                                      {:id id
+                                       :attributes
+                                       {:harness/status "running"
+                                        :harness/settled "false"
+                                        :harness/attempt 1
+                                        :harness/process-owner "agent-harness/run"
+                                        :harness/process-key (str id "/attempt-1")
+                                        :harness/process-handle (str "handle-" id)}})
+                                    ["one" "two"])
+                      records (mapv (fn [run]
+                                      {:owner custody/owner
+                                       :key (get-in run [:attributes
+                                                         :harness/process-key])
+                                       :handle (get-in run [:attributes
+                                                            :harness/process-handle])
+                                       :phase :running})
+                                    running)
+                      terminal (assoc-in (first running)
+                                         [:attributes :harness/status]
+                                         "failed")
+                      finish-count (atom 0)
+                      schedule-count (atom 0)
+                      _ (#'execution/activate-state! rt)]
+                  (try
+                    (with-redefs-fn
+                      {#'runs/inspectable-headless (fn [_ _] running)
+                       #'custody/list-owned (constantly records)
+                       #'execution/schedule-inspection!
+                       (fn [_] (swap! schedule-count inc))}
+                      #(execution/inspect-owned! rt))
+                    (with-redefs [runs/inspectable-headless
+                                  (fn [_ _] [terminal])
+                                  custody/list-owned (constantly [])
+                                  harnesses/finish!
+                                  (fn [_ _ _] (swap! finish-count inc))]
+                      (execution/inspect-owned! rt)
+                      (execution/inspect-owned! rt))
+                    {:scheduled @schedule-count
+                     :finish-count @finish-count
+                     :state-version @#'execution/state-version
+                     :state-keys (set (keys (#'execution/state rt)))}
+                    (finally
+                      ((:close-fn (#'execution/deactivate-state! rt))))))))]
+        (testing "many live records schedule one runtime-wide recurring pass"
+          (is (= 1 (:scheduled result))))
+        (testing "an identical missing-custody failure is persisted once"
+          (is (= 1 (:finish-count result))))
+        (testing "runtime state version owns reconciliation coordination"
+          (is (= 4 (:state-version result)))
+          (is (every? (:state-keys result)
+                      [:inspection-scheduled? :reconciliation-failures])))))))
+
 (deftest late-successful-settlement-preserves-primary-failure
   (with-core-world
     (fn [ctx]

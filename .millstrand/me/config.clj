@@ -11,6 +11,7 @@
             [ct.spools.harnesses.providers.cursor :as cursor]
             [ct.spools.harnesses.providers.pi :as pi]
             [ct.spools.harnesses.queries :as queries]
+            [ct.spools.harnesses.reviewers :as reviewers]
             [millstrand.api.format.alpha :as format-alpha]
             [millstrand.api.lifecycle.alpha :as lifecycle]
             [millstrand.api.millstrand.alpha :as millstrand]))
@@ -169,6 +170,8 @@
   {:open 'me.config/open-harnesses!
    :close 'me.config/close-harnesses!
    :after #{:harness-core-runtime}})
+
+(reviewers/use-reviewer-kind!)
 
 (millstrand/use-op! agent-cli/agent)
 (millstrand/use-handler! execution/on-event)

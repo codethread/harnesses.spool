@@ -13,9 +13,12 @@ the matching `use-*!` form in its own module.
 Activate the complete surface with the bundled selector:
 
 ```clojure
+(runtime/module! runtime :millhouse/spools-identity
+  {:ns 'millhouse.spools.identity
+   :required? true})
 (runtime/module! runtime :harnesses
   {:ns 'ct.spools.harnesses.spool
-   :spools ['ct.spools/harnesses 'millhouse.spools/identity]
+   :after [:millhouse/spools-identity]
    :required? true})
 ```
 
@@ -30,6 +33,33 @@ This publishes:
 
 Loading `ct.spools.harnesses`, a provider namespace, or one of the execution
 namespaces alone does not publish those declarations.
+
+A standalone consumer first supplies the source dependency, then activates the
+modules. The dependency makes the namespace loadable; `runtime/module!` is the
+activation step. This local checkout example is complete and keeps the reviewer
+module after the bundled Harnesses selector:
+
+```clojure
+;; consumer deps.edn, with both checkouts side by side
+{:deps {ct.spools/harnesses {:local/root "../harnesses.spool"}}}
+
+;; consumer .millstrand/init.clj
+(require '[millstrand.api.current.alpha :as current]
+         '[millstrand.api.runtime.alpha :as runtime])
+
+(let [runtime (current/runtime)]
+  (runtime/module! runtime :millhouse/spools-identity
+                   {:ns 'millhouse.spools.identity
+                    :required? true})
+  (runtime/module! runtime :harnesses
+                   {:ns 'ct.spools.harnesses.spool
+                    :after [:millhouse/spools-identity]
+                    :required? true})
+  (runtime/module! runtime :repo-reviewers
+                   {:file "me/reviewers.clj"
+                    :after [:harnesses]
+                    :required? true}))
+```
 
 ## Select declarations
 
@@ -78,13 +108,15 @@ and complete Harnesses surface first, then activate the adapter selector:
 (runtime/module! runtime :workflow/engine
   {:ns 'millhouse.spools.workflow
    :required? true})
+(runtime/module! runtime :millhouse/spools-identity
+  {:ns 'millhouse.spools.identity
+   :required? true})
 (runtime/module! runtime :harnesses
   {:ns 'ct.spools.harnesses.spool
-   :spools ['ct.spools/harnesses 'millhouse.spools/identity]
+   :after [:millhouse/spools-identity]
    :required? true})
 (runtime/module! runtime :harnesses/agent-executor
   {:ns 'ct.spools.harnesses.executors.agent.spool
-   :spools ['ct.spools/harnesses 'millhouse.spools/workflow]
    :after [:workflow/engine :harnesses]
    :required? true})
 ```
@@ -237,6 +269,83 @@ user-only agent bin does not supply agent identity.
 
 Use `strand agent run <agent> --interactive` to launch an interactive tracked
 session.
+
+## Declarative reviewers
+
+The Harnesses reviewer API provides small, read-only lenses for repository changes. A declaration belongs in a workspace module, so a repository can publish useful review policy without copying a large roster from another project.
+
+Authoring and activation are separate. `defreviewer` defines an inert declaration; `use-reviewer!` selects one or more declarations in the active module. `defreviewer!` is the shorthand that defines and selects one declaration. The kind provider must be selected before reviewer entries are selected; a module file that contains repository policy should run after that provider module.
+
+```clojure
+(ns me.reviewers
+  (:require [ct.spools.harnesses.reviewers :as reviewers]
+            [millstrand.api.format.alpha :as format-alpha]))
+
+(reviewers/defreviewer
+ docs-and-tests
+ "Check contract coverage in docs and tests."
+ {:seat ['luna 'reviewer]
+  :labels ["PR" "Docs" "Tests"]
+  :glob ["README.md" "docs/**" "src/**" "test/**"]}
+ (format-alpha/prose
+  "
+    Check changed docs, source, and tests against the promised contract.
+    Report actionable P1/P2 findings with paths and lines, or `No findings`.
+    Do not edit files."
+  {}))
+
+(reviewers/use-reviewer! docs-and-tests)
+```
+
+The required `:seat` names a registered alias, as a symbol or keyword, or an ordered vector such as `['reviewer 'luna]`. The first currently available alias is chosen before spawning; this is availability fallback, not a retry or a new provider-selection engine. `:labels` and `:glob` are optional. The final argument is an evaluated prompt expression, so `format-alpha/prose` is suitable for readable multi-paragraph policy. An optional `:system-prompt` is appended after the selected alias guidance.
+
+This workspace's repository lenses are in [`.millstrand/me/reviewers.clj`](.millstrand/me/reviewers.clj). The module is configured after `me.config`, which selects the reusable reviewer kind provider. A dependency coordinate only makes the namespace available; it does not activate a module. Activation is the module's typed `use-reviewer!` selection, and any agent or task coordination is a separate concern.
+
+Discover the declarations and the command guidance with:
+
+```text
+strand agent reviewers
+strand help agent review
+strand prime agent
+```
+
+`strand agent review` repeats `--agent` to select reviewer declaration names with OR semantics. Explicit names override those reviewers' globs. Repeat `--label` for OR label matching; names and labels together intersect. Without explicit names, a reviewer applies when any of its globs matches any changed path. A reviewer with no globs applies unconditionally to a nonempty diff. Selection is deterministic, and unknown names or labels fail before fan-out.
+
+The default review surface uses the selected base and includes branch commits plus staged, unstaged, and non-ignored untracked changes in the current tree. `--branch <ref>` reviews the committed merge-base-to-ref range only; it does not check out the ref and does not include the current tree's dirty changes. Use `--base <ref>` to choose the base explicitly. Removed and renamed paths remain part of selection.
+
+`--git` is literal unified-diff content, not a shell command. It accepts declared text payloads such as `:stdin` or `:payload/diff`. Captured diffs are bounded to 512 KiB by default; use `--max-bytes` to choose another positive bound. An oversized diff is an error with a remedy, never a silently truncated review. Empty input produces a structured no-changes skip rather than a fake successful run.
+
+Review runs are asynchronous and return durable run IDs. Inspect each result with `strand agent show <run-id>`. Wait for positive evidence with a named query and a positive minimum count; `agent-run-terminal` proves a terminal state, while `agent-run-settled` also proves the provider process is gone:
+
+```text
+strand await --query agent-run-settled --param run-id=<run-id> --min-count 1
+strand agent show <run-id>
+```
+
+For a literal patch piped from Git, this Nushell example keeps the patch as data. Strand returns the command result as JSON, so no JSON flag is needed:
+
+```nu
+git diff | strand --stdin agent review --git :stdin
+```
+
+When that result contains `runs` with `id` fields, parse it and await each run explicitly:
+
+```nu
+let result = (git diff | strand --stdin agent review --git :stdin | from json)
+$result.runs | each {|run|
+  strand await --query agent-run-settled --param $"run-id=($run.id)" --min-count 1
+  strand agent show $run.id
+}
+```
+
+For a saved patch, use a named payload rather than interpolating patch text into a shell command:
+
+```nu
+let result = (strand --payload diff=patch.diff agent review --git :payload/diff | from json)
+$result.runs | each {|run| strand agent show $run.id }
+```
+
+The reviewer command composes the existing shell/execution boundary: it captures the diff, creates tracked headless runs, and schedules them through the existing execution machinery. It does not introduce a builtin workflow executor, force a synthesizer, or infer semantic pass/fail from freeform review text. Consumers may compose a shell executor or their own synthesis step from the returned run IDs.
 
 ## Assignment
 

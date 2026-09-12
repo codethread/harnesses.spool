@@ -26,6 +26,25 @@
    :doc "Create, inspect, stop, retry, and resume tracked coding-agent runs."
    :subcommands
    {"assign" assignment-cli/assign-subcommand
+    "reviewers"
+    {:doc "List declarative reviewer lenses and current seat availability."
+     :hook-class :read
+     :deadline-class :standard
+     :flags by-identity-flag}
+    "review"
+    {:doc "Capture a change and asynchronously fan it out to reviewer lenses."
+     :hook-class :mutating
+     :deadline-class :standard
+     :flags (merge by-identity-flag
+                   {:cwd {:type :string :doc "Repository path; defaults to caller cwd."}
+                    :base {:type :string :doc "Explicit merge-base reference."}
+                    :branch {:type :string :doc "Committed tip to review without checkout."}
+                    :git {:type :string :doc "Literal unified diff or payload reference."}
+                    :max-bytes {:type :int :doc "Maximum captured diff bytes (default 524288)."}
+                    :agent {:type :string :repeat? true
+                            :doc "Reviewer declaration name; repeat for OR."}
+                    :label {:type :string :repeat? true
+                            :doc "Reviewer label; repeat for OR."}})}
     "run" {:doc "Create a tracked agent run."
            :hook-class :mutating
            :deadline-class :standard

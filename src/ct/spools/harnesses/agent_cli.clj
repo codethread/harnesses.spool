@@ -9,6 +9,7 @@
             [ct.spools.harnesses.internal.agent-docs :as agent-docs]
             [ct.spools.harnesses.internal.cli :as cli]
             [ct.spools.harnesses.internal.lifecycle :as life]
+            [ct.spools.harnesses.reviewers :as reviewers]
             [millhouse.spools.identity :as identity]
             [millstrand.api.graph.alpha :as graph]
             [millstrand.api.millstrand.alpha :as millstrand]
@@ -97,6 +98,14 @@
    ::op-result
    (case (:subcommand args)
      ["assign"] (op-assign runtime args)
+     ["reviewers"] {:reviewers (reviewers/reviewers runtime)}
+     ["review"] (reviewers/start!
+                 runtime
+                 (cond-> (select-keys args [:base :branch :git :max-bytes
+                                            :by-identity])
+                   (or (:cwd args) cwd) (assoc :cwd (or (:cwd args) cwd))
+                   (:agent args) (assoc :agents (:agent args))
+                   (:label args) (assoc :labels (:label args))))
      ["run"] (op-run runtime args cwd)
      ["show"] (op-show runtime args)
      ["runs"] (op-runs runtime args)

@@ -11,12 +11,15 @@
             [ct.spools.harnesses.execution :as execution]
             [ct.spools.harnesses.process-custody :as process-custody]
             [ct.spools.harnesses.queries :as queries]
+            [ct.spools.harnesses.reviewers :as reviewers]
             [ct.spools.harnesses.providers.claude :as claude]
             [ct.spools.harnesses.providers.codex :as codex]
             [ct.spools.harnesses.providers.cursor :as cursor]
             [ct.spools.harnesses.providers.pi :as pi]
             [millstrand.api.lifecycle.alpha :as lifecycle]
             [millstrand.api.millstrand.alpha :as millstrand]))
+
+(reviewers/use-reviewer-kind!)
 
 (millstrand/use-op! agent-cli/agent)
 (millstrand/use-handler! execution/on-event)
