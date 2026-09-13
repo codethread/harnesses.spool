@@ -1,6 +1,30 @@
 {:deps
- {codethread/config
+ {io.millstrand/batteries
+  {:git/url "https://github.com/codethread/millstrand.git"
+   :git/sha "310368dff9174bd889ad21d4ed8196952684eaf9"
+   :deps/root "spools/batteries"}
+  millhouse.spools/workflow
+  {:git/url "https://github.com/codethread/millhouse.spool.git"
+   :git/sha "f487eb42ea9523e8bd405e64a7c319013217d988"
+   :deps/root "spools/workflow"}
+  millhouse.spools/identity
+  {:git/url "https://github.com/codethread/millhouse.spool.git"
+   :git/sha "f487eb42ea9523e8bd405e64a7c319013217d988"
+   :deps/root "spools/identity"}
+  millhouse.spools/kanban
+  {:git/url "https://github.com/codethread/millhouse.spool.git"
+   :git/sha "f487eb42ea9523e8bd405e64a7c319013217d988"
+   :deps/root "spools/kanban"}
+  codethread/devflow
+  {:git/url "https://github.com/codethread/devflow.spool.git"
+   :git/sha "99313b48f14ab0892cb90264d100dce4ff2a25e0"
+   :deps/root "."}
+  codethread/devflow-kanban-adapter
+  {:git/url "https://github.com/codethread/devflow.spool.git"
+   :git/sha "99313b48f14ab0892cb90264d100dce4ff2a25e0"
+   :deps/root "kanban-adapter"}
+  codethread/config
   {:git/url "https://github.com/codethread/codethread.spool.git"
-   :git/sha "333d456557fe8e62e08f99a206b52d30abd876c7"
+   :git/sha "252eeaee216a5e4d4e82c6b2948dd9eba1dafc9d"
    :deps/root "spools/config"}
   ct.spools/harnesses {:local/root ".."}}}

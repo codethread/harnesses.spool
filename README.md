@@ -37,52 +37,63 @@ namespaces alone does not publish those declarations.
 ## Shared Codethread catalog
 
 Codethread consumers can use the shared configuration spool to activate the
-complete agent surface, including provider resources, aliases, reviewers, and
-the asynchronous Workflow `:agent` executor:
+shared agent surface, including provider resources, aliases, and reviewers.
+The bootstrap deliberately leaves the asynchronous Workflow `:agent` executor
+for the consumer's final registration step, after any consumer workflows:
 
 ```clojure
 (require '[ct.spools.codethread.bootstrap :as codethread])
 (codethread/register! runtime)
+
+;; Register consumer aliases and workflow modules here.
+(codethread/register-executor! runtime [:consumer/workflows])
 ```
 
-The bootstrap owns module ordering and the reusable catalog. Its preferred role
-aliases are `luna`, `oracle`, `grunt`, `reviewer`, and `coordinator`; effort-
-specific compatibility seats remain available. Claude and Cursor are declared
-but disabled by default, matching the authoritative Harnesses workspace
-policy. Consumers can enable either provider with the process-local agent
-configuration command when needed.
+The bootstrap owns shared module ordering and the reusable catalog. Its
+preferred role aliases are `luna`, `oracle`, `grunt`, `reviewer`, and
+`coordinator`; effort-specific compatibility seats remain available. Claude
+and Cursor are declared but disabled by default, matching the authoritative
+Harnesses workspace policy. Consumers can enable either provider with the
+process-local agent configuration command when needed.
+
+`register-executor!` owns the sole `:agent` executor. Pass the consumer module
+ids whose resources or workflows must reconcile before its initial ready-gate
+scan. Consumers must not activate
+`ct.spools.harnesses.executors.agent.spool` directly or register a second
+provider catalog.
 
 The Harnesses dogfood workspace keeps its own checkout as a local
-`ct.spools/harnesses` root and pins `codethread/config` in
-[`.millstrand/deps.edn`](.millstrand/deps.edn). Published consumers should pin
-both dependencies. They should not copy the provider, alias, reviewer, query,
-or executor roster into their own workspace modules.
+`ct.spools/harnesses` root and pins `codethread/config`, Devflow, and the
+Devflow Kanban adapter in [`.millstrand/deps.edn`](.millstrand/deps.edn).
+Published consumers should pin the shared Harnesses and config dependencies.
+They should not copy the provider, alias, reviewer, query, or executor roster
+into their own workspace modules.
 
 A standalone consumer first supplies the source dependency, then activates the
 modules. The dependency makes the namespace loadable; `runtime/module!` is the
-activation step. This local checkout example is complete and keeps the reviewer
-module after the bundled Harnesses selector:
+activation step. This local checkout example keeps a consumer workflow module
+before the shared executor:
 
 ```clojure
 ;; consumer deps.edn, with both checkouts side by side
-{:deps {ct.spools/harnesses {:local/root "../harnesses.spool"}}}
+{:deps {ct.spools/harnesses {:local/root "../harnesses.spool"}
+        codethread/config
+        {:git/url "https://github.com/codethread/codethread.spool.git"
+         :git/sha "252eeaee216a5e4d4e82c6b2948dd9eba1dafc9d"
+         :deps/root "spools/config"}}}
 
 ;; consumer .millstrand/init.clj
 (require '[millstrand.api.current.alpha :as current]
-         '[millstrand.api.runtime.alpha :as runtime])
+         '[millstrand.api.runtime.alpha :as runtime]
+         '[ct.spools.codethread.bootstrap :as codethread])
 
 (let [runtime (current/runtime)]
-  (runtime/module! runtime :millhouse/spools-identity
-                   {:ns 'millhouse.spools.identity
+  (codethread/register! runtime)
+  (runtime/module! runtime :consumer/workflows
+                   {:ns 'consumer.workflows
+                    :after [:millhouse/spools-workflow]
                     :required? true})
-  (runtime/module! runtime :harnesses
-                   {:ns 'ct.spools.harnesses.spool
-                    :after [:millhouse/spools-identity]
-                    :required? true})
-  (runtime/module! runtime :repo-reviewers
-                   {:file "me/reviewers.clj"
-                    :after [:harnesses]
-                    :required? true}))
+  (codethread/register-executor! runtime [:consumer/workflows]))
 ```
 
 ## Select declarations
@@ -125,33 +136,28 @@ Clojure API are required.
 
 ## Millhouse Workflow adapter
 
-Workflow support is optional and separately activated. Load the Workflow engine
-and complete Harnesses surface first, then activate the adapter selector:
+Workflow support is optional and separately activated. The shared Codethread
+bootstrap owns the Workflow engine and Harnesses surface. Consumers that need
+the workflow CLI/providers activate `millhouse.spools.workflow.spool` after the
+shared bootstrap, then register the shared executor last:
 
 ```clojure
-(runtime/module! runtime :workflow/engine
-  {:ns 'millhouse.spools.workflow
+(require '[ct.spools.codethread.bootstrap :as codethread])
+(codethread/register! runtime)
+(runtime/module! runtime :millhouse/spools-workflow-all
+  {:ns 'millhouse.spools.workflow.spool
+   :after [:millhouse/spools-workflow]
    :required? true})
-(runtime/module! runtime :millhouse/spools-identity
-  {:ns 'millhouse.spools.identity
-   :required? true})
-(runtime/module! runtime :harnesses
-  {:ns 'ct.spools.harnesses.spool
-   :after [:millhouse/spools-identity]
-   :required? true})
-(runtime/module! runtime :harnesses/agent-executor
-  {:ns 'ct.spools.harnesses.executors.agent.spool
-   :after [:workflow/engine :harnesses]
-   :required? true})
+(codethread/register-executor! runtime [:millhouse/spools-workflow-all])
 ```
 
-Place modules that register harness aliases before
-`:harnesses/agent-executor`. Its resource performs an initial scan, so every
-alias named by a durable ready gate must already resolve.
+Place modules that register harness aliases and workflows before
+`register-executor!`. Its resource performs an initial scan, so every alias
+named by a durable ready gate must already resolve.
 
-The selector publishes only the Workflow `:agent` executor, the
-`stalled-agent-gates` query, and the adapter's event resource. It does not change
-the Harnesses engine or bundled Harnesses activation.
+The workflow selector publishes the workflow CLI/providers and their ordinary
+executor resources. The shared executor registration publishes the Workflow
+`:agent` executor and its event resource without changing the Harnesses engine.
 
 Use waiter `:agent` for a gate fulfilled by a headless tracked run:
 
