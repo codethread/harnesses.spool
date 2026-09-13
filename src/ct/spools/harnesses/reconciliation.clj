@@ -368,7 +368,11 @@
      (fail! "Explicit abandonment requires a nonblank reason" {:run-id run-id}))
    (when (and abandon? (str/blank? (:by opts)))
      (fail! "Explicit abandonment requires an actor identity" {:run-id run-id}))
-   (let [reports (inspect rt (select-keys opts [:run-id :limit]))
+   (let [limit (when-not run-id (or (:limit opts) sweep-limit))
+         inspected (inspect rt (cond-> (select-keys opts [:run-id])
+                                 limit (assoc :limit (inc limit))))
+         truncated? (and limit (> (count inspected) limit))
+         reports (if limit (vec (take limit inspected)) inspected)
          report (first reports)
          _ (when (and abandon?
                       (not (contains? #{"unknown" "orphaned" "terminal"}
@@ -377,6 +381,8 @@
                     {:run-id run-id :report report}))
          results (mapv #(abandon-one! rt % opts) reports)]
      {:dry-run (true? (:dry-run? opts))
+      :limit limit
+      :truncated (boolean truncated?)
       :runs results
       :changed (mapv :id (filter :changed results))})))
 
