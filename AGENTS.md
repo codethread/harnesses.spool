@@ -14,6 +14,17 @@ This repo dogfoods its own spool in the millstrand config at `.millstrand/`.
   shared `land` for quality, one basic review, FIFO merge, card completion, and
   branch/worktree cleanup.
 
+## Provider scope
+
+- New capabilities target Codex and Pi.
+- Claude and Cursor are in maintenance mode. Preserve their existing integrations
+  so Weaver starts and agents can delegate through them without regressions.
+- API and feature parity with Codex and Pi is not required for Claude or Cursor.
+  Keep their current paths working when changing shared code; do not extend new
+  capabilities to them unless the user explicitly changes this scope.
+- The startup-hook identity migration applies only to Codex and Pi. Claude and
+  Cursor retain their existing identity and prompt-injection paths.
+
 ## Rules
 
 - **Never restart a running weaver** without explicit user sign-off.
