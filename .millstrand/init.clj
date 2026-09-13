@@ -4,6 +4,8 @@
 
 (def runtime (current/runtime))
 
+;; Shared Codethread activation owns agents, reviewers, and Millhouse landing.
+;; Consumer modules remain explicit below; the sole :agent executor stays last.
 (codethread/register! runtime)
 
 ;; https://codethread.github.io/millstrand/docs/spools/customisation/
@@ -14,10 +16,6 @@
 (runtime/module! runtime :millhouse/spools-workflow-all
                  {:ns 'millhouse.spools.workflow.spool
                   :after [:millhouse/spools-workflow]
-                  :required? true})
-
-(runtime/module! runtime :millhouse/spools-kanban
-                 {:ns 'millhouse.spools.kanban
                   :required? true})
 
 (runtime/module! runtime :devflow
@@ -40,6 +38,5 @@
 (codethread/register-executor!
  runtime
  [:millhouse/spools-workflow-all
-  :millhouse/spools-kanban
   :devflow
   :devflow/kanban-adapter])
