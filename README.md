@@ -480,8 +480,10 @@ The bundled selector schedules the same safe reconciliation through
 Millstrand's durable scheduler every 60 minutes. Set
 `MILLSTRAND_HARNESS_RECONCILIATION_INTERVAL_MS` to a positive integer before
 starting Weaver to choose another cadence, or to the exact value `disabled` to
-disable it. Cadence is never treated as evidence of process death, and the
-sweep never stops or restarts Mill.
+disable it. Each fire inspects at most 100 runs and persists a rotating offset
+in the next wake so ambiguous early rows cannot starve later candidates. Normal
+runtime restarts preserve the existing durable deadline. Cadence is never
+process-death evidence, and the sweep never stops or restarts Mill.
 
 ## Declarative reviewers
 

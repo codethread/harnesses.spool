@@ -1,12 +1,15 @@
 (ns ct.spools.harnesses.lifecycle-test
   "Lifecycle contract tests: status/substatus, stop, resume, and wait queries."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.java.io :as io]
+            [clojure.test :refer [deftest is testing]]
             [ct.spools.harnesses.execution :as execution]
             [ct.spools.harnesses.internal.cli :as cli]
             [ct.spools.harnesses.internal.lifecycle :as life]
             [ct.spools.harnesses.internal.reconciliation :as reconciliation]
             [ct.spools.harnesses.reconciliation :as reconciliation-api]
-            [millstrand.test.alpha :as test-alpha]))
+            [millstrand.test.alpha :as test-alpha])
+  (:import [java.nio.file Files]
+           [java.nio.file.attribute FileAttribute]))
 
 (defn- run
   ([id status] (run id status nil))
@@ -73,11 +76,12 @@
                          :provider {:state "gone"}
                          :native {:state "not-observed"}
                          :active-session-writers ["newer"]}))))
-      (is (= "protected"
-             (:classification
-              (classify {:completion-owner {:state "live"}
-                         :provider {:state "gone"}
-                         :native {:state "not-observed"}})))))
+      (doseq [provider-state ["gone" "missing" "unavailable"]]
+        (is (= "protected"
+               (:classification
+                (classify {:completion-owner {:state "live"}
+                           :provider {:state provider-state}
+                           :native {:state "not-observed"}}))))))
     (testing "both absent or PID-reused identities prove orphaned custody"
       (doseq [state ["gone" "replaced"]]
         (is (= "orphaned"
@@ -101,6 +105,16 @@
       (is (= "false" (:harness/settled attributes)))
       (is (= "interactive-abandoned" (:harness/settlement attributes)))
       (is (not (contains? attributes :harness/exit-code))))))
+
+(deftest bounded-candidate-rotation-is-fair
+  (let [rotate #'reconciliation-api/rotate-candidates
+        candidates (mapv #(format "run-%03d" %) (range 1 102))
+        first-batch (take 100 (rotate candidates 0))
+        second-batch (take 100 (rotate candidates 100))]
+    (is (= "run-001" (first first-batch)))
+    (is (= "run-100" (last first-batch)))
+    (is (= "run-101" (first second-batch)))
+    (is (some #{"run-101"} second-batch))))
 
 (deftest reconciliation-cadence-configuration-is-strict
   (let [parse-interval #'reconciliation-api/parse-sweep-interval]
@@ -209,12 +223,11 @@
       'millhouse.spools/identity
       {:local/root (.getCanonicalPath identity-root)}}}))
 
-(defn- with-core-world [f]
-  (test-alpha/with-weaver-world
-    [ctx {:storage :sqlite-memory
-          :deps-edn (pr-str (world-deps))
-          :init-clj
-          "(require '[millstrand.api.current.alpha :as current]
+(defn- full-world-options [storage]
+  {:storage storage
+   :deps-edn (pr-str (world-deps))
+   :init-clj
+   "(require '[millstrand.api.current.alpha :as current]
                      '[millstrand.api.runtime.alpha :as runtime])
            (def rt (current/runtime))
            (runtime/module! rt :identity
@@ -224,30 +237,99 @@
              {:file \"modules/lifecycle_core.clj\"
               :after [:identity]
               :required? true})"
-          :files
-          {"modules/lifecycle_core.clj"
-           "(ns modules.lifecycle-core
-              (:require [ct.spools.harnesses :as harnesses]
-                        [ct.spools.harnesses.agent-cli :as agent-cli]
-                        [ct.spools.harnesses.assignment :as assignment]
-                        [ct.spools.harnesses.queries :as queries]
-                        [millstrand.api.lifecycle.alpha :as lifecycle]
-                        [millstrand.api.millstrand.alpha :as millstrand]))
-            (lifecycle/use-resource!
-             harnesses/harness-core-runtime
-             assignment/assignment-runtime)
-            (millstrand/use-op! agent-cli/agent)
-            (millstrand/use-query!
-             queries/agent-run-terminal
-             queries/agent-run-settled
-             queries/agent-run-active
-             queries/agent-runs-active
-             queries/agent-runs-for-target
-             queries/agent-work-complete
-             queries/agent-work-complete-or-intervention
-             queries/agent-work-root-complete
-             queries/agent-work-root-complete-or-intervention)"}}]
-    (f ctx)))
+   :files
+   {"modules/lifecycle_core.clj"
+    "(ns modules.lifecycle-core
+       (:require [ct.spools.harnesses :as harnesses]
+                 [ct.spools.harnesses.agent-cli :as agent-cli]
+                 [ct.spools.harnesses.assignment :as assignment]
+                 [ct.spools.harnesses.execution :as execution]
+                 [ct.spools.harnesses.providers.claude :as claude]
+                 [ct.spools.harnesses.providers.codex :as codex]
+                 [ct.spools.harnesses.providers.cursor :as cursor]
+                 [ct.spools.harnesses.providers.pi :as pi]
+                 [ct.spools.harnesses.queries :as queries]
+                 [ct.spools.harnesses.reconciliation :as reconcile]
+                 [millstrand.api.lifecycle.alpha :as lifecycle]
+                 [millstrand.api.millstrand.alpha :as millstrand]))
+       (lifecycle/use-resource!
+        harnesses/harness-core-runtime
+        assignment/assignment-runtime
+        claude/claude-harness-runtime
+        codex/codex-harness-runtime
+        cursor/cursor-harness-runtime
+        pi/pi-harness-runtime
+        execution/harness-execution-runtime)
+       (lifecycle/use-reconcile!
+        reconcile/interactive-reconciliation-sweep)
+       (millstrand/use-op! agent-cli/agent)
+       (millstrand/use-query!
+        queries/agent-run-terminal
+        queries/agent-run-settled
+        queries/agent-run-active
+        queries/agent-runs-active
+        queries/agent-runs-for-target
+        queries/agent-work-complete
+        queries/agent-work-complete-or-intervention
+        queries/agent-work-root-complete
+        queries/agent-work-root-complete-or-intervention)"}})
+
+(defn- core-world-options [storage]
+  {:storage storage
+   :deps-edn (pr-str (world-deps))
+   :init-clj
+   "(require '[millstrand.api.current.alpha :as current]
+             '[millstrand.api.runtime.alpha :as runtime])
+    (def rt (current/runtime))
+    (runtime/module! rt :identity
+      {:ns 'millhouse.spools.identity
+       :required? true})
+    (runtime/module! rt :harnesses-core
+      {:file \"modules/lifecycle_core.clj\"
+       :after [:identity]
+       :required? true})"
+   :files
+   {"modules/lifecycle_core.clj"
+    "(ns modules.lifecycle-core
+       (:require [ct.spools.harnesses :as harnesses]
+                 [ct.spools.harnesses.agent-cli :as agent-cli]
+                 [ct.spools.harnesses.assignment :as assignment]
+                 [ct.spools.harnesses.queries :as queries]
+                 [millstrand.api.lifecycle.alpha :as lifecycle]
+                 [millstrand.api.millstrand.alpha :as millstrand]))
+     (lifecycle/use-resource!
+      harnesses/harness-core-runtime
+      assignment/assignment-runtime)
+     (millstrand/use-op! agent-cli/agent)
+     (millstrand/use-query!
+      queries/agent-run-terminal
+      queries/agent-run-settled
+      queries/agent-run-active
+      queries/agent-runs-active
+      queries/agent-runs-for-target
+      queries/agent-work-complete
+      queries/agent-work-complete-or-intervention
+      queries/agent-work-root-complete
+      queries/agent-work-root-complete-or-intervention)"}})
+
+(defn- with-core-world [f]
+  (test-alpha/run-with-weaver-world (core-world-options :sqlite-memory) f))
+
+(defn- create-temp-dir []
+  (.toFile
+   (Files/createTempDirectory
+    (.toPath (io/file "/tmp"))
+    "harnesses-reconciliation-restart-"
+    (make-array FileAttribute 0))))
+
+(defn- delete-tree! [root]
+  (when (.exists root)
+    (with-open [paths (Files/walk
+                       (.toPath root)
+                       (make-array java.nio.file.FileVisitOption 0))]
+      (doseq [path (sort-by #(.getNameCount %) >
+                            (iterator-seq (.iterator paths)))]
+        (Files/deleteIfExists path)))))
 
 (deftest explicit-legacy-abandonment-is-auditable-and-idempotent
   (with-core-world
@@ -410,6 +492,9 @@
                          '[millstrand.api.scheduler.alpha :as scheduler])
                 (let [rt (current/runtime)
                       desired {:enabled true :interval-ms 3600000}
+                      _ (reconcile/apply-sweep!
+                         {:runtime rt
+                          :desired {:enabled false :interval-ms nil}})
                       first-apply
                       (reconcile/apply-sweep!
                        {:runtime rt :desired desired :actual nil})
@@ -424,11 +509,16 @@
                                       (throw (ex-info "forced sweep failure" {})))]
                         (try
                           (reconcile/sweep-wake!
-                           {:runtime rt :payload {:interval-ms 3600000}})
+                           {:runtime rt :payload (:payload first-wake)})
                           nil
                           (catch clojure.lang.ExceptionInfo error
                             (ex-message error))))
                       rearmed (reconcile/actual-sweep {:runtime rt})
+                      runtime-stop
+                      (reconcile/remove-sweep!
+                       {:runtime rt :effect/phase :runtime-stop})
+                      after-runtime-stop
+                      (reconcile/actual-sweep {:runtime rt})
                       disabled
                       (reconcile/apply-sweep!
                        {:runtime rt
@@ -442,6 +532,10 @@
                    :payload (:payload first-wake)
                    :failure failure
                    :rearmed? (some? rearmed)
+                   :rearmed-offset (get-in rearmed [:payload :offset])
+                   :runtime-stop runtime-stop
+                   :runtime-stop-preserved?
+                   (= (:wake_at rearmed) (:wake_at after-runtime-stop))
                    :disabled disabled
                    :pending (scheduler/pending rt)})))]
         (is (= :scheduled (get-in result [:first-apply :wake])))
@@ -449,11 +543,138 @@
         (is (true? (:same-wake-at result)))
         (is (= 'ct.spools.harnesses.reconciliation/sweep-wake!
                (:handler result)))
-        (is (= {:interval-ms 3600000} (:payload result)))
+        (is (= {:interval-ms 3600000 :offset 0}
+               (select-keys (:payload result) [:interval-ms :offset])))
+        (is (string? (get-in result [:payload :generation])))
         (is (= "forced sweep failure" (:failure result)))
         (is (true? (:rearmed? result)))
+        (is (= 100 (:rearmed-offset result)))
+        (is (= :preserved (get-in result [:runtime-stop :status])))
+        (is (true? (:runtime-stop-preserved? result)))
         (is (= :disabled (get-in result [:disabled :wake])))
         (is (= [] (:pending result)))))))
+
+(deftest durable-sweep-deadline-survives-runtime-restart
+  (let [root (create-temp-dir)
+        opts (assoc (full-world-options :sqlite-file) :root root)]
+    (try
+      (let [first-wake
+            (test-alpha/run-with-weaver-world
+             opts
+             (fn [{:keys [runtime]}]
+               (test-alpha/await-quiescent! runtime {:timeout-ms 5000})
+               (reconciliation-api/actual-sweep {:runtime runtime})))
+            second-wake
+            (test-alpha/run-with-weaver-world
+             opts
+             (fn [{:keys [runtime]}]
+               (test-alpha/await-quiescent! runtime {:timeout-ms 5000})
+               (reconciliation-api/actual-sweep {:runtime runtime})))]
+        (is (some? first-wake))
+        (is (= (:wake_at first-wake) (:wake_at second-wake)))
+        (is (= (:payload first-wake) (:payload second-wake))))
+      (finally
+        (delete-tree! root)))))
+
+(deftest sweep-configuration-serializes-with-an-entered-fire
+  (with-core-world
+    (fn [ctx]
+      (let [result
+            (test-alpha/repl!
+             ctx
+             '(do
+                (require '[ct.spools.harnesses.reconciliation :as reconcile]
+                         '[millstrand.api.current.alpha :as current]
+                         '[millstrand.api.scheduler.alpha :as scheduler])
+                (let [rt (current/runtime)
+                      desired {:enabled true :interval-ms 3600000}
+                      run-race
+                      (fn [change!]
+                        (reconcile/apply-sweep!
+                         {:runtime rt :desired desired})
+                        (let [wake (reconcile/actual-sweep {:runtime rt})
+                              started (promise)
+                              release (promise)
+                              changed-started (promise)
+                              calls (atom 0)
+                              sweeping
+                              (future
+                                (with-redefs
+                                 [reconcile/reconcile!
+                                  (fn [_runtime _opts]
+                                    (swap! calls inc)
+                                    (deliver started true)
+                                    @release
+                                    {:changed []})]
+                                  (reconcile/sweep-wake!
+                                   {:runtime rt :payload (:payload wake)})))
+                              _ (deref started 5000 false)
+                              change-result (promise)
+                              changing
+                              (Thread.
+                               (fn []
+                                 (deliver changed-started true)
+                                 (deliver change-result (change! rt))))
+                              _ (.start changing)
+                              _ (deref changed-started 5000 false)
+                              blocked?
+                              (loop [remaining 10000]
+                                (cond
+                                  (= java.lang.Thread$State/BLOCKED
+                                     (.getState changing))
+                                  true
+
+                                  (zero? remaining)
+                                  false
+
+                                  :else
+                                  (do (Thread/yield)
+                                      (recur (dec remaining)))))
+                              _ (deliver release true)
+                              _ (deref sweeping 5000 false)
+                              result (deref change-result 5000 false)
+                              _ (.join changing 5000)]
+                          {:blocked? blocked?
+                           :calls @calls
+                           :change-result result
+                           :pending (scheduler/pending rt)}))
+                      disabled
+                      (run-race
+                       (fn [runtime]
+                         (reconcile/apply-sweep!
+                          {:runtime runtime
+                           :desired {:enabled false :interval-ms nil}})))
+                      removed
+                      (run-race
+                       (fn [runtime]
+                         (reconcile/remove-sweep! {:runtime runtime})))
+                      _ (reconcile/apply-sweep!
+                         {:runtime rt :desired desired})
+                      stale-payload
+                      (:payload (reconcile/actual-sweep {:runtime rt}))
+                      _ (reconcile/apply-sweep!
+                         {:runtime rt
+                          :desired {:enabled false :interval-ms nil}})
+                      _ (reconcile/apply-sweep!
+                         {:runtime rt :desired desired})
+                      stale-calls (atom 0)
+                      stale-result
+                      (with-redefs [reconcile/reconcile!
+                                    (fn [_runtime _opts]
+                                      (swap! stale-calls inc))]
+                        (reconcile/sweep-wake!
+                         {:runtime rt :payload stale-payload}))]
+                  {:disabled disabled
+                   :removed removed
+                   :stale-result stale-result
+                   :stale-calls @stale-calls})))]
+        (doseq [operation [:disabled :removed]]
+          (is (true? (get-in result [operation :blocked?])))
+          (is (= 1 (get-in result [operation :calls])))
+          (is (= [] (get-in result [operation :pending]))))
+        (is (= :sweep-disabled-or-reconfigured
+               (get-in result [:stale-result :reason])))
+        (is (zero? (:stale-calls result)))))))
 
 (deftest work-scope-queries-use-positive-evidence
   (with-core-world

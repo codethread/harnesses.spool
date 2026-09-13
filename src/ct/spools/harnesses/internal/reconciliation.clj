@@ -36,7 +36,7 @@
       {:classification "live"
        :reason "the recorded provider process and start fence still match"}
 
-      (and (gone? provider) (= "live" (:state completion-owner)))
+      (= "live" (:state completion-owner))
       {:classification "protected"
        :reason "the completion owner is live and may still report provider exit"}
 

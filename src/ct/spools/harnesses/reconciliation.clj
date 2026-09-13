@@ -18,7 +18,7 @@
             [millstrand.api.weaver.alpha :as weaver])
   (:import [java.net InetAddress]
            [java.time Instant]
-           [java.util Optional]
+           [java.util Optional UUID]
            [java.lang ProcessHandle]))
 
 (def default-sweep-interval-ms
@@ -43,10 +43,13 @@
 (s/def ::by (s/and string? (complement str/blank?)))
 (s/def ::source (s/and string? (complement str/blank?)))
 (s/def ::limit pos-int?)
+(s/def ::offset nat-int?)
+(s/def ::generation (s/and string? (complement str/blank?)))
 (s/def ::options
   (s/and (s/keys :opt-un [::run-id ::dry-run? ::abandon? ::reason ::by
-                          ::source ::limit])
-         #(every? #{:run-id :dry-run? :abandon? :reason :by :source :limit}
+                          ::source ::limit ::offset])
+         #(every? #{:run-id :dry-run? :abandon? :reason :by :source :limit
+                    :offset}
                   (keys %))))
 (s/def ::interval-ms pos-int?)
 
@@ -292,13 +295,19 @@
                           :message (ex-message error)
                           :data (ex-data error)}}})))
 
+(defn- rotate-candidates [candidates offset]
+  (if (seq candidates)
+    (let [split (mod (or offset 0) (count candidates))]
+      (concat (drop split candidates) (take split candidates)))
+    candidates))
+
 (defn inspect
   "Inspect active interactive runs without changing lifecycle state.
 
   With `:run-id`, inspect exactly that run, including an already terminal run.
   Without it, inspect published running Codex and Pi attempts only."
   ([rt] (inspect rt {}))
-  ([rt {:keys [run-id limit] :as opts}]
+  ([rt {:keys [run-id limit offset] :as opts}]
    (require-valid! ::runtime rt "inspect requires a Weaver runtime")
    (require-valid! ::options opts "inspect requires valid options")
    (let [candidates
@@ -314,7 +323,9 @@
                (fail! "Interactive reconciliation cannot inspect a headless run"
                       {:id (:id run)}))
              (inspect-one rt run))
-           (cond->> (sort-by (juxt :created_at :id) candidates)
+           (cond->> (rotate-candidates
+                     (sort-by (juxt :created_at :id) candidates)
+                     offset)
              limit (take limit))))))
 
 (defn- abandon-one! [rt initial opts]
@@ -360,7 +371,7 @@
   Repeating reconciliation is idempotent: an abandoned run is already terminal
   and receives no second audit transition."
   ([rt] (reconcile! rt {}))
-  ([rt {:keys [run-id abandon? reason] :as opts}]
+  ([rt {:keys [run-id abandon? reason offset] :as opts}]
    (require-valid! ::runtime rt "reconcile! requires a Weaver runtime")
    (require-valid! ::options opts "reconcile! requires valid options")
    (when (and abandon? (nil? run-id))
@@ -370,7 +381,7 @@
    (when (and abandon? (str/blank? (:by opts)))
      (fail! "Explicit abandonment requires an actor identity" {:run-id run-id}))
    (let [limit (when-not run-id (or (:limit opts) sweep-limit))
-         inspected (inspect rt (cond-> (select-keys opts [:run-id])
+         inspected (inspect rt (cond-> (select-keys opts [:run-id :offset])
                                  limit (assoc :limit (inc limit))))
          truncated? (and limit (> (count inspected) limit))
          reports (if limit (vec (take limit inspected)) inspected)
@@ -383,6 +394,10 @@
          results (mapv #(abandon-one! rt % opts) reports)]
      {:dry-run (true? (:dry-run? opts))
       :limit limit
+      :offset (or offset 0)
+      :next-offset (when (and limit (seq reports))
+                     (mod (+ (or offset 0) (count reports))
+                          Long/MAX_VALUE))
       :truncated (boolean truncated?)
       :runs results
       :changed (mapv :id (filter :changed results))})))
@@ -397,12 +412,14 @@
 (defn- pending-sweep [rt]
   (some #(when (= sweep-key (:key %)) %) (scheduler/pending rt)))
 
-(defn- arm-sweep! [rt interval-ms]
+(defn- arm-sweep! [rt interval-ms offset generation]
   (scheduler/schedule!
    rt {:key sweep-key
        :wake-at (.plusMillis ^Instant (runtime/now rt) (long interval-ms))
        :handler sweep-handler
-       :payload {:interval-ms interval-ms}}))
+       :payload {:interval-ms interval-ms
+                 :offset offset
+                 :generation generation}}))
 
 (defn desired-sweep
   "Lifecycle read hook returning the configured reconciliation cadence."
@@ -418,57 +435,87 @@
 
 (defn apply-sweep!
   "Lifecycle apply hook converging one durable reconciliation wake."
-  [{:keys [runtime desired actual]}]
-  (let [interval-ms (:interval-ms desired)
-        current-interval (get-in actual [:payload :interval-ms])
-        unchanged? (and (= sweep-handler (:handler actual))
-                        (= interval-ms current-interval))]
-    (reset! (sweep-config runtime) desired)
-    (cond
-      (not (:enabled desired))
-      (do
-        (when actual
-          (scheduler/cancel! runtime sweep-key))
-        {:reconciled :harness-interactive-sweep
-         :interval-ms nil
-         :wake :disabled})
+  [{:keys [runtime desired]}]
+  (let [config (sweep-config runtime)]
+    #_{:splint/disable [lint/locking-object]}
+    (locking config
+      (let [actual (pending-sweep runtime)
+            interval-ms (:interval-ms desired)
+            current-interval (get-in actual [:payload :interval-ms])
+            current-offset (get-in actual [:payload :offset])
+            current-generation (get-in actual [:payload :generation])
+            unchanged? (and (= sweep-handler (:handler actual))
+                            (= interval-ms current-interval)
+                            (nat-int? current-offset)
+                            (s/valid? ::generation current-generation))]
+        (cond
+          (not (:enabled desired))
+          (do
+            (reset! config desired)
+            (when actual
+              (scheduler/cancel! runtime sweep-key))
+            {:reconciled :harness-interactive-sweep
+             :interval-ms nil
+             :wake :disabled})
 
-      unchanged?
-      {:reconciled :harness-interactive-sweep
-       :interval-ms interval-ms
-       :wake :preserved}
+          unchanged?
+          (do
+            (reset! config (assoc desired :generation current-generation))
+            {:reconciled :harness-interactive-sweep
+             :interval-ms interval-ms
+             :wake :preserved})
 
-      :else
-      (do
-        (arm-sweep! runtime interval-ms)
-        {:reconciled :harness-interactive-sweep
-         :interval-ms interval-ms
-         :wake :scheduled}))))
+          :else
+          (let [generation (str (UUID/randomUUID))]
+            (reset! config (assoc desired :generation generation))
+            (arm-sweep! runtime interval-ms 0 generation)
+            {:reconciled :harness-interactive-sweep
+             :interval-ms interval-ms
+             :wake :scheduled}))))))
 
 (defn remove-sweep!
-  "Lifecycle removal hook cancelling the Harnesses-owned sweep wake."
-  [{:keys [runtime]}]
-  (reset! (sweep-config runtime) nil)
-  (when (pending-sweep runtime)
-    (scheduler/cancel! runtime sweep-key))
-  {:reconciled :harness-interactive-sweep :status :removed})
+  "Cancel the sweep on declaration removal while preserving runtime restarts."
+  [{:keys [runtime] :effect/keys [phase]}]
+  (if (= :runtime-stop phase)
+    {:reconciled :harness-interactive-sweep :status :preserved}
+    (let [config (sweep-config runtime)]
+      #_{:splint/disable [lint/locking-object]}
+      (locking config
+        (reset! config nil)
+        (when (pending-sweep runtime)
+          (scheduler/cancel! runtime sweep-key))
+        {:reconciled :harness-interactive-sweep :status :removed}))))
 
 (defn sweep-wake!
   "Handle one durable sweep wake, re-arming cadence before reconciliation.
 
   Scheduler delivery is at-least-once, so both the stable wake key and the run
-  transitions are idempotent. The handler never stops or restarts Mill."
+  transitions are idempotent. Configuration changes serialize with the whole
+  fire, so disable or removal cannot return before an entered sweep finishes.
+  The handler never stops or restarts Mill."
   [{:keys [runtime payload]}]
   (let [interval-ms (:interval-ms payload)
-        configured @(sweep-config runtime)]
+        offset (or (:offset payload) 0)
+        generation (:generation payload)
+        config (sweep-config runtime)]
     (require-valid! ::interval-ms interval-ms
                     "Harness reconciliation wake has an invalid interval")
-    (if (and (:enabled configured)
-             (= interval-ms (:interval-ms configured)))
-      (do
-        (arm-sweep! runtime interval-ms)
-        (reconcile! runtime {:source "scheduled" :limit sweep-limit}))
-      {:status :skipped :reason :sweep-disabled-or-reconfigured})))
+    (require-valid! ::offset offset
+                    "Harness reconciliation wake has an invalid offset")
+    (require-valid! ::generation generation
+                    "Harness reconciliation wake has an invalid generation")
+    #_{:splint/disable [lint/locking-object]}
+    (locking config
+      (let [configured @config]
+        (if (and (:enabled configured)
+                 (= interval-ms (:interval-ms configured))
+                 (= generation (:generation configured)))
+          (let [next-offset (mod (+ offset sweep-limit) Long/MAX_VALUE)]
+            (arm-sweep! runtime interval-ms next-offset generation)
+            (reconcile! runtime {:source "scheduled"
+                                 :limit sweep-limit
+                                 :offset offset}))
+          {:status :skipped :reason :sweep-disabled-or-reconfigured})))))
 
 (lifecycle/defreconcile interactive-reconciliation-sweep
   "Keep the durable interactive orphan-reconciliation sweep scheduled."
