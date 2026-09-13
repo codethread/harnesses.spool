@@ -49,12 +49,12 @@ kondo-lint-workspace:
 lsp-diagnostics:
 	@set -e; xdg="$$(mktemp -d)"; cache="$$(mktemp -d)"; \
 		trap 'rm -rf "$${xdg:?}" "$${cache:?}"' EXIT; \
-		XDG_CONFIG_HOME="$$xdg" clojure-lsp diagnostics --raw --project-root . \
-			--settings "{:cache-path \"$$cache\" :project-specs [{:project-path \"deps.edn\" :classpath-cmd [\"clojure\" \"-Srepro\" \"-Spath\" \"-M:test\"]}]}" \
-			--filenames src,test; \
-		XDG_CONFIG_HOME="$$xdg" clojure-lsp diagnostics --raw --project-root .millstrand \
-			--settings "{:cache-path \"$$cache\" :project-specs [{:project-path \"deps.edn\" :classpath-cmd [\"clojure\" \"-Srepro\" \"-Spath\"]}]}" \
-			--filenames init.clj
+		XDG_CONFIG_HOME="$$xdg" clojure-lsp diagnostics --raw --project-root "$(CURDIR)" \
+			--settings "{:cache-path \"$$cache/root\" :project-specs [{:project-path \"deps.edn\" :classpath-cmd [\"clojure\" \"-Srepro\" \"-Spath\" \"-M:test\"]}]}" \
+			--filenames "$(CURDIR)/src,$(CURDIR)/test"; \
+		XDG_CONFIG_HOME="$$xdg" clojure-lsp diagnostics --raw --project-root "$(CURDIR)/.millstrand" \
+			--settings "{:cache-path \"$$cache/workspace\" :project-specs [{:project-path \"deps.edn\" :classpath-cmd [\"clojure\" \"-Srepro\" \"-Spath\"]}]}" \
+			--filenames "$(CURDIR)/.millstrand/init.clj"
 
 check-clj-kondo:
 	@command -v $(CLJ_KONDO) >/dev/null 2>&1 || { \
