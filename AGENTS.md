@@ -27,6 +27,7 @@ This repo dogfoods its own spool in the millstrand config at `.millstrand/`.
 
 ## Rules
 
+Never stop the mill; only the user may stop it.
 - **Never restart a running weaver** without explicit user sign-off.
 - **Kill by PID only** — never `pkill -f <pattern>` (prompts can quote the pattern and strafe siblings).
 - **Disposable workspaces for workspace-backed tests** (weaver-world fixtures, smoke config) — never the shared `.millstrand` world. Use `--workspace` from `mktemp -d`; guard with `${ws:?}`.
