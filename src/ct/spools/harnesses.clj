@@ -4,6 +4,7 @@
             [clojure.string :as str]
             [ct.spools.harnesses.catalog :as catalog]
             [ct.spools.harnesses.internal.lifecycle :as life]
+            [ct.spools.harnesses.internal.managed-legacy :as legacy]
             [ct.spools.harnesses.internal.managed-repair :as managed-repair]
             [ct.spools.harnesses.internal.managed-startup :as managed]
             [ct.spools.harnesses.internal.registry :as registry]
@@ -108,6 +109,10 @@
                          (assoc :harness/extra-argv literal-extra-argv))
              effective (registry/merge-overlays generated overrides)
              cwd (or cwd (System/getProperty "user.dir"))
+             predecessor (when resumes (runs/require-run rt resumes))
+             _ (when predecessor
+                 (legacy/validate-continuation-request!
+                  rt predecessor harness session-id))
              session-id (or session-id (str (UUID/randomUUID)))]
          (when by-identity
            (identity/current rt by-identity))

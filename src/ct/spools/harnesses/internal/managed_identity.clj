@@ -93,6 +93,27 @@
      :parent parent
      :already-attached? (= "attached" reservation-state)}))
 
+(defn persist-provenance!
+  "Persist one identity/run provenance edge and optional caller parent edge."
+  [rt identity-strand run caller]
+  (let [self? (= (:id caller) (:id identity-strand))]
+    (batch/apply!
+     rt
+     {:refs (cond-> {:identity (:id identity-strand)
+                     :run (:id run)}
+              (and caller (not self?)) (assoc :caller (:id caller)))
+      :strands []
+      :edges (cond-> [{:op :upsert
+                       :from :identity
+                       :to :run
+                       :type "performed"}]
+               (and caller (not self?))
+               (conj {:op :upsert
+                      :from :caller
+                      :to :identity
+                      :type "parent-of"}))
+      :burn []})))
+
 (defn persist-attachment!
   "Persist identity binding, provenance, and run evidence in one transaction.
 

@@ -668,6 +668,170 @@
             (is (not (str/includes?
                       source "MILLSTRAND_MANAGED_BOOTSTRAP")))))))))
 
+(deftest raw-legacy-pi-continuation-rejects-request-mismatches-before-writes
+  (with-managed-world
+    (fn [ctx]
+      (let [result
+            (eval-world
+             ctx
+             '(let [root
+                    (with-redefs [managed/managed-harness? (constantly false)]
+                      (harnesses/create!
+                       rt {:harness :pi :mode :interactive
+                           :cwd "/tmp/legacy-raw-resume"
+                           :session-id "legacy-raw-native"
+                           :title "legacy raw Pi root"}))
+                    started (harnesses/begin-attempt! rt (:id root))
+                    root (harnesses/finish!
+                          rt (:id root)
+                          {:status :done :exit-code 0
+                           :session-id "legacy-raw-native"
+                           :session-usable true
+                           :invocation (:invocation started)})
+                    identity-strand
+                    (identity/current rt (attr root :identity/id))
+                    snapshot
+                    (fn []
+                      {:strand-ids (->> (weaver/list rt)
+                                        (map :id)
+                                        sort
+                                        vec)
+                       :predecessor (weaver/show rt (:id root))
+                       :identity (identity/current rt (attr root :identity/id))
+                       :performed (->> (graph/outgoing-edges
+                                        rt [(:id identity-strand)] "performed")
+                                       (sort-by pr-str)
+                                       vec)
+                       :resumes (->> (graph/incoming-edges
+                                      rt [(:id root)] "resumes")
+                                     (sort-by pr-str)
+                                     vec)})
+                    before (snapshot)
+                    provider-failure
+                    (failure #(harnesses/create!
+                               rt {:harness :codex :mode :interactive
+                                   :cwd "/tmp/legacy-raw-resume"
+                                   :session-id "legacy-raw-native"
+                                   :resumes (:id root)
+                                   :title "wrong legacy provider"}))
+                    after-provider (snapshot)
+                    session-failure
+                    (failure #(harnesses/create!
+                               rt {:harness :pi :mode :interactive
+                                   :cwd "/tmp/legacy-raw-resume"
+                                   :session-id "wrong-native-session"
+                                   :resumes (:id root)
+                                   :title "wrong legacy session"}))
+                    after-session (snapshot)
+                    missing-session-failure
+                    (failure #(harnesses/create!
+                               rt {:harness :pi :mode :interactive
+                                   :cwd "/tmp/legacy-raw-resume"
+                                   :resumes (:id root)
+                                   :title "missing legacy session"}))
+                    after-missing (snapshot)]
+                {:provider-failure provider-failure
+                 :session-failure session-failure
+                 :missing-session-failure missing-session-failure
+                 :provider-no-write (= before after-provider)
+                 :session-no-write (= before after-session)
+                 :missing-no-write (= before after-missing)}))]
+        (testing "resolved provider and requested session remain exact"
+          (is (re-find #"cannot change its managed provider"
+                       (get-in result [:provider-failure :message])))
+          (is (re-find #"exact native session"
+                       (get-in result [:session-failure :message])))
+          (is (re-find #"exact native session"
+                       (get-in result [:missing-session-failure :message]))))
+        (testing "mismatches create no child, provenance, or continuation mark"
+          (is (true? (:provider-no-write result)))
+          (is (true? (:session-no-write result)))
+          (is (true? (:missing-no-write result))))))))
+
+(deftest usable-legacy-evidence-requires-supplied-session-before-writes
+  (with-managed-world
+    (fn [ctx]
+      (let [result
+            (eval-world
+             ctx
+             '(let [legacy-create
+                    (fn [provider suffix]
+                      (with-redefs [managed/managed-harness?
+                                    (constantly false)]
+                        (harnesses/create!
+                         rt {:harness provider :mode :interactive
+                             :cwd "/tmp/legacy-required-session"
+                             :session-id (str "legacy-" suffix)
+                             :title (str "legacy " suffix)})))
+                    snapshot
+                    (fn [run]
+                      (let [identity-strand
+                            (identity/current rt (attr run :identity/id))]
+                        {:run (weaver/show rt (:id run))
+                         :identity identity-strand
+                         :performed (->> (graph/outgoing-edges
+                                          rt [(:id identity-strand)]
+                                          "performed")
+                                         (sort-by pr-str)
+                                         vec)
+                         :strand-count (count (weaver/list rt))}))
+                    finish-results
+                    (into {}
+                          (for [provider [:codex :pi]]
+                            (let [run (legacy-create
+                                       provider (str (name provider) "-finish"))
+                                  started (harnesses/begin-attempt!
+                                           rt (:id run))
+                                  before (snapshot run)
+                                  rejected
+                                  (failure #(harnesses/finish!
+                                             rt (:id run)
+                                             {:status :done :exit-code 0
+                                              :session-usable true
+                                              :invocation
+                                              (:invocation started)}))]
+                              [provider
+                               {:failure rejected
+                                :unchanged (= before (snapshot run))}])))
+                    settle-results
+                    (into {}
+                          (for [provider [:codex :pi]]
+                            (let [run (legacy-create
+                                       provider (str (name provider) "-settle"))
+                                  started (harnesses/begin-attempt!
+                                           rt (:id run))
+                                  terminal
+                                  (harnesses/finish!
+                                   rt (:id run)
+                                   {:status :failed :exit-code 1
+                                    :error "awaiting custody"
+                                    :invocation (:invocation started)
+                                    :evidence
+                                    {:settled false
+                                     :settlement "no-terminal-evidence"}})
+                                  before (snapshot terminal)
+                                  rejected
+                                  (failure #(harnesses/settle-outcome!
+                                             rt (:id terminal)
+                                             {:status :failed :exit-code 1
+                                              :error "custody observed"
+                                              :session-usable true
+                                              :invocation
+                                              (:invocation started)}
+                                             {:settled true
+                                              :settlement "process-exit"}))]
+                              [provider
+                               {:failure rejected
+                                :unchanged (= before (snapshot terminal))}])))]
+                {:finish finish-results :settle settle-results}))]
+        (doseq [path [:finish :settle]
+                provider [:codex :pi]]
+          (testing (str (name provider) " " (name path)
+                        " rejects usable evidence without its session")
+            (is (re-find #"requires a native session id"
+                         (get-in result [path provider :failure :message])))
+            (is (true? (get-in result [path provider :unchanged])))))))))
+
 (deftest legacy-positive-evidence-and-continuation-fail-before-writes
   (with-managed-world
     (fn [ctx]
