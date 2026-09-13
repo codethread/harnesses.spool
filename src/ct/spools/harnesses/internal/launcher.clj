@@ -31,10 +31,17 @@
       (fail! "Harness runtime has no configured workspace" {})))
 
 (defn write!
-  "Write and return a private launcher script for one interactive run."
+  "Write and return a private launcher script for one interactive run.
+
+  Codex and Pi launchers bind the child shell PID immediately before `exec`.
+  An exec retains both PID and process start instant, giving reconciliation the
+  actual provider-process identity rather than only its completion-owning
+  parent."
   [runtime run argv env]
   (let [file (io/file (launcher-dir runtime) (str (:id run) ".sh"))
         workspace (workspace runtime)
+        managed-exec? (contains? #{"codex" "pi"}
+                                 (attr-get run :harness/harness))
         provider-exports (->> env
                               (sort-by key)
                               (map (fn [[name value]]
@@ -43,6 +50,10 @@
                               (apply str))]
     (spit file
           (str "#!/bin/sh\n"
+               (when managed-exec?
+                 (str ": \"${MILLSTRAND_INVOCATION:?}\"\n"
+                      "readonly _MILLSTRAND_HARNESS_INVOCATION="
+                      "\"$MILLSTRAND_INVOCATION\"\n"))
                provider-exports
                (when (attr-get run :identity/reservation-id)
                  bootstrap-sentinel)
@@ -52,6 +63,12 @@
                "export MILLSTRAND_WORKSPACE=" (sh-quote workspace) "\n"
                "export XDG_STATE_HOME=" (sh-quote (state-root runtime)) "\n"
                "cd " (sh-quote (attr-get run :harness/cwd)) " || exit 1\n"
+               (when managed-exec?
+                 (str "strand --workspace \"$MILLSTRAND_WORKSPACE\" "
+                      "agent _provider_started \"$MILLSTRAND_RUN_ID\" "
+                      "--invocation \"$_MILLSTRAND_HARNESS_INVOCATION\" "
+                      "--provider-pid \"$$\" >/dev/null || exit $?\n"
+                      "unset MILLSTRAND_INVOCATION\n"))
                "exec " (str/join " " (map sh-quote argv)) "\n"))
     (Files/setPosixFilePermissions
      (.toPath file)

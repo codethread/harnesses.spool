@@ -71,7 +71,8 @@
             "if [ \"${1:-}\" = --workspace ]; then shift 2; fi\n"
             "case \"${1:-}:${2:-}\" in\n"
             "  agent:run) printf '{\"id\":\"run-1\",\"launcher\":\"%s\"}\\n' \"$AGENT_BIN_TEST_LAUNCHER\" ;;\n"
-            "  agent:_started|agent:_finished) printf '{}\\n' ;;\n"
+            "  agent:_started) printf '{\"invocation\":\"inv-1\"}\\n' ;;\n"
+            "  agent:_provider_started|agent:_finished) printf '{}\\n' ;;\n"
             "  *) printf 'unexpected strand call\\n' >&2; exit 2 ;;\n"
             "esac\n"))
       (executable!
@@ -113,11 +114,14 @@
                   "--interactive"]
                  (nul-argv (io/file log-dir "call-1")))))
         (testing "the tracked interactive lifecycle remains intact"
+          (let [started (nul-argv (io/file log-dir "call-2"))]
+            (is (= ["--workspace" (.getCanonicalPath workspace)
+                    "agent" "_started" "run-1" "--completion-owner-pid"]
+                   (pop started)))
+            (is (re-matches #"[1-9][0-9]*" (peek started))))
           (is (= ["--workspace" (.getCanonicalPath workspace)
-                  "agent" "_started" "run-1"]
-                 (nul-argv (io/file log-dir "call-2"))))
-          (is (= ["--workspace" (.getCanonicalPath workspace)
-                  "agent" "_finished" "run-1" "--exit-code" "0"]
+                  "agent" "_finished" "run-1"
+                  "--invocation" "inv-1" "--exit-code" "0"]
                  (nul-argv (io/file log-dir "call-3"))))
           (is (.isFile (io/file log-dir "launcher-ran")))))
       (finally

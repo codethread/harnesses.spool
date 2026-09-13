@@ -1,0 +1,473 @@
+(ns ct.spools.harnesses.reconciliation
+  "Supported inspection and abandonment of orphaned interactive runs.
+
+  Interactive providers run in a user's terminal rather than Mill process
+  custody. New Codex and Pi attempts therefore record the completion owner and
+  actual provider exec with server-observed PID/start fences. Reconciliation
+  never signals either PID or invents process-exit facts."
+  (:require [clojure.spec.alpha :as s]
+            [clojure.string :as str]
+            [ct.spools.harnesses.catalog :as catalog]
+            [ct.spools.harnesses.internal.lifecycle :as life]
+            [ct.spools.harnesses.internal.reconciliation :as decision]
+            [ct.spools.harnesses.internal.runs :as runs]
+            [millstrand.api.lifecycle.alpha :as lifecycle]
+            [millstrand.api.runtime.alpha :as runtime]
+            [millstrand.api.scheduler.alpha :as scheduler]
+            [millstrand.api.spool.alpha :refer [attr-get fail! require-valid!]]
+            [millstrand.api.weaver.alpha :as weaver])
+  (:import [java.net InetAddress]
+           [java.time Instant]
+           [java.util Optional]
+           [java.lang ProcessHandle]))
+
+(def default-sweep-interval-ms
+  "Default interval between durable orphan-reconciliation sweeps."
+  (* 60 60 1000))
+
+(def sweep-environment-variable
+  "Environment variable overriding the positive sweep interval in milliseconds."
+  "MILLSTRAND_HARNESS_RECONCILIATION_INTERVAL_MS")
+
+(def ^:private state-version 1)
+(def ^:private sweep-limit 100)
+(def ^:private sweep-key "harness/interactive-reconciliation")
+(def ^:private sweep-handler
+  'ct.spools.harnesses.reconciliation/sweep-wake!)
+
+(s/def ::runtime map?)
+(s/def ::run-id (s/and string? (complement str/blank?)))
+(s/def ::dry-run? boolean?)
+(s/def ::abandon? boolean?)
+(s/def ::reason (s/and string? (complement str/blank?)))
+(s/def ::by (s/and string? (complement str/blank?)))
+(s/def ::source (s/and string? (complement str/blank?)))
+(s/def ::limit pos-int?)
+(s/def ::options
+  (s/and (s/keys :opt-un [::run-id ::dry-run? ::abandon? ::reason ::by
+                          ::source ::limit])
+         #(every? #{:run-id :dry-run? :abandon? :reason :by :source :limit}
+                  (keys %))))
+(s/def ::interval-ms pos-int?)
+
+(defn- parse-sweep-interval [configured]
+  (cond
+    (nil? configured) default-sweep-interval-ms
+    (= "disabled" configured) nil
+    :else
+    (let [parsed (try
+                   (Long/parseLong configured)
+                   (catch NumberFormatException _
+                     (fail! "Harness reconciliation interval must be an integer"
+                            {:environment-variable sweep-environment-variable
+                             :value configured})))]
+      (when-not (pos? parsed)
+        (fail! "Harness reconciliation interval must be positive"
+               {:environment-variable sweep-environment-variable
+                :value configured}))
+      parsed)))
+
+(defn configured-sweep-interval-ms
+  "Return the strictly parsed sweep interval for this Weaver process.
+
+  `MILLSTRAND_HARNESS_RECONCILIATION_INTERVAL_MS` overrides the one-hour
+  default. The exact value `disabled` explicitly disables scheduling. Other
+  invalid and non-positive values fail module activation rather than silently
+  changing cadence."
+  []
+  (parse-sweep-interval (System/getenv sweep-environment-variable)))
+
+(defn- optional-value [^Optional optional]
+  (.orElse optional nil))
+
+(defn- host-name []
+  (.getHostName (InetAddress/getLocalHost)))
+
+(defn process-identity
+  "Return the current non-signalling identity observation for local PID `pid`."
+  [pid]
+  (require-valid! pos-int? pid "process-identity requires a positive PID")
+  (if-let [^ProcessHandle handle (optional-value (ProcessHandle/of (long pid)))]
+    (if-let [started-at (some-> handle .info .startInstant optional-value)]
+      {:state (if (.isAlive handle) "live" "gone")
+       :pid pid
+       :started-at (str started-at)}
+      {:state "unavailable"
+       :pid pid
+       :reason "process start instant is unavailable"})
+    {:state "gone" :pid pid}))
+
+(defn- scoped-host-observation []
+  (try
+    {:state "available" :host (host-name)}
+    (catch Throwable error
+      {:state "unavailable" :reason (ex-message error)})))
+
+(defn- recorded-process-observation [run prefix]
+  (let [pid (attr-get run (keyword "harness" (str prefix "-pid")))
+        expected-start
+        (attr-get run (keyword "harness" (str prefix "-started-at")))
+        expected-host (attr-get run (keyword "harness" (str prefix "-host")))
+        expected-invocation
+        (attr-get run (keyword "harness" (str prefix "-invocation")))
+        current-invocation (life/invocation run)
+        observed-host (scoped-host-observation)]
+    (cond
+      (or (nil? pid) (str/blank? expected-start) (str/blank? expected-host)
+          (str/blank? expected-invocation))
+      {:state "missing"}
+
+      (not= expected-invocation current-invocation)
+      {:state "unavailable"
+       :reason "process identity belongs to another invocation"
+       :recorded-invocation expected-invocation
+       :current-invocation current-invocation}
+
+      (= "unavailable" (:state observed-host))
+      observed-host
+
+      (not= expected-host (:host observed-host))
+      {:state "remote"
+       :recorded-host expected-host
+       :observed-host (:host observed-host)}
+
+      (not (and (integer? pid) (pos? pid)))
+      {:state "unavailable" :reason "recorded process PID is invalid"}
+
+      :else
+      (try
+        (let [observed (process-identity pid)]
+          (if (and (= "live" (:state observed))
+                   (not= expected-start (:started-at observed)))
+            (assoc observed :state "replaced"
+                   :expected-started-at expected-start)
+            (assoc observed :expected-started-at expected-start)))
+        (catch Throwable error
+          {:state "unavailable" :reason (ex-message error)})))))
+
+(defn completion-owner-observation
+  "Observe the exact completion-owning bin process without signalling it."
+  [run]
+  (recorded-process-observation run "completion-owner"))
+
+(defn provider-observation
+  "Observe the exact provider exec process without signalling it."
+  [run]
+  (recorded-process-observation run "provider"))
+
+(defn native-observation
+  "Return positive local evidence of a process naming the run's native session.
+
+  A missing match is only `not-observed`, never proof of provider exit. Process
+  metadata may be unavailable under host policy; that protects the run as an
+  unknown observation."
+  [run]
+  (let [session-id (attr-get run :harness/session-id)]
+    (if (str/blank? session-id)
+      {:state "not-observed"}
+      (try
+        (with-open [processes (ProcessHandle/allProcesses)]
+          (let [observable (atom 0)
+                matches
+                (->> (iterator-seq (.iterator processes))
+                     (keep (fn [^ProcessHandle handle]
+                             (when-let [arguments
+                                        (optional-value (.arguments (.info handle)))]
+                               (swap! observable inc)
+                               (when (some #{session-id} (seq arguments))
+                                 (.pid handle)))))
+                     vec)]
+            (cond
+              (seq matches) {:state "active" :pids matches}
+              (pos? @observable) {:state "not-observed"}
+              :else {:state "unavailable"
+                     :reason "no process arguments are observable"})))
+        (catch Throwable error
+          {:state "unavailable" :reason (ex-message error)})))))
+
+(defn completion-owner-attributes
+  "Return durable start attributes for the current completion-owning bin PID."
+  [pid]
+  (require-valid! pos-int? pid
+                  "Interactive completion owner requires a positive PID")
+  (let [fact (process-identity pid)
+        host (scoped-host-observation)]
+    (when-not (and (= "live" (:state fact))
+                   (= "available" (:state host)))
+      (fail! "Interactive completion owner is not positively observable"
+             {:process fact :host host}))
+    {:harness/completion-owner-pid pid
+     :harness/completion-owner-started-at (:started-at fact)
+     :harness/completion-owner-host (:host host)}))
+
+(defn register-provider!
+  "Bind the actual provider-exec PID to one running interactive invocation.
+
+  The generated child shell reports itself immediately before `exec`, so the
+  PID and start instant remain stable across the exec. Repeats with identical
+  evidence converge; conflicts and stale invocations fail loudly."
+  [rt id invocation pid]
+  (require-valid! ::runtime rt "register-provider! requires a Weaver runtime")
+  (require-valid! ::run-id id "register-provider! requires a run ID")
+  (require-valid! ::run-id invocation
+                  "register-provider! requires an invocation")
+  (require-valid! pos-int? pid "register-provider! requires a positive PID")
+  #_{:clj-kondo/ignore [:locking-suspicious-lock]}
+  #_{:splint/disable [lint/locking-object]}
+  (locking (catalog/publication-lock rt)
+    (let [run (runs/require-run rt id)
+          fact (process-identity pid)
+          host (scoped-host-observation)
+          existing-invocation (attr-get run :harness/provider-invocation)
+          existing-identity
+          (select-keys (:attributes run)
+                       [:harness/provider-pid
+                        :harness/provider-started-at
+                        :harness/provider-host])
+          observed-identity
+          {:harness/provider-pid pid
+           :harness/provider-started-at (:started-at fact)
+           :harness/provider-host (:host host)}]
+      (when-not (= "interactive" (attr-get run :harness/mode))
+        (fail! "Provider registration applies only to interactive runs" {:id id}))
+      (when-not (and (= "running" (life/status run))
+                     (= invocation (life/invocation run)))
+        (fail! "Provider registration has a stale interactive invocation"
+               {:id id :invocation invocation
+                :current-invocation (life/invocation run)
+                :status (life/status run)}))
+      (when-not (and (= "live" (:state fact))
+                     (= "available" (:state host)))
+        (fail! "Interactive provider exec is not positively observable"
+               {:id id :process fact :host host}))
+      (when (and existing-invocation
+                 (or (not= existing-invocation invocation)
+                     (not= existing-identity observed-identity)))
+        (fail! "Interactive provider evidence conflicts with its invocation"
+               {:id id :invocation invocation
+                :existing-invocation existing-invocation
+                :existing-identity existing-identity
+                :observed-identity observed-identity}))
+      (weaver/update!
+       rt id
+       {:attributes (assoc observed-identity
+                           :harness/provider-invocation invocation)}))))
+
+(defn- active-session-writers [rt run]
+  (let [session-id (attr-get run :harness/session-id)]
+    (if (str/blank? session-id)
+      []
+      (->> (runs/reserving-session-writers rt session-id)
+           (filter life/active?)
+           (remove #(= (:id run) (:id %)))
+           (mapv :id)))))
+
+(defn- evidence [rt run]
+  {:observed-at (str (runtime/now rt))
+   :completion-owner (completion-owner-observation run)
+   :provider (provider-observation run)
+   :native (native-observation run)
+   :active-session-writers (active-session-writers rt run)
+   :attempt (attr-get run :harness/attempt)
+   :invocation (life/invocation run)})
+
+(defn- inspect-one [rt run]
+  (try
+    (let [observed (evidence rt run)
+          classified (decision/classification run observed)]
+      (merge {:id (:id run)
+              :status (life/status run)
+              :substatus (life/substatus run)
+              :target (attr-get run :harness/target)
+              :settled (life/settled? run)
+              :evidence observed}
+             classified))
+    (catch Throwable error
+      {:id (:id run)
+       :status (life/status run)
+       :substatus (life/substatus run)
+       :classification "unknown"
+       :reason "interactive evidence probe failed"
+       :evidence {:probe {:state "unavailable"
+                          :message (ex-message error)
+                          :data (ex-data error)}}})))
+
+(defn inspect
+  "Inspect active interactive runs without changing lifecycle state.
+
+  With `:run-id`, inspect exactly that run, including an already terminal run.
+  Without it, inspect published running interactive attempts only."
+  ([rt] (inspect rt {}))
+  ([rt {:keys [run-id limit] :as opts}]
+   (require-valid! ::runtime rt "inspect requires a Weaver runtime")
+   (require-valid! ::options opts "inspect requires valid options")
+   (let [candidates
+         (if run-id
+           [(runs/require-run rt run-id)]
+           (runs/runs-where
+            rt [[:= [:attr "harness/mode"] "interactive"]
+                [:= [:attr "harness/published"] "true"]
+                [:= [:attr "harness/status"] "running"]]))]
+     (mapv (fn [run]
+             (when-not (= "interactive" (attr-get run :harness/mode))
+               (fail! "Interactive reconciliation cannot inspect a headless run"
+                      {:id (:id run)}))
+             (inspect-one rt run))
+           (cond->> (sort-by (juxt :created_at :id) candidates)
+             limit (take limit))))))
+
+(defn- abandon-one! [rt initial opts]
+  #_{:clj-kondo/ignore [:locking-suspicious-lock]}
+  #_{:splint/disable [lint/locking-object]}
+  (locking (catalog/publication-lock rt)
+    (let [run (runs/require-run rt (:id initial))
+          report (inspect-one rt run)
+          action (decision/action report opts)
+          report (cond-> (assoc report :action action :changed false)
+                   (= "abandon" action)
+                   (assoc :consequences
+                          {:settled false
+                           :native-resume false
+                           :session-reserved true
+                           :target-reserved (some? (attr-get run
+                                                             :harness/target))}))]
+      (if (or (:dry-run? opts) (not= "abandon" action))
+        report
+        (let [operator? (:abandon? opts)
+              reason (or (:reason opts) (:reason report))
+              source (or (:source opts) (if operator? "attested" "manual"))
+              by (or (:by opts) source)
+              at (str (runtime/now rt))
+              patch (decision/abandonment-patch
+                     run {:at at :by by :reason reason :source source
+                          :evidence (:evidence report)})]
+          (weaver/update! rt (:id run) patch)
+          (assoc report :changed true
+                 :abandoned-at at :abandoned-by by
+                 :abandon-reason reason))))))
+
+(defn reconcile!
+  "Reconcile interactive active projections from honest current evidence.
+
+  Proven completion-owner and provider-exec loss records an explicit
+  `stopped/abandoned` outcome without claiming settlement or an exit code.
+  Unknown evidence is preserved unless an
+  operator names exactly one run with `:abandon? true` and a nonblank `:reason`.
+  Live, idle, remote, unavailable, and conflicting newer sessions are always
+  preserved. `:dry-run? true` returns the same decisions without writes.
+
+  Repeating reconciliation is idempotent: an abandoned run is already terminal
+  and receives no second audit transition."
+  ([rt] (reconcile! rt {}))
+  ([rt {:keys [run-id abandon? reason] :as opts}]
+   (require-valid! ::runtime rt "reconcile! requires a Weaver runtime")
+   (require-valid! ::options opts "reconcile! requires valid options")
+   (when (and abandon? (nil? run-id))
+     (fail! "Explicit abandonment requires one exact run ID" {}))
+   (when (and abandon? (str/blank? reason))
+     (fail! "Explicit abandonment requires a nonblank reason" {:run-id run-id}))
+   (when (and abandon? (str/blank? (:by opts)))
+     (fail! "Explicit abandonment requires an actor identity" {:run-id run-id}))
+   (let [reports (inspect rt (select-keys opts [:run-id :limit]))
+         report (first reports)
+         _ (when (and abandon?
+                      (not (contains? #{"unknown" "orphaned" "terminal"}
+                                      (:classification report))))
+             (fail! "Explicit abandonment refuses known live or ineligible evidence"
+                    {:run-id run-id :report report}))
+         results (mapv #(abandon-one! rt % opts) reports)]
+     {:dry-run (true? (:dry-run? opts))
+      :runs results
+      :changed (mapv :id (filter :changed results))})))
+
+(defn- state [rt]
+  (runtime/spool-state rt ::state {:version state-version}
+                       #(hash-map :sweep-config (atom nil))))
+
+(defn- sweep-config [rt]
+  (:sweep-config (state rt)))
+
+(defn- pending-sweep [rt]
+  (some #(when (= sweep-key (:key %)) %) (scheduler/pending rt)))
+
+(defn- arm-sweep! [rt interval-ms]
+  (scheduler/schedule!
+   rt {:key sweep-key
+       :wake-at (.plusMillis ^Instant (runtime/now rt) (long interval-ms))
+       :handler sweep-handler
+       :payload {:interval-ms interval-ms}}))
+
+(defn desired-sweep
+  "Lifecycle read hook returning the configured reconciliation cadence."
+  [_context]
+  (let [interval-ms (configured-sweep-interval-ms)]
+    {:enabled (some? interval-ms)
+     :interval-ms interval-ms}))
+
+(defn actual-sweep
+  "Lifecycle read hook returning the currently pending durable sweep wake."
+  [{:keys [runtime]}]
+  (pending-sweep runtime))
+
+(defn apply-sweep!
+  "Lifecycle apply hook converging one durable reconciliation wake."
+  [{:keys [runtime desired actual]}]
+  (let [interval-ms (:interval-ms desired)
+        current-interval (get-in actual [:payload :interval-ms])
+        unchanged? (and (= sweep-handler (:handler actual))
+                        (= interval-ms current-interval))]
+    (reset! (sweep-config runtime) desired)
+    (cond
+      (not (:enabled desired))
+      (do
+        (when actual
+          (scheduler/cancel! runtime sweep-key))
+        {:reconciled :harness-interactive-sweep
+         :interval-ms nil
+         :wake :disabled})
+
+      unchanged?
+      {:reconciled :harness-interactive-sweep
+       :interval-ms interval-ms
+       :wake :preserved}
+
+      :else
+      (do
+        (arm-sweep! runtime interval-ms)
+        {:reconciled :harness-interactive-sweep
+         :interval-ms interval-ms
+         :wake :scheduled}))))
+
+(defn remove-sweep!
+  "Lifecycle removal hook cancelling the Harnesses-owned sweep wake."
+  [{:keys [runtime]}]
+  (reset! (sweep-config runtime) nil)
+  (when (pending-sweep runtime)
+    (scheduler/cancel! runtime sweep-key))
+  {:reconciled :harness-interactive-sweep :status :removed})
+
+(defn sweep-wake!
+  "Handle one durable sweep wake, re-arming cadence before reconciliation.
+
+  Scheduler delivery is at-least-once, so both the stable wake key and the run
+  transitions are idempotent. The handler never stops or restarts Mill."
+  [{:keys [runtime payload]}]
+  (let [interval-ms (:interval-ms payload)
+        configured @(sweep-config runtime)]
+    (require-valid! ::interval-ms interval-ms
+                    "Harness reconciliation wake has an invalid interval")
+    (if (and (:enabled configured)
+             (= interval-ms (:interval-ms configured)))
+      (do
+        (arm-sweep! runtime interval-ms)
+        (reconcile! runtime {:source "scheduled" :limit sweep-limit}))
+      {:status :skipped :reason :sweep-disabled-or-reconfigured})))
+
+(lifecycle/defreconcile interactive-reconciliation-sweep
+  "Keep the durable interactive orphan-reconciliation sweep scheduled."
+  {:read-desired 'ct.spools.harnesses.reconciliation/desired-sweep
+   :read-actual 'ct.spools.harnesses.reconciliation/actual-sweep
+   :apply 'ct.spools.harnesses.reconciliation/apply-sweep!
+   :on-removed 'ct.spools.harnesses.reconciliation/remove-sweep!
+   :trigger-kinds #{}
+   :after #{:harness-execution-runtime}})

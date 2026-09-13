@@ -178,7 +178,8 @@ run_id="$(printf '%s' "$created" | jq -r '.id')"
 launcher="$(printf '%s' "$created" | jq -r '.launcher')"
 
 record_finish() {
-  strand_call agent _finished "$run_id" --exit-code "$1" >/dev/null
+  strand_call agent _finished "$run_id" \
+    --invocation "$invocation" --exit-code "$1" >/dev/null
 }
 
 interrupted() {
@@ -187,12 +188,19 @@ interrupted() {
   exit "$1"
 }
 
+started="$(strand_call agent _started "$run_id" \
+  --completion-owner-pid "$$")" || exit $?
+invocation="$(printf '%s' "$started" | jq -r '.invocation')"
+if [ -z "$invocation" ] || [ "$invocation" = null ]; then
+  printf '%s\n' "agent _started returned no invocation" >&2
+  exit 1
+fi
+
 trap 'interrupted 129' HUP
 trap 'interrupted 130' INT
 trap 'interrupted 143' TERM
 
-strand_call agent _started "$run_id" >/dev/null || exit $?
-"$launcher"
+MILLSTRAND_INVOCATION="$invocation" "$launcher"
 exit_code=$?
 record_finish "$exit_code" || exit $?
 exit "$exit_code"

@@ -143,6 +143,22 @@
                            :type :string
                            :required? true
                            :doc "Exact run ID to stop."}]}
+    "reconcile"
+    {:doc "Inspect or reconcile orphaned interactive run projections."
+     :hook-class :mutating
+     :deadline-class :standard
+     :flags (merge by-identity-flag
+                   {:dry-run {:type :boolean
+                              :doc "Report decisions without changing runs."}
+                    :abandon
+                    {:type :boolean
+                     :doc "Attest abandonment for one unknown legacy run."}
+                    :reason
+                    {:type :string
+                     :doc "Required reason for explicit abandonment."}})
+     :positionals [{:name :run-id
+                    :type :string
+                    :doc "Optional exact interactive run ID."}]}
     "retry" {:doc "Retry one failed agent run in place."
              :hook-class :mutating
              :deadline-class :standard
@@ -207,14 +223,35 @@
     "_started" {:doc "Private agent transition: ready to running."
                 :hook-class :mutating
                 :deadline-class :standard
+                :flags {:completion-owner-pid
+                        {:type :int
+                         :required? true
+                         :doc "Completion-owning bin PID observed by Weaver."}}
                 :positionals [{:name :run-id
                                :type :string
                                :required? true
                                :doc "Interactive agent run ID."}]}
+    "_provider_started"
+    {:doc "Private agent transition: bind the provider exec process."
+     :hook-class :mutating
+     :deadline-class :standard
+     :flags {:invocation {:type :string
+                          :required? true
+                          :doc "Originating attempt invocation."}
+             :provider-pid {:type :int
+                            :required? true
+                            :doc "Child shell PID retained across provider exec."}}
+     :positionals [{:name :run-id
+                    :type :string
+                    :required? true
+                    :doc "Interactive agent run ID."}]}
     "_finished" {:doc "Private agent transition: record process exit."
                  :hook-class :mutating
                  :deadline-class :standard
-                 :flags {:exit-code {:type :int
+                 :flags {:invocation {:type :string
+                                      :required? true
+                                      :doc "Originating attempt invocation."}
+                         :exit-code {:type :int
                                      :required? true
                                      :doc "Observed process exit code."}}
                  :positionals [{:name :run-id

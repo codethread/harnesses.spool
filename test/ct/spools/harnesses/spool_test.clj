@@ -8,6 +8,7 @@
             [ct.spools.harnesses.internal.cli :as cli]
             [ct.spools.harnesses.internal.process-custody :as custody]
             [ct.spools.harnesses.process-custody :as process-custody]
+            [ct.spools.harnesses.reconciliation :as reconciliation]
             [ct.spools.harnesses.providers.claude :as claude]
             [ct.spools.harnesses.providers.codex :as codex]
             [ct.spools.harnesses.providers.cursor :as cursor]
@@ -23,7 +24,9 @@
                          pi/pi-harness-runtime
                          execution/harness-execution-runtime]]
       (is (= :resource (:kind declaration))))
-    (is (= :reconcile (:kind process-custody/harness-process-custody))))
+    (doseq [declaration [process-custody/harness-process-custody
+                         reconciliation/interactive-reconciliation-sweep]]
+      (is (= :reconcile (:kind declaration)))))
   (testing "core registry forms carry reusable authoring descriptors"
     (doseq [declaration-var [#'agent-cli/agent
                              #'execution/on-event
@@ -33,8 +36,8 @@
 
 (deftest every-agent-command-accepts-caller-identity
   (is (not (contains? (:subcommands cli/agent-arg-spec) "await")))
-  (doseq [path [["run"] ["show"] ["runs"] ["stop"] ["retry"] ["resumable"]
-                ["resume"] ["self-complete"] ["list"]]]
+  (doseq [path [["run"] ["show"] ["runs"] ["stop"] ["reconcile"]
+                ["retry"] ["resumable"] ["resume"] ["self-complete"] ["list"]]]
     (is (contains? (get-in cli/agent-arg-spec
                            (into [:subcommands]
                                  (mapcat #(vector % :subcommands) (butlast path))))
@@ -45,7 +48,8 @@
                                   (mapcat #(vector % :subcommands) (butlast path))
                                   [(last path) :flags])))
                    :by-identity)))
-  (doseq [path [["startup"] ["repair-startup"] ["_started"] ["_finished"]
+  (doseq [path [["startup"] ["repair-startup"] ["_started"]
+                ["_provider_started"] ["_finished"]
                 ["config" "list"] ["config" "set"] ["config" "unset"]]]
     (is (not (contains? (or (get-in cli/agent-arg-spec
                                     (into [:subcommands]
@@ -139,7 +143,8 @@
                         :cursor-harness-runtime
                         :pi-harness-runtime
                         :harness-execution-runtime
-                        :harness-process-custody]]
+                        :harness-process-custody
+                        :interactive-reconciliation-sweep]]
           (is (= :applied (get-in lifecycles [effect :status]))))
         (testing "run flags override effort and append a system prompt"
           (is (= [["adaptive" ["Review without editing."]]
@@ -280,7 +285,11 @@
                           "':stdin' ':payload/example'")
                          (clojure.string/includes?
                           script
-                          "'Keep {{RUN_ID}} and {{AGENT_ID}} literal'")))})))))
+                          "'Keep {{RUN_ID}} and {{AGENT_ID}} literal'")
+                         (clojure.string/includes?
+                          script "agent _provider_started")
+                         (clojure.string/includes?
+                          script "--provider-pid \"$$\"")))})))))
         (testing "configured provider argv keeps invocation templating"
           (is (true?
                (test-alpha/repl!

@@ -9,6 +9,7 @@
             [ct.spools.harnesses.internal.managed-startup :as managed]
             [ct.spools.harnesses.internal.process-custody :as custody]
             [ct.spools.harnesses.internal.runs :as runs]
+            [ct.spools.harnesses.reconciliation :as reconciliation]
             [millstrand.api.current.alpha :as current]
             [millstrand.api.lifecycle.alpha :as lifecycle]
             [millstrand.api.millstrand.alpha :as millstrand]
@@ -119,31 +120,46 @@
       (throw e))))
 
 (defn mark-interactive-running!
-  "Mark an interactive run as started and arm its managed bootstrap."
-  [rt id]
-  (let [run (full-run rt id)]
-    (when-not (= "interactive" (attr-get run :harness/mode))
-      (fail! "_started applies only to interactive harness runs" {:id id}))
-    (let [{:keys [strand invocation]} (harness/begin-attempt! rt id)]
-      (try
-        (when-let [bootstrap (managed/bootstrap rt strand)]
-          (launcher/arm! rt strand bootstrap))
-        strand
-        (catch Throwable error
-          (harness/finish!
-           rt id
-           {:status :failed
-            :invocation invocation
-            :evidence {:settled true
-                       :settlement "launch-not-started"
-                       :failure-class "launch"}
-            :error (str "Unable to arm managed launcher: "
-                        (ex-message error))})
-          (throw error))))))
+  "Start an interactive run and arm its managed bootstrap.
+
+  When supplied, `completion-owner-pid` records the callback owner's exact
+  process identity in the same fenced attempt transition."
+  ([rt id]
+   (mark-interactive-running! rt id nil))
+  ([rt id completion-owner-pid]
+   (let [run (full-run rt id)]
+     (when-not (= "interactive" (attr-get run :harness/mode))
+       (fail! "_started applies only to interactive harness runs" {:id id}))
+     (let [owner-attributes
+           (if completion-owner-pid
+             (reconciliation/completion-owner-attributes completion-owner-pid)
+             {})
+           {:keys [strand invocation]}
+           (harness/begin-attempt! rt id owner-attributes)]
+       (try
+         (when-let [bootstrap (managed/bootstrap rt strand)]
+           (launcher/arm! rt strand bootstrap))
+         strand
+         (catch Throwable error
+           (harness/finish!
+            rt id
+            {:status :failed
+             :invocation invocation
+             :evidence {:settled true
+                        :settlement "launch-not-started"
+                        :failure-class "launch"}
+             :error (str "Unable to arm managed launcher: "
+                         (ex-message error))})
+           (throw error)))))))
+
+(defn mark-interactive-provider!
+  "Bind the actual provider exec to its originating interactive invocation."
+  [rt id invocation provider-pid]
+  (reconciliation/register-provider! rt id invocation provider-pid))
 
 (defn finish-interactive!
-  "Finish an interactive run through its provider callback."
-  [rt id exit-code]
+  "Finish an interactive run through its fenced provider callback."
+  [rt id invocation exit-code]
   (let [run (full-run rt id)]
     (when-not (= "interactive" (attr-get run :harness/mode))
       (fail! "_finished applies only to interactive harness runs" {:id id}))
@@ -153,13 +169,13 @@
                      rt definition run
                      {:exit-code exit-code :stdout nil :stderr nil})]
         (harness/finish! rt id (assoc outcome
-                                      :invocation (life/invocation run)
+                                      :invocation invocation
                                       :evidence (life/settlement-evidence
                                                  {:exit-code exit-code}))))
       (catch Exception e
         (harness/finish! rt id {:status :failed
                                 :exit-code exit-code
-                                :invocation (life/invocation run)
+                                :invocation invocation
                                 :evidence (assoc (life/settlement-evidence
                                                   {:exit-code exit-code})
                                                  :failure-class "execution")

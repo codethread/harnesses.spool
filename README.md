@@ -29,7 +29,8 @@ This publishes:
 - the headless-run event handler;
 - named `agent-run-*` wait and inspection queries;
 - the core, provider, and execution resources;
-- process-custody reconciliation.
+- process-custody reconciliation;
+- durable hourly interactive-orphan reconciliation.
 
 Loading `ct.spools.harnesses`, a provider namespace, or one of the execution
 namespaces alone does not publish those declarations.
@@ -107,6 +108,7 @@ Consumers can import any declaration and select it explicitly:
             [ct.spools.harnesses.agent-cli :as agent-cli]
             [ct.spools.harnesses.execution :as execution]
             [ct.spools.harnesses.process-custody :as process-custody]
+            [ct.spools.harnesses.reconciliation :as reconciliation]
             [ct.spools.harnesses.providers.claude :as claude]
             [ct.spools.harnesses.providers.codex :as codex]
             [ct.spools.harnesses.providers.cursor :as cursor]
@@ -126,7 +128,9 @@ Consumers can import any declaration and select it explicitly:
  pi/pi-harness-runtime
  execution/harness-execution-runtime)
 
-(lifecycle/use-reconcile! process-custody/harness-process-custody)
+(lifecycle/use-reconcile!
+ process-custody/harness-process-custody
+ reconciliation/interactive-reconciliation-sweep)
 ```
 
 The execution resource starts after all four provider resources. Select the full
@@ -444,6 +448,40 @@ converts only that identity to an attached reservation, committing identity,
 provenance, and run evidence atomically, and is replay-safe. There is no
 discovery scan, broad migration, fallback mint, identity stealing, or automatic
 repair.
+
+### Reconcile orphaned interactive runs
+
+A launcher that is killed before `_finished` can leave its run active. Inspect
+one run, or all active interactive runs, without changing state:
+
+```text
+strand agent reconcile <run-id> --dry-run
+strand agent reconcile --dry-run
+```
+
+Ordinary reconciliation abandons only when both the completion-owning bin and
+actual provider exec have recorded PID/process-start fences proving those exact
+local processes are gone or replaced. A matching live or idle process, a live
+completion owner, a native process naming the session, a newer active session
+writer, remote evidence, and unavailable evidence are preserved. The result is
+explicitly `stopped/abandoned` with `settled=false`; it records no exit code,
+retains target and session reservations, and cannot authorize native resume.
+
+Legacy runs predate launcher custody evidence and therefore remain unknown.
+After external inspection, an operator can attest abandonment with an exact run
+ID and durable reason:
+
+```text
+strand agent reconcile <run-id> --abandon \
+  --reason "launcher ownership was lost" --by-identity <operator-identity>
+```
+
+The bundled selector schedules the same safe reconciliation through
+Millstrand's durable scheduler every 60 minutes. Set
+`MILLSTRAND_HARNESS_RECONCILIATION_INTERVAL_MS` to a positive integer before
+starting Weaver to choose another cadence, or to the exact value `disabled` to
+disable it. Cadence is never treated as evidence of process death, and the
+sweep never stops or restarts Mill.
 
 ## Declarative reviewers
 
