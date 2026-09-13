@@ -544,7 +544,7 @@
           (is (= 1 (:stale-fenced result)))
           (is (true? (:stale-identity-unchanged result))))
         (testing "legacy continuity is explicit while fresh work remains native-v1"
-          (is (re-find #"legacy managed run has no startup reservation"
+          (is (re-find #"legacy Codex run has no verified native binding"
                        (get-in result [:legacy-resume :data :reason])))
           (is (true? (:resume-no-write result)))
           (is (true? (:fresh-identity-different result)))
@@ -566,6 +566,293 @@
           (is (re-find #"no identity reservation"
                        (get-in result [:malformed-failure :message])))
           (is (true? (:malformed-unchanged result))))))))
+
+(deftest exact-binding-legacy-pi-continuation-launches-and-retries
+  (with-managed-world
+    (fn [ctx]
+      (let [result
+            (eval-world
+             ctx
+             '(let [root
+                    (with-redefs [managed/managed-harness? (constantly false)]
+                      (harnesses/create!
+                       rt {:harness :pi :mode :interactive
+                           :cwd "/tmp/legacy-pi-resume"
+                           :session-id "legacy-pi-native"
+                           :title "legacy Pi root"}))
+                    root-start (harnesses/begin-attempt! rt (:id root))
+                    root (harnesses/finish!
+                          rt (:id root)
+                          {:status :done :exit-code 0
+                           :session-id "legacy-pi-native"
+                           :session-usable true
+                           :invocation (:invocation root-start)})
+                    eligibility (harnesses/resume-eligibility rt (:id root))
+                    resumed (harnesses/resume!
+                             rt (:id root) {:prompt "Continue safely."})
+                    identity-id (attr resumed :identity/id)
+                    launcher-path (launcher/write! rt resumed ["pi"] {})
+                    launcher-before (slurp launcher-path)
+                    resumed-start
+                    (execution/mark-interactive-running! rt (:id resumed))
+                    launcher-after (slurp launcher-path)
+                    bootstrap (harnesses/managed-bootstrap rt (:id resumed))
+                    process-spec (#'execution/process-spec
+                                  rt resumed-start
+                                  {:argv ["pi"] :env {} :stdin nil})
+                    failed (harnesses/finish!
+                            rt (:id resumed)
+                            {:status :failed :exit-code 1
+                             :error "retry legacy continuation"
+                             :session-id "legacy-pi-native"
+                             :session-usable true
+                             :invocation
+                             (attr resumed-start :harness/invocation)
+                             :evidence {:settled true
+                                        :settlement "process-exit"}})
+                    retried (harnesses/retry! rt (:id failed) {})
+                    retry-launcher
+                    (launcher/write! rt retried ["pi" "--session"
+                                                 "legacy-pi-native"] {})
+                    retry-launcher-before (slurp retry-launcher)
+                    retry-started
+                    (execution/mark-interactive-running! rt (:id retried))
+                    retry-launcher-after (slurp retry-launcher)
+                    identity-strand (identity/current rt identity-id)]
+                {:eligibility eligibility
+                 :root-id (:id root)
+                 :run-id (:id resumed)
+                 :same-identity
+                 (= (attr root :identity/id) identity-id
+                    (attr retried :identity/id))
+                 :same-session
+                 (= "legacy-pi-native"
+                    (attr root :harness/session-id)
+                    (attr resumed :harness/session-id)
+                    (attr retried :harness/session-id))
+                 :reservation (attr retried :identity/reservation-id)
+                 :provisional
+                 (attr retried :harness/provisional-session-id)
+                 :native-attached
+                 (attr retried :harness/native-attached)
+                 :performed (targets identity-strand "performed")
+                 :launcher-before launcher-before
+                 :launcher-after launcher-after
+                 :bootstrap bootstrap
+                 :process-env (:env process-spec)
+                 :retry-launcher-before retry-launcher-before
+                 :retry-launcher-after retry-launcher-after
+                 :retry-bootstrap
+                 (harnesses/managed-bootstrap rt (:id retry-started))}))]
+        (testing "exact pre-upgrade Pi binding remains natively resumable"
+          (is (= {:eligible? true
+                  :reason "settled with a verified usable session"}
+                 (:eligibility result)))
+          (is (true? (:same-identity result)))
+          (is (true? (:same-session result)))
+          (is (= #{(:root-id result) (:run-id result)}
+                 (:performed result))))
+        (testing "legacy continuation does not mint startup-v1 evidence"
+          (is (nil? (:reservation result)))
+          (is (nil? (:provisional result)))
+          (is (nil? (:native-attached result)))
+          (is (nil? (:bootstrap result)))
+          (is (nil? (:retry-bootstrap result)))
+          (is (not (contains? (:process-env result)
+                              "MILLSTRAND_MANAGED_BOOTSTRAP"))))
+        (testing "interactive launch and retry retain the legacy transport"
+          (doseq [source [(:launcher-before result)
+                          (:launcher-after result)
+                          (:retry-launcher-before result)
+                          (:retry-launcher-after result)]]
+            (is (not (str/includes?
+                      source "MILLSTRAND_MANAGED_BOOTSTRAP")))))))))
+
+(deftest legacy-positive-evidence-and-continuation-fail-before-writes
+  (with-managed-world
+    (fn [ctx]
+      (let [result
+            (eval-world
+             ctx
+             '(let [legacy-create
+                    (fn [session-id title]
+                      (with-redefs [managed/managed-harness?
+                                    (constantly false)]
+                        (harnesses/create!
+                         rt {:harness :pi :mode :interactive
+                             :cwd "/tmp/legacy-pi-fences"
+                             :session-id session-id
+                             :title title})))
+                    snapshot
+                    (fn [run]
+                      (let [identity-id (attr run :identity/id)]
+                        [(weaver/show rt (:id run))
+                         (identity/current rt identity-id)
+                         (targets (identity/current rt identity-id)
+                                  "performed")
+                         (count (weaver/list rt))]))
+                    ready (legacy-create "legacy-ready" "legacy ready")
+                    ready-before (snapshot ready)
+                    ready-failure
+                    (failure #(harnesses/finish!
+                               rt (:id ready)
+                               {:status :done :exit-code 0
+                                :session-id "legacy-ready"
+                                :session-usable true
+                                :invocation "forged-ready"}))
+                    ready-unchanged (= ready-before (snapshot ready))
+                    missing (legacy-create "legacy-missing" "legacy missing")
+                    missing-start (harnesses/begin-attempt! rt (:id missing))
+                    _ (weaver/update!
+                       rt (:id missing)
+                       {:attributes {:harness/invocation nil}})
+                    missing-before (snapshot missing)
+                    missing-failure
+                    (failure #(harnesses/finish!
+                               rt (:id missing)
+                               {:status :done :exit-code 0
+                                :session-id "legacy-missing"
+                                :session-usable true
+                                :invocation (:invocation missing-start)}))
+                    missing-unchanged (= missing-before (snapshot missing))
+                    blank (legacy-create "legacy-blank" "legacy blank")
+                    _ (harnesses/begin-attempt! rt (:id blank))
+                    _ (weaver/update!
+                       rt (:id blank)
+                       {:attributes {:harness/invocation ""}})
+                    blank-before (snapshot blank)
+                    blank-failure
+                    (failure #(harnesses/finish!
+                               rt (:id blank)
+                               {:status :failed :exit-code 1
+                                :session-id "legacy-blank"
+                                :session-usable true
+                                :invocation "forged-blank"}))
+                    blank-unchanged (= blank-before (snapshot blank))
+                    token (legacy-create "legacy-token" "legacy token")
+                    token-start (harnesses/begin-attempt! rt (:id token))
+                    token-before (snapshot token)
+                    token-failure
+                    (failure #(harnesses/finish!
+                               rt (:id token)
+                               {:status :done :exit-code 0
+                                :session-id "legacy-token"
+                                :session-usable true}))
+                    token-unchanged (= token-before (snapshot token))
+                    late (legacy-create "legacy-late-fence"
+                                        "legacy late fence")
+                    late (harnesses/finish!
+                          rt (:id late)
+                          {:status :failed :error "prelaunch"})
+                    late-before (snapshot late)
+                    late-failure
+                    (failure #(harnesses/settle-outcome!
+                               rt (:id late)
+                               {:status :done :exit-code 0
+                                :session-id "legacy-late-fence"
+                                :session-usable true
+                                :invocation "forged-late"}
+                               {:settled true :settlement "process-exit"}))
+                    late-unchanged (= late-before (snapshot late))
+                    late-session
+                    (legacy-create "legacy-late-session"
+                                   "legacy late session")
+                    late-session-start
+                    (harnesses/begin-attempt! rt (:id late-session))
+                    late-session
+                    (harnesses/finish!
+                     rt (:id late-session)
+                     {:status :failed :exit-code 1
+                      :error "awaiting custody"
+                      :invocation (:invocation late-session-start)
+                      :evidence {:settled false
+                                 :settlement "no-terminal-evidence"}})
+                    late-session-before (snapshot late-session)
+                    late-session-failure
+                    (failure #(harnesses/settle-outcome!
+                               rt (:id late-session)
+                               {:status :done :exit-code 0
+                                :session-id "wrong-late-session"
+                                :session-usable true
+                                :invocation (:invocation late-session-start)}
+                               {:settled true :settlement "process-exit"}))
+                    late-session-unchanged
+                    (= late-session-before (snapshot late-session))
+                    valid (legacy-create "legacy-valid" "legacy valid")
+                    valid-start (harnesses/begin-attempt! rt (:id valid))
+                    valid (harnesses/finish!
+                           rt (:id valid)
+                           {:status :done :exit-code 0
+                            :session-id "legacy-valid"
+                            :session-usable true
+                            :invocation (:invocation valid-start)})
+                    _ (weaver/update!
+                       rt (:id valid)
+                       {:attributes {:harness/session-id "mismatched-run"}})
+                    mismatch-before (snapshot valid)
+                    mismatch-failure
+                    (failure #(harnesses/resume! rt (:id valid) {}))
+                    mismatch-unchanged (= mismatch-before (snapshot valid))
+                    unproven
+                    (weaver/add!
+                     rt {:title "unproven legacy Pi"
+                         :attributes
+                         (-> (:attributes valid)
+                             (assoc :harness/session-id "legacy-valid")
+                             (dissoc :harness/continued))})
+                    unproven-before
+                    [(weaver/show rt (:id unproven))
+                     (identity/current rt (attr unproven :identity/id))
+                     (targets (identity/current rt
+                                                (attr unproven :identity/id))
+                              "performed")
+                     (count (weaver/list rt))]
+                    unproven-failure
+                    (failure #(harnesses/resume! rt (:id unproven) {}))
+                    unproven-after
+                    [(weaver/show rt (:id unproven))
+                     (identity/current rt (attr unproven :identity/id))
+                     (targets (identity/current rt
+                                                (attr unproven :identity/id))
+                              "performed")
+                     (count (weaver/list rt))]
+                    prelaunch
+                    (legacy-create "legacy-prelaunch" "legacy prelaunch")
+                    prelaunch (harnesses/finish!
+                               rt (:id prelaunch)
+                               {:status :failed
+                                :error "launcher preparation failed"})]
+                {:ready [ready-failure ready-unchanged]
+                 :missing [missing-failure missing-unchanged]
+                 :blank [blank-failure blank-unchanged]
+                 :token [token-failure token-unchanged]
+                 :late [late-failure late-unchanged]
+                 :late-session [late-session-failure
+                                late-session-unchanged]
+                 :mismatch [mismatch-failure mismatch-unchanged]
+                 :unproven [unproven-failure
+                            (= unproven-before unproven-after)]
+                 :prelaunch-status (attr prelaunch :harness/status)
+                 :prelaunch-error (attr prelaunch :harness/error)}))]
+        (testing "positive legacy evidence requires a durable exact fence"
+          (doseq [[failure unchanged?]
+                  (map result [:ready :missing :blank :token :late])]
+            (is (re-find #"(durable launch fence|invocation)"
+                         (:message failure)))
+            (is (true? unchanged?))))
+        (testing "malformed Pi session, binding, and provenance write nothing"
+          (is (re-find #"does not match"
+                       (get-in result [:late-session 0 :message])))
+          (is (true? (get-in result [:late-session 1])))
+          (is (re-find #"does not match" (get-in result [:mismatch 0 :message])))
+          (is (true? (get-in result [:mismatch 1])))
+          (is (re-find #"did not perform"
+                       (get-in result [:unproven 0 :message])))
+          (is (true? (get-in result [:unproven 1]))))
+        (testing "a genuine prelaunch failure remains recordable"
+          (is (= "failed" (:prelaunch-status result)))
+          (is (= "launcher preparation failed"
+                 (:prelaunch-error result))))))))
 
 (deftest provider-finish-late-settlement-and-retry-converge
   (with-managed-world

@@ -318,9 +318,11 @@
              {:harness/context
               (bind-invocation-markers context-template (:id run) identity-id)})
            (when identity-binding
-             {:identity/id identity-id
-              :identity/prompt (:prompt identity-binding)
-              :identity/reservation-id (:reservation-id identity-binding)
-              :harness/provisional-session-id session-id
-              :harness/native-attached
-              (if (:native-attached identity-binding) "true" "false")}))))
+             (merge
+              {:identity/id identity-id
+               :identity/prompt (:prompt identity-binding)}
+              (when-not (:legacy-pi identity-binding)
+                {:identity/reservation-id (:reservation-id identity-binding)
+                 :harness/provisional-session-id session-id
+                 :harness/native-attached
+                 (if (:native-attached identity-binding) "true" "false")}))))))

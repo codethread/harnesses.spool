@@ -207,6 +207,8 @@
     (let [run (runs/require-run rt id)
           current (life/invocation run)
           status (if (keyword? status) status (keyword (str status)))
+          _ (managed/require-legacy-positive-attempt!
+             run (assoc outcome :status status))
           _ (when (and (= "running" (life/status run))
                        (nil? invocation))
               (fail! "Running harness finish requires its invocation token"
@@ -305,12 +307,14 @@
 (defn settle-outcome!
   "Record provider outcome and settlement for an already terminal run.
 
-  Custody evidence is persisted independently before optional Codex/Pi native
-  attachment. An attachment failure therefore cannot erase proof that the
-  provider process settled. Existing hook-confirmed session evidence is never
-  replaced by an unobserved interactive outcome. Pre-reservation managed runs
-  keep their historical identity representation without invented attachment
-  evidence."
+  Custody evidence is persisted independently before optional
+  reservation-backed Codex/Pi attachment. An attachment failure therefore cannot erase proof that
+  the provider process settled. Existing hook-confirmed session evidence is
+  never replaced by an unobserved interactive outcome.
+
+  Positive legacy evidence is validated before the custody update so malformed
+  callbacks write nothing. Valid pre-reservation runs keep their historical
+  identity representation without invented attachment evidence."
   [rt id outcome evidence]
   (require-valid! ::runtime rt "settle-outcome! requires a Weaver runtime")
   (require-valid! ::id id "settle-outcome! requires a run id")
@@ -324,6 +328,7 @@
       (when-not (life/terminal? run)
         (fail! "Only a terminal harness run may receive late outcome evidence"
                {:id id :status (life/status run)}))
+      (managed/validate-legacy-outcome! rt run outcome)
       (when (and (attr-get run :harness/invocation)
                  (not= invocation (attr-get run :harness/invocation)))
         (fail! "Late harness outcome has a missing or stale invocation"
@@ -552,8 +557,9 @@
 
   Eligibility is positive evidence only: the run must be terminal, provably
   settled, hold a native session the provider has verified as usable, and have
-  no other run currently reserving that session. Pre-reservation managed runs
-  require an explicit supported repair before native resume."
+  no other run currently reserving that session. A pre-reservation Pi run is
+  eligible only while its exact historical identity and provenance remain
+  valid. Legacy Codex mismatch recovery still requires explicit repair."
   [rt id]
   (require-valid! ::runtime rt "resume-eligibility requires a Weaver runtime")
   (require-valid! ::id id "resume-eligibility requires a run id")
@@ -563,10 +569,19 @@
                   []
                   (remove #(= id (:id %))
                           (runs/reserving-session-writers rt session-id)))
-        result (if (managed/legacy-managed-run? run)
+        legacy? (managed/legacy-managed-run? run)
+        result (cond
+                 (and legacy? (= "pi" (attr-get run :harness/harness)))
+                 (do
+                   (managed/require-legacy-pi-continuation! rt run)
+                   (life/resume-eligibility run (count writers)))
+
+                 legacy?
                  {:eligible? false
-                  :reason (str "legacy managed run has no startup reservation; "
-                               "native resume requires an explicit supported repair")}
+                  :reason (str "legacy Codex run has no verified native binding; "
+                               "native resume requires explicit repair")}
+
+                 :else
                  (life/resume-eligibility run (count writers)))]
     (require-valid! ::resume-eligibility result
                     "resume-eligibility produced an invalid result")))

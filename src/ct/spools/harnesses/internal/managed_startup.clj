@@ -101,6 +101,23 @@
                       :type "parent-of"}))
       :burn []})))
 
+(declare require-legacy-pi-continuation!)
+
+(defn- legacy-pi-identity!
+  [rt run predecessor caller]
+  (require-legacy-pi-continuation! rt predecessor)
+  (let [binding (identity/bind!
+                 rt
+                 {:harness "pi"
+                  :native-session-id (attr-get predecessor :harness/session-id)
+                  :run-id (:id run)
+                  :expected-identity (attr-get predecessor :identity/id)})]
+    (when (and caller (not= (:id caller) (:strand-id binding)))
+      (weaver/update!
+       rt (:id caller)
+       {:edges [{:type "parent-of" :to (:strand-id binding)}]}))
+    (assoc binding :legacy-pi true)))
+
 (defn commit-identity!
   "Bind or reserve identity and provenance before a managed run is published."
   [rt {:keys [harness session-id run predecessor by-identity effective]}]
@@ -120,28 +137,31 @@
            {:edges [{:type "parent-of" :to (:strand-id binding)}]}))
         binding)
       (if predecessor
-        (let [reservation-id (attr-get predecessor :identity/reservation-id)
-              friendly-id (attr-get predecessor :identity/id)
-              attached? (= "true" (attr-get predecessor :harness/native-attached))]
-          (when-not (and reservation-id friendly-id attached?)
-            (fail! "Managed native resume requires an attached predecessor identity"
-                   {:predecessor (:id predecessor)
-                    :identity friendly-id
-                    :reservation-id reservation-id
-                    :native-attached attached?}))
-          (let [attached (identity/attach!
-                          rt
-                          (cond-> {:harness harness
-                                   :native-session-id session-id
-                                   :reservation-id reservation-id
-                                   :identity friendly-id
-                                   :run-id (:id run)}
-                            by-identity (assoc :parent-identity by-identity)))]
-            {:identity (:identity attached)
-             :strand-id (:strand-id attached)
-             :prompt (:instruction attached)
-             :reservation-id reservation-id
-             :native-attached true}))
+        (if (legacy-managed-run? predecessor)
+          (legacy-pi-identity! rt run predecessor caller)
+          (let [reservation-id (attr-get predecessor :identity/reservation-id)
+                friendly-id (attr-get predecessor :identity/id)
+                attached? (= "true" (attr-get predecessor
+                                              :harness/native-attached))]
+            (when-not (and reservation-id friendly-id attached?)
+              (fail! "Managed native resume requires an attached predecessor identity"
+                     {:predecessor (:id predecessor)
+                      :identity friendly-id
+                      :reservation-id reservation-id
+                      :native-attached attached?}))
+            (let [attached (identity/attach!
+                            rt
+                            (cond-> {:harness harness
+                                     :native-session-id session-id
+                                     :reservation-id reservation-id
+                                     :identity friendly-id
+                                     :run-id (:id run)}
+                              by-identity (assoc :parent-identity by-identity)))]
+              {:identity (:identity attached)
+               :strand-id (:strand-id attached)
+               :prompt (:instruction attached)
+               :reservation-id reservation-id
+               :native-attached true})))
         (let [reservation (identity/reserve!
                            rt
                            (cond-> {:harness harness}
@@ -161,9 +181,9 @@
 (defn retry-identity!
   "Return a coherent identity binding for one managed retry.
 
-  Ordinary retries reserve a fresh identity. Retrying a native-resume run keeps
-  its attached session identity and refuses a provider change. Maintenance-only
-  providers return nil and retain their existing compatibility path."
+  Ordinary retries reserve a fresh identity. Retrying a native resume keeps its
+  attached identity. A validated pre-reservation Pi continuation keeps its exact
+  legacy binding and transport. Maintenance-only providers return nil."
   [rt run harness session-id effective]
   (when (managed-harness? harness)
     (if (attr-get run :harness/resumes)
@@ -173,13 +193,20 @@
                  {:run-id (:id run)
                   :retained (attr-get run :harness/harness)
                   :requested harness}))
-        (when-not (= "true" (attr-get run :harness/native-attached))
-          (fail! "Native resume retry requires an attached identity"
-                 {:run-id (:id run)}))
-        {:identity (attr-get run :identity/id)
-         :prompt (attr-get run :identity/prompt)
-         :reservation-id (attr-get run :identity/reservation-id)
-         :native-attached true})
+        (if (legacy-managed-run? run)
+          (do
+            (require-legacy-pi-continuation! rt run)
+            {:identity (attr-get run :identity/id)
+             :prompt (attr-get run :identity/prompt)
+             :legacy-pi true})
+          (do
+            (when-not (= "true" (attr-get run :harness/native-attached))
+              (fail! "Native resume retry requires an attached identity"
+                     {:run-id (:id run)}))
+            {:identity (attr-get run :identity/id)
+             :prompt (attr-get run :identity/prompt)
+             :reservation-id (attr-get run :identity/reservation-id)
+             :native-attached true})))
       (let [caller (require-caller rt
                                    (attr-get run :harness/caller-identity))
             reservation (identity/reserve!
@@ -211,49 +238,59 @@
 (defn bootstrap
   "Return prompt-free managed startup metadata for a running invocation.
 
-  Maintenance providers return nil. Codex/Pi runs must be published and carry
-  the reservation, attempt, and invocation minted for this exact launch."
+  Maintenance providers and validated pre-reservation Pi continuations use the
+  legacy launcher transport and return nil. Reservation-backed Codex/Pi runs
+  must carry the attempt and invocation minted for this exact launch."
   [rt run]
   (when (managed-harness? (attr-get run :harness/harness))
-    (let [attempt (attr-get run :harness/attempt)
-          invocation (attr-get run :harness/invocation)
-          reservation-id (attr-get run :identity/reservation-id)
-          identity-id (attr-get run :identity/id)
-          harness (attr-get run :harness/harness)
-          provisional-session-id
-          (attr-get run :harness/provisional-session-id)
-          attached? (= "true" (attr-get run :harness/native-attached))]
-      (when-not (= "true" (attr-get run :harness/published))
-        (fail! "Managed startup run is not published" {:run-id (:id run)}))
-      (when-not (and (pos-int? attempt)
-                     (string? invocation) (not (str/blank? invocation)))
-        (fail! "Managed startup run has no active invocation"
-               {:run-id (:id run) :attempt attempt :invocation invocation}))
-      (when-not (and (string? reservation-id) (not (str/blank? reservation-id))
-                     (string? identity-id) (not (str/blank? identity-id)))
-        (fail! "Managed startup run has no identity reservation"
-               {:run-id (:id run)}))
-      (when (and (= "pi" harness)
-                 (not (and (string? provisional-session-id)
-                           (not (str/blank? provisional-session-id)))))
-        (fail! "Managed Pi startup has no durable native session pin"
-               {:run-id (:id run)
-                :provisional-session-id provisional-session-id}))
-      (cond-> {"schema" managed-bootstrap-schema
-               "run-id" (:id run)
-               "harness" harness
-               "identity" identity-id
-               "reservation-id" reservation-id
-               "cwd" (canonical-path (attr-get run :harness/cwd) "cwd")
-               "workspace" (canonical-path (workspace rt) "workspace")
-               "attempt" attempt
-               "invocation" invocation
-               "scope" root-scope}
-        (= "pi" harness)
-        (assoc "expected-native-session-id" provisional-session-id)
-        (and (not= "pi" harness) attached?)
-        (assoc "expected-native-session-id"
-               (attr-get run :harness/session-id))))))
+    (if (legacy-managed-run? run)
+      (do
+        (when-not (and (string? (attr-get run :harness/resumes))
+                       (not (str/blank? (attr-get run :harness/resumes))))
+          (fail! "Legacy Pi launch requires a native continuation"
+                 {:run-id (:id run)
+                  :resumes (attr-get run :harness/resumes)}))
+        (require-legacy-pi-continuation! rt run)
+        nil)
+      (let [attempt (attr-get run :harness/attempt)
+            invocation (attr-get run :harness/invocation)
+            reservation-id (attr-get run :identity/reservation-id)
+            identity-id (attr-get run :identity/id)
+            harness (attr-get run :harness/harness)
+            provisional-session-id
+            (attr-get run :harness/provisional-session-id)
+            attached? (= "true" (attr-get run :harness/native-attached))]
+        (when-not (= "true" (attr-get run :harness/published))
+          (fail! "Managed startup run is not published" {:run-id (:id run)}))
+        (when-not (and (pos-int? attempt)
+                       (string? invocation) (not (str/blank? invocation)))
+          (fail! "Managed startup run has no active invocation"
+                 {:run-id (:id run) :attempt attempt :invocation invocation}))
+        (when-not (and (string? reservation-id) (not (str/blank? reservation-id))
+                       (string? identity-id) (not (str/blank? identity-id)))
+          (fail! "Managed startup run has no identity reservation"
+                 {:run-id (:id run)}))
+        (when (and (= "pi" harness)
+                   (not (and (string? provisional-session-id)
+                             (not (str/blank? provisional-session-id)))))
+          (fail! "Managed Pi startup has no durable native session pin"
+                 {:run-id (:id run)
+                  :provisional-session-id provisional-session-id}))
+        (cond-> {"schema" managed-bootstrap-schema
+                 "run-id" (:id run)
+                 "harness" harness
+                 "identity" identity-id
+                 "reservation-id" reservation-id
+                 "cwd" (canonical-path (attr-get run :harness/cwd) "cwd")
+                 "workspace" (canonical-path (workspace rt) "workspace")
+                 "attempt" attempt
+                 "invocation" invocation
+                 "scope" root-scope}
+          (= "pi" harness)
+          (assoc "expected-native-session-id" provisional-session-id)
+          (and (not= "pi" harness) attached?)
+          (assoc "expected-native-session-id"
+                 (attr-get run :harness/session-id)))))))
 
 (defn- normalize-bootstrap [bootstrap]
   (let [entries (map (fn [[k value]] [(name k) value]) bootstrap)
@@ -381,38 +418,159 @@
    (some #(= run-id (:to_strand_id %))
          (graph/outgoing-edges rt [(:id identity-strand)] "performed"))))
 
+(defn- identity-record? [strand]
+  (= "true" (attr-get strand :identity/session)))
+
+(defn- identities-for-native-session [rt harness native-session-id]
+  (filterv #(and (identity-record? %)
+                 (= harness (attr-get % :identity/harness))
+                 (= native-session-id
+                    (attr-get % :identity/native-session-id)))
+           (weaver/list rt)))
+
 (defn- require-legacy-binding!
   [rt run]
-  (let [friendly-id (attr-get run :identity/id)
-        identity-strand (identity/current rt friendly-id)
-        harness (attr-get run :harness/harness)
-        identity-harness (attr-get identity-strand :identity/harness)
+  (let [friendly-id (attr-get run :identity/id)]
+    (when-not (and (string? friendly-id) (not (str/blank? friendly-id)))
+      (fail! "Legacy managed run has no identity binding"
+             {:run-id (:id run) :identity friendly-id}))
+    (let [identity-strand (identity/current rt friendly-id)
+          harness (attr-get run :harness/harness)
+          identity-harness (attr-get identity-strand :identity/harness)
+          native-session-id
+          (attr-get identity-strand :identity/native-session-id)
+          reservation-id
+          (attr-get identity-strand :identity/reservation-id)
+          reservation-state
+          (attr-get identity-strand :identity/reservation-state)]
+      (when-not (= harness identity-harness)
+        (fail! "Legacy managed identity belongs to another harness"
+               {:run-id (:id run)
+                :identity friendly-id
+                :expected harness
+                :actual identity-harness}))
+      (when-not (and (string? native-session-id)
+                     (not (str/blank? native-session-id)))
+        (fail! "Legacy managed identity has no native session binding"
+               {:run-id (:id run) :identity friendly-id}))
+      (when (or reservation-id reservation-state)
+        (fail! "Legacy managed identity has reservation metadata"
+               {:run-id (:id run)
+                :identity friendly-id
+                :reservation-id reservation-id
+                :reservation-state reservation-state}))
+      (when-not (performed-run? rt identity-strand (:id run))
+        (fail! "Legacy managed identity did not perform the run"
+               {:run-id (:id run) :identity friendly-id}))
+      identity-strand)))
+
+(defn require-legacy-pi-continuation!
+  "Return the exact identity binding for a safe legacy Pi continuation.
+
+  The run must use the pre-reservation representation and retain one unique Pi
+  identity whose native session exactly equals the run's stored session. The
+  identity must have performed this run."
+  [rt run]
+  (when-not (legacy-managed-run? run)
+    (fail! "Legacy Pi continuation requires a pre-reservation run"
+           {:run-id (:id run)}))
+  (when-not (= "pi" (attr-get run :harness/harness))
+    (fail! "Legacy native continuation applies only to exact-binding Pi runs"
+           {:run-id (:id run)
+            :harness (attr-get run :harness/harness)}))
+  (let [identity-strand (require-legacy-binding! rt run)
+        run-session-id (attr-get run :harness/session-id)
         native-session-id
         (attr-get identity-strand :identity/native-session-id)
-        reservation-id
-        (attr-get identity-strand :identity/reservation-id)
-        reservation-state
-        (attr-get identity-strand :identity/reservation-state)]
-    (when-not (= harness identity-harness)
-      (fail! "Legacy managed identity belongs to another harness"
+        bindings (when (and (string? run-session-id)
+                            (not (str/blank? run-session-id)))
+                   (identities-for-native-session rt "pi" run-session-id))]
+    (when-not (and (string? run-session-id)
+                   (not (str/blank? run-session-id))
+                   (= run-session-id native-session-id))
+      (fail! "Legacy Pi run session does not match its identity binding"
              {:run-id (:id run)
-              :identity friendly-id
-              :expected harness
-              :actual identity-harness}))
-    (when-not (and (string? native-session-id)
-                   (not (str/blank? native-session-id)))
-      (fail! "Legacy managed identity has no native session binding"
-             {:run-id (:id run) :identity friendly-id}))
-    (when (or reservation-id reservation-state)
-      (fail! "Legacy managed identity has reservation metadata"
+              :run-session-id run-session-id
+              :identity-session-id native-session-id}))
+    (when-not (and (= 1 (count bindings))
+                   (= (:id identity-strand) (:id (first bindings))))
+      (fail! "Legacy Pi native session does not resolve to one identity"
              {:run-id (:id run)
-              :identity friendly-id
-              :reservation-id reservation-id
-              :reservation-state reservation-state}))
-    (when-not (performed-run? rt identity-strand (:id run))
-      (fail! "Legacy managed identity did not perform the run"
-             {:run-id (:id run) :identity friendly-id}))
+              :session-id run-session-id
+              :identities (mapv #(attr-get % :identity/id) bindings)}))
     identity-strand))
+
+(defn- positive-legacy-outcome? [{:keys [status session-usable]}]
+  (or (= :done (if (keyword? status) status (keyword status)))
+      (true? session-usable)))
+
+(defn require-legacy-positive-attempt!
+  "Require a durable launch fence before accepting positive legacy evidence.
+
+  Failed prelaunch outcomes without usable session evidence remain valid and do
+  not require an attempt."
+  [run {:keys [invocation] :as outcome}]
+  (when (and (legacy-managed-run? run)
+             (positive-legacy-outcome? outcome))
+    (let [attempt (attr-get run :harness/attempt)
+          durable-invocation (attr-get run :harness/invocation)]
+      (when-not (and (pos-int? attempt)
+                     (string? durable-invocation)
+                     (not (str/blank? durable-invocation)))
+        (fail! "Positive legacy outcome requires a durable launch fence"
+               {:run-id (:id run)
+                :attempt attempt
+                :invocation durable-invocation}))
+      (when-not (and (string? invocation) (not (str/blank? invocation)))
+        (fail! "Positive legacy outcome requires its invocation token"
+               {:run-id (:id run)
+                :expected durable-invocation
+                :actual invocation}))))
+  nil)
+
+(defn require-legacy-positive-invocation!
+  "Require the supplied invocation to equal a positive legacy outcome's fence."
+  [run {:keys [invocation] :as outcome}]
+  (require-legacy-positive-attempt! run outcome)
+  (when (and (legacy-managed-run? run)
+             (positive-legacy-outcome? outcome))
+    (let [durable-invocation (attr-get run :harness/invocation)]
+      (when-not (and (string? invocation)
+                     (not (str/blank? invocation))
+                     (= durable-invocation invocation))
+        (fail! "Positive legacy outcome has a missing or stale invocation"
+               {:run-id (:id run)
+                :expected durable-invocation
+                :actual invocation}))))
+  nil)
+
+(defn- require-legacy-pi-session-evidence!
+  [rt run session-id session-usable]
+  (when (and (= "pi" (attr-get run :harness/harness))
+             (true? session-usable))
+    (let [identity-strand (require-legacy-pi-continuation! rt run)
+          durable-session-id (attr-get run :harness/session-id)
+          identity-session-id
+          (attr-get identity-strand :identity/native-session-id)]
+      (when-not (and (string? session-id)
+                     (not (str/blank? session-id))
+                     (= durable-session-id identity-session-id session-id))
+        (fail! "Legacy Pi outcome session does not match its durable binding"
+               {:run-id (:id run)
+                :expected durable-session-id
+                :identity-session-id identity-session-id
+                :actual session-id}))))
+  nil)
+
+(defn validate-legacy-outcome!
+  "Validate legacy identity, invocation, and positive Pi session evidence."
+  [rt run {:keys [session-id session-usable] :as outcome}]
+  (when (legacy-managed-run? run)
+    (require-legacy-positive-invocation! run outcome)
+    (require-legacy-binding! rt run)
+    (require-legacy-pi-session-evidence!
+     rt run session-id session-usable))
+  nil)
 
 (defn- context-result [run attached]
   {:schema managed-context-schema
@@ -510,11 +668,11 @@
   Returns a legacy result after validating a pre-reservation binding, or nil
   for maintenance providers and outcomes with no usable native evidence. The
   caller must hold the lifecycle publication lock."
-  [rt run {:keys [session-id session-usable invocation]}]
+  [rt run {:keys [session-id session-usable invocation] :as outcome}]
   (when (managed-harness? (attr-get run :harness/harness))
     (if (legacy-managed-run? run)
       (do
-        (require-legacy-binding! rt run)
+        (validate-legacy-outcome! rt run outcome)
         {:result "legacy"})
       (when (and session-usable session-id)
         (when-not (and (string? invocation)
