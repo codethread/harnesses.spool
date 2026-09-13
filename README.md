@@ -34,6 +34,30 @@ This publishes:
 Loading `ct.spools.harnesses`, a provider namespace, or one of the execution
 namespaces alone does not publish those declarations.
 
+## Shared Codethread catalog
+
+Codethread consumers can use the shared configuration spool to activate the
+complete agent surface, including provider resources, aliases, reviewers, and
+the asynchronous Workflow `:agent` executor:
+
+```clojure
+(require '[ct.spools.codethread.bootstrap :as codethread])
+(codethread/register! runtime)
+```
+
+The bootstrap owns module ordering and the reusable catalog. Its preferred role
+aliases are `luna`, `oracle`, `grunt`, `reviewer`, and `coordinator`; effort-
+specific compatibility seats remain available. Claude and Cursor are declared
+but disabled by default, matching the authoritative Harnesses workspace
+policy. Consumers can enable either provider with the process-local agent
+configuration command when needed.
+
+The Harnesses dogfood workspace keeps its own checkout as a local
+`ct.spools/harnesses` root and pins `codethread/config` in
+[`.millstrand/deps.edn`](.millstrand/deps.edn). Published consumers should pin
+both dependencies. They should not copy the provider, alias, reviewer, query,
+or executor roster into their own workspace modules.
+
 A standalone consumer first supplies the source dependency, then activates the
 modules. The dependency makes the namespace loadable; `runtime/module!` is the
 activation step. This local checkout example is complete and keeps the reviewer
@@ -299,7 +323,11 @@ Authoring and activation are separate. `defreviewer` defines an inert declaratio
 
 The required `:seat` names a registered alias, as a symbol or keyword, or an ordered vector such as `['reviewer 'luna]`. The first currently available alias is chosen before spawning; this is availability fallback, not a retry or a new provider-selection engine. `:labels` and `:glob` are optional. The final argument is an evaluated prompt expression, so `format-alpha/prose` is suitable for readable multi-paragraph policy. An optional `:system-prompt` is appended after the selected alias guidance.
 
-This workspace's repository lenses are in [`.millstrand/me/reviewers.clj`](.millstrand/me/reviewers.clj). The module is configured after `me.config`, which selects the reusable reviewer kind provider. A dependency coordinate only makes the namespace available; it does not activate a module. Activation is the module's typed `use-reviewer!` selection, and any agent or task coordination is a separate concern.
+The shared Codethread config publishes the common repository lenses used by
+this workspace. Consumers can add their own declarations in a module after the
+shared bootstrap; a dependency coordinate only makes a namespace available and
+does not activate it. Activation is the module's typed `use-reviewer!`
+selection, and any agent or task coordination is a separate concern.
 
 Discover the declarations and the command guidance with:
 
