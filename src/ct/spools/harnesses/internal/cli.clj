@@ -62,6 +62,10 @@
                           :append-system-prompt
                           {:type :string
                            :doc "Append role or policy text to the system prompt."}
+                          :extra-argv
+                          {:type :string
+                           :repeat? true
+                           :doc "Provider argument; repeat to preserve argv order."}
                           :title
                           {:type :string
                            :doc "Display title; defaults to the first 80 prompt characters or the agent and mode."}

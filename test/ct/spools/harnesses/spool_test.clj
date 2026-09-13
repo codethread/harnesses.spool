@@ -163,6 +163,42 @@
                             run :harness/appended-system-prompts)]))
                       ["--effort" "--thinking"]
                       ["adaptive" "maximum"]))))))
+        (testing "run provider argv uses ordinary caller overlay precedence"
+          (is (= {:generated ["--from-alias"]
+                  :overrides ["--provider-flag" "value with spaces" "" "--"]
+                  :effective ["--provider-flag" "value with spaces" "" "--"]
+                  :launcher true}
+                 (test-alpha/repl!
+                  ctx
+                  '(let [rt (millstrand.api.current.alpha/runtime)
+                         _ (harnesses/register-alias!
+                            rt :cli-tail
+                            {:doc "Exercise provider argv forwarding."
+                             :parent :pi
+                             :attributes
+                             {:harness/extra-argv ["--from-alias"]}})
+                         created
+                         (millstrand.api.weaver.alpha/op!
+                          rt 'agent
+                          ["run" "cli-tail" "--interactive" "--cwd" "/tmp"
+                           "--extra-argv" "--provider-flag"
+                           "--extra-argv" "value with spaces"
+                           "--extra-argv" ""
+                           "--extra-argv" "--"])
+                         run (millstrand.api.weaver.alpha/show rt (:id created))]
+                     {:generated
+                      (get-in run [:attributes :harness/generated
+                                   :harness/extra-argv])
+                      :overrides
+                      (get-in run [:attributes :harness/overrides
+                                   :harness/extra-argv])
+                      :effective
+                      (millstrand.api.spool.alpha/attr-get
+                       run :harness/extra-argv)
+                      :launcher
+                      (clojure.string/includes?
+                       (slurp (:launcher created))
+                       "'--provider-flag' 'value with spaces' '' '--'")})))))
         (testing "aliases expose documentation, model, and open effort"
           (is (= {:registration
                   {:alias "reviewer"

@@ -145,8 +145,10 @@
   (s/keys :req-un [:ct.spools.harnesses/harness :ct.spools.harnesses/definition]))
 (s/def :ct.spools.harnesses/prompt string?)
 (s/def :ct.spools.harnesses/argv
-  (s/coll-of (s/and string? (complement str/blank?))
-             :kind vector? :min-count 1))
+  (s/and vector?
+         seq
+         #(and (string? (first %)) (not (str/blank? (first %))))
+         #(every? string? %)))
 (s/def :ct.spools.harnesses/stdin (s/nilable string?))
 (s/def :ct.spools.harnesses/launch-spec
   (s/and

@@ -301,8 +301,23 @@ spawned session identity. Agents pass their `MILLSTRAND_AGENT_ID` explicitly at
 the Strand client boundary; Weaver never reads a caller's environment. The
 user-only agent bin does not supply agent identity.
 
-Use `strand agent run <agent> --interactive` to launch an interactive tracked
-session.
+Use `mill bin run agent <agent> [wrapper options] -- <provider args>` to launch
+an interactive tracked session. The first literal `--` ends wrapper options;
+every later shell argument is appended to `harness/extra-argv` in its original
+order, including dash-prefixed values and quoted values containing spaces.
+Caller arguments use the ordinary Harnesses overlay precedence, so they replace
+an alias or provider's generated `harness/extra-argv` value.
+
+For example:
+
+```text
+mill bin run agent pi --thinking high -- --provider-flag "one value" --debug
+```
+
+The bin carries provider arguments through repeated internal `--extra-argv`
+values rather than encoding shell argv as JSON. The created run remains the
+same tracked interactive lifecycle driven by `agent run --interactive`, its
+private launcher, `_started`, and `_finished`.
 
 ## Declarative reviewers
 

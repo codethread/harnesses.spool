@@ -129,9 +129,8 @@
                          appended-system-prompts))
     (fail! "harness/appended-system-prompts must be a vector of non-blank strings"
            {:appended-system-prompts appended-system-prompts}))
-  (when-not (and (vector? extra)
-                 (every? #(and (string? %) (not (str/blank? %))) extra))
-    (fail! "harness/extra-argv must be a vector of non-blank strings"
+  (when-not (and (vector? extra) (every? string? extra))
+    (fail! "harness/extra-argv must be a vector of strings"
            {:extra-argv extra})))
 
 (defn- pi-command

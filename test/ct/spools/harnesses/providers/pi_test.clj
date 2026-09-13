@@ -22,7 +22,8 @@
             ["Review changes only." "Do not edit files."]
             :harness/model "gpt-test"
             :harness/effort "adaptive"
-            :harness/extra-argv ["--skip-git-repo-check"]}
+            :harness/extra-argv
+            ["--skip-git-repo-check" "--provider-option" "value with spaces" ""]}
            attributes)}))
 
 (deftest prepare-builds-new-and-resumed-launch-specifications
@@ -33,7 +34,8 @@
                    "--append-system-prompt" "Review changes only."
                    "--append-system-prompt" "Do not edit files."
                    "--model" "gpt-test" "--thinking" "adaptive"
-                   "--skip-git-repo-check"]
+                   "--skip-git-repo-check"
+                   "--provider-option" "value with spaces" ""]
             :stdin "Do the work\n"}
            (pi/prepare runtime definition (run "headless")))))
   (testing "resumed headless runs select the session and reapply pinned guidance"
@@ -43,7 +45,8 @@
                    "--append-system-prompt" "Review changes only."
                    "--append-system-prompt" "Do not edit files."
                    "--model" "gpt-test" "--thinking" "adaptive"
-                   "--skip-git-repo-check"]
+                   "--skip-git-repo-check"
+                   "--provider-option" "value with spaces" ""]
             :stdin "Do the work\n"}
            (pi/prepare runtime definition
                        (run "headless" {:harness/resumes "prior"})))))
@@ -53,7 +56,8 @@
                    "--append-system-prompt" "Review changes only."
                    "--append-system-prompt" "Do not edit files."
                    "--model" "gpt-test" "--thinking" "adaptive"
-                   "--skip-git-repo-check" "Do the work"]
+                   "--skip-git-repo-check"
+                   "--provider-option" "value with spaces" "" "Do the work"]
             :stdin nil}
            (pi/prepare runtime definition (run "interactive"))))))
 

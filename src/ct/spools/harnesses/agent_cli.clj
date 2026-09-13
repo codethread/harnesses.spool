@@ -329,13 +329,14 @@
     accepted))
 
 (defn- op-run
-  [rt {:keys [agent interactive prompt append-system-prompt cwd attributes title
-              by-identity target context request-id]
+  [rt {:keys [agent interactive prompt append-system-prompt extra-argv cwd
+              attributes title by-identity target context request-id]
        :as args}
    op-cwd]
   (let [effort (if (contains? args :effort) (:effort args) (:thinking args))
         attributes (cond-> (overlay-map attributes)
-                     (some? effort) (assoc :harness/effort effort))
+                     (some? effort) (assoc :harness/effort effort)
+                     (some? extra-argv) (assoc :harness/extra-argv extra-argv))
         run (harness/create!
              rt
              (cond-> {:harness agent
