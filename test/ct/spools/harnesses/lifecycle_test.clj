@@ -526,6 +526,7 @@
                              rt {:harness :fake :mode :interactive
                                  :title "stale"})
                       stale-start (harnesses/begin-attempt! rt (:id stale))
+                      stale-before-wrong (weaver/show rt (:id stale))
                       stale-after-wrong
                       (harnesses/finish!
                        rt (:id stale)
@@ -644,9 +645,8 @@
                     :after-done {:status (life/status racing)
                                  :substatus (life/substatus racing)
                                  :settled (life/settled? racing)}}
-                   :stale {:wrong-status (life/status stale-after-wrong)
-                           :fenced (attr stale-after-wrong
-                                         :harness/fenced-callbacks)
+                   :stale {:wrong-unchanged
+                           (= stale-before-wrong stale-after-wrong)
                            :right-status (life/status stale-after-right)}
                    :failed-resume failed-resume
                    :session-conflict conflict
@@ -686,8 +686,7 @@
           (is (= {:status "stopped" :substatus "completed" :settled true}
                  (get-in result [:stop-vs-finish :after-done]))))
         (testing "stale callbacks cannot finish a newer attempt"
-          (is (= "running" (get-in result [:stale :wrong-status])))
-          (is (= 1 (get-in result [:stale :fenced])))
+          (is (true? (get-in result [:stale :wrong-unchanged])))
           (is (= "stopped" (get-in result [:stale :right-status]))))
         (testing "native resume preserves settings"
           (is (re-find #"cannot change cwd" (:changed-cwd result))))

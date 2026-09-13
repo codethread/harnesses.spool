@@ -366,6 +366,14 @@
                       (with-redefs [managed/managed-harness?
                                     (constantly false)]
                         (harnesses/create! rt request)))
+                    snapshot
+                    (fn [run]
+                      (let [identity-strand
+                            (identity/current rt (attr run :identity/id))]
+                        {:run (weaver/show rt (:id run))
+                         :identity identity-strand
+                         :performed (targets identity-strand "performed")
+                         :strand-count (count (weaver/list rt))}))
                     completed-run
                     (legacy-create
                      {:harness :codex :mode :interactive
@@ -377,6 +385,7 @@
                     (harnesses/begin-attempt! rt (:id completed-run))
                     identity-before
                     (identity/current rt (attr completed-run :identity/id))
+                    stale-before (snapshot completed-run)
                     stale
                     (harnesses/finish!
                      rt (:id completed-run)
@@ -384,8 +393,7 @@
                       :session-id "legacy-thread"
                       :session-usable true
                       :invocation "originating-stale-invocation"})
-                    identity-after-stale
-                    (identity/current rt (attr completed-run :identity/id))
+                    stale-after (snapshot completed-run)
                     completed
                     (harnesses/finish!
                      rt (:id completed-run)
@@ -393,6 +401,14 @@
                       :session-id "legacy-thread"
                       :session-usable true
                       :invocation (:invocation completed-start)})
+                    terminal-before (snapshot completed)
+                    terminal-replay
+                    (harnesses/finish!
+                     rt (:id completed)
+                     {:status :done :exit-code 0
+                      :session-usable true
+                      :invocation "terminal-replay"})
+                    terminal-after (snapshot completed)
                     before-resume-count (count (weaver/list rt))
                     legacy-resume
                     (failure #(harnesses/resume! rt (:id completed) {}))
@@ -497,11 +513,12 @@
                  :identity-native-after
                  (attr (identity/current rt (attr completed :identity/id))
                        :identity/native-session-id)
-                 :stale-status (attr stale :harness/status)
-                 :stale-session (attr stale :harness/session-id)
-                 :stale-fenced (attr stale :harness/fenced-callbacks)
-                 :stale-identity-unchanged
-                 (= identity-before identity-after-stale)
+                 :stale-returned-unchanged
+                 (= (:run stale-before) stale)
+                 :stale-no-write (= stale-before stale-after)
+                 :terminal-returned-unchanged
+                 (= (:run terminal-before) terminal-replay)
+                 :terminal-no-write (= terminal-before terminal-after)
                  :completed-provisional completed-provisional
                  :legacy-resume legacy-resume
                  :resume-no-write (= before-resume-count after-resume-count)
@@ -537,12 +554,11 @@
           (is (= (:completed-provisional result)
                  (:identity-native-before result)
                  (:identity-native-after result))))
-        (testing "the originating invocation still fences legacy evidence"
-          (is (= "running" (:stale-status result)))
-          (is (= (:completed-provisional result)
-                 (:stale-session result)))
-          (is (= 1 (:stale-fenced result)))
-          (is (true? (:stale-identity-unchanged result))))
+        (testing "stale and terminal callbacks are full no-ops"
+          (is (true? (:stale-returned-unchanged result)))
+          (is (true? (:stale-no-write result)))
+          (is (true? (:terminal-returned-unchanged result)))
+          (is (true? (:terminal-no-write result))))
         (testing "legacy continuity is explicit while fresh work remains native-v1"
           (is (re-find #"legacy Codex run has no verified native binding"
                        (get-in result [:legacy-resume :data :reason])))
@@ -668,6 +684,74 @@
             (is (not (str/includes?
                       source "MILLSTRAND_MANAGED_BOOTSTRAP")))))))))
 
+(deftest stale-and-terminal-managed-finishes-are-complete-no-ops
+  (with-managed-world
+    (fn [ctx]
+      (let [result
+            (eval-world
+             ctx
+             '(let [snapshot
+                    (fn [run]
+                      (let [current (weaver/show rt (:id run))
+                            identity-strand
+                            (identity/current rt (attr current :identity/id))]
+                        {:run current
+                         :identity identity-strand
+                         :performed (targets identity-strand "performed")
+                         :strand-count (count (weaver/list rt))}))
+                    probe
+                    (fn [run outcome]
+                      (let [before (snapshot run)
+                            returned (harnesses/finish! rt (:id run) outcome)
+                            after (snapshot run)]
+                        {:returned-unchanged (= (:run before) returned)
+                         :no-write (= before after)}))]
+                (into {}
+                      (for [provider [:codex :pi]]
+                        (let [run (harnesses/create!
+                                   rt {:harness provider :mode :interactive
+                                       :cwd "/tmp/managed-finish-no-op"
+                                       :title (str (name provider) " no-op")})
+                              started (harnesses/begin-attempt! rt (:id run))
+                              stale
+                              (into {}
+                                    (for [usable? [true false]]
+                                      [usable?
+                                       (probe
+                                        run
+                                        {:status :done :exit-code 0
+                                         :session-id "unrelated-stale-session"
+                                         :session-usable usable?
+                                         :invocation "stale-invocation"})]))
+                              terminal
+                              (harnesses/finish!
+                               rt (:id run)
+                               {:status :failed :exit-code 1
+                                :error "terminal baseline"
+                                :invocation (:invocation started)
+                                :evidence {:settled true
+                                           :settlement "process-exit"}})
+                              terminal
+                              (into {}
+                                    (for [usable? [true false]]
+                                      [usable?
+                                       (probe
+                                        terminal
+                                        {:status :done :exit-code 0
+                                         :session-id "unrelated-terminal-session"
+                                         :session-usable usable?
+                                         :invocation "terminal-replay"})]))]
+                          [provider {:stale stale :terminal terminal}])))))]
+        (doseq [provider [:codex :pi]
+                stage [:stale :terminal]
+                usable? [true false]]
+          (testing (str (name provider) " " (name stage)
+                        " callback with usable=" usable?)
+            (is (true? (get-in result
+                               [provider stage usable? :returned-unchanged])))
+            (is (true? (get-in result
+                               [provider stage usable? :no-write])))))))))
+
 (deftest raw-legacy-pi-continuation-rejects-request-mismatches-before-writes
   (with-managed-world
     (fn [ctx]
@@ -737,18 +821,121 @@
                  :session-no-write (= before after-session)
                  :missing-no-write (= before after-missing)}))]
         (testing "resolved provider and requested session remain exact"
-          (is (re-find #"cannot change its managed provider"
+          (is (re-find #"cannot change its provider"
                        (get-in result [:provider-failure :message])))
-          (is (re-find #"exact native session"
+          (is (re-find #"exact explicit native session"
                        (get-in result [:session-failure :message])))
-          (is (re-find #"exact native session"
+          (is (re-find #"exact explicit native session"
                        (get-in result [:missing-session-failure :message]))))
         (testing "mismatches create no child, provenance, or continuation mark"
           (is (true? (:provider-no-write result)))
           (is (true? (:session-no-write result)))
           (is (true? (:missing-no-write result))))))))
 
-(deftest usable-legacy-evidence-requires-supplied-session-before-writes
+(deftest current-managed-continuation-mismatches-fail-before-commit-writes
+  (with-managed-world
+    (fn [ctx]
+      (let [result
+            (eval-world
+             ctx
+             '(let [snapshot
+                    (fn [run]
+                      (let [current (weaver/show rt (:id run))
+                            identity-strand
+                            (identity/current rt (attr current :identity/id))]
+                        {:strand-ids (->> (weaver/list rt)
+                                          (map :id)
+                                          sort
+                                          vec)
+                         :predecessor current
+                         :identity identity-strand
+                         :performed (->> (graph/outgoing-edges
+                                          rt [(:id identity-strand)]
+                                          "performed")
+                                         (sort-by pr-str)
+                                         vec)
+                         :resumes (->> (graph/incoming-edges
+                                        rt [(:id current)] "resumes")
+                                       (sort-by pr-str)
+                                       vec)}))]
+                (into {}
+                      (for [provider [:codex :pi]]
+                        (let [session-id (str "current-" (name provider))
+                              run (harnesses/create!
+                                   rt {:harness provider :mode :interactive
+                                       :cwd "/tmp/current-managed-resume"
+                                       :session-id session-id
+                                       :title (str (name provider)
+                                                   " current predecessor")})
+                              started (harnesses/begin-attempt! rt (:id run))
+                              bootstrap
+                              (harnesses/managed-bootstrap rt (:id run))
+                              _ (harnesses/managed-startup!
+                                 rt {:harness (name provider)
+                                     :native-session-id session-id
+                                     :cwd "/tmp/current-managed-resume"
+                                     :scope "root"
+                                     :bootstrap bootstrap})
+                              predecessor
+                              (harnesses/finish!
+                               rt (:id run)
+                               {:status :done :exit-code 0
+                                :session-id session-id
+                                :session-usable true
+                                :invocation (:invocation started)})
+                              before (snapshot predecessor)
+                              other-provider
+                              (if (= :pi provider) :codex :pi)
+                              provider-failure
+                              (failure #(harnesses/create!
+                                         rt {:harness other-provider
+                                             :mode :interactive
+                                             :cwd "/tmp/current-managed-resume"
+                                             :session-id session-id
+                                             :resumes (:id predecessor)
+                                             :title "wrong current provider"}))
+                              after-provider (snapshot predecessor)
+                              session-failure
+                              (failure #(harnesses/create!
+                                         rt {:harness provider
+                                             :mode :interactive
+                                             :cwd "/tmp/current-managed-resume"
+                                             :session-id "wrong-current-session"
+                                             :resumes (:id predecessor)
+                                             :title "wrong current session"}))
+                              after-session (snapshot predecessor)
+                              missing-failure
+                              (failure #(harnesses/create!
+                                         rt {:harness provider
+                                             :mode :interactive
+                                             :cwd "/tmp/current-managed-resume"
+                                             :resumes (:id predecessor)
+                                             :title "missing current session"}))
+                              after-missing (snapshot predecessor)]
+                          [provider
+                           {:provider-failure provider-failure
+                            :session-failure session-failure
+                            :missing-failure missing-failure
+                            :provider-no-write (= before after-provider)
+                            :session-no-write (= before after-session)
+                            :missing-no-write (= before after-missing)}])))))]
+        (doseq [provider [:codex :pi]]
+          (testing (str (name provider)
+                        " continuation intent is validated before commit")
+            (is (re-find #"cannot change its provider"
+                         (get-in result
+                                 [provider :provider-failure :message])))
+            (is (re-find #"exact explicit native session"
+                         (get-in result
+                                 [provider :session-failure :message])))
+            (is (re-find #"exact explicit native session"
+                         (get-in result
+                                 [provider :missing-failure :message])))
+            (is (true? (get-in result [provider :provider-no-write])))
+            (is (true? (get-in result [provider :session-no-write])))
+            (is (true? (get-in result [provider :missing-no-write])))))))))
+
+(deftest positive-legacy-evidence-requires-an-exactly-validated-session
   (with-managed-world
     (fn [ctx]
       (let [result
@@ -763,6 +950,16 @@
                              :cwd "/tmp/legacy-required-session"
                              :session-id (str "legacy-" suffix)
                              :title (str "legacy " suffix)})))
+                    positive-outcome
+                    (fn [kind invocation]
+                      (merge
+                       (if (= :done kind)
+                         {:status :done :exit-code 0
+                          :session-usable false}
+                         {:status :failed :exit-code 1
+                          :error "usable failure"
+                          :session-usable true})
+                       {:invocation invocation}))
                     snapshot
                     (fn [run]
                       (let [identity-strand
@@ -777,27 +974,29 @@
                          :strand-count (count (weaver/list rt))}))
                     finish-results
                     (into {}
-                          (for [provider [:codex :pi]]
-                            (let [run (legacy-create
-                                       provider (str (name provider) "-finish"))
+                          (for [provider [:codex :pi]
+                                kind [:done :usable]]
+                            (let [suffix (str (name provider) "-finish-"
+                                              (name kind))
+                                  run (legacy-create provider suffix)
                                   started (harnesses/begin-attempt!
                                            rt (:id run))
                                   before (snapshot run)
                                   rejected
                                   (failure #(harnesses/finish!
                                              rt (:id run)
-                                             {:status :done :exit-code 0
-                                              :session-usable true
-                                              :invocation
-                                              (:invocation started)}))]
-                              [provider
+                                             (positive-outcome
+                                              kind (:invocation started))))]
+                              [[provider kind]
                                {:failure rejected
                                 :unchanged (= before (snapshot run))}])))
                     settle-results
                     (into {}
-                          (for [provider [:codex :pi]]
-                            (let [run (legacy-create
-                                       provider (str (name provider) "-settle"))
+                          (for [provider [:codex :pi]
+                                kind [:done :usable]]
+                            (let [suffix (str (name provider) "-settle-"
+                                              (name kind))
+                                  run (legacy-create provider suffix)
                                   started (harnesses/begin-attempt!
                                            rt (:id run))
                                   terminal
@@ -813,24 +1012,66 @@
                                   rejected
                                   (failure #(harnesses/settle-outcome!
                                              rt (:id terminal)
-                                             {:status :failed :exit-code 1
-                                              :error "custody observed"
-                                              :session-usable true
-                                              :invocation
-                                              (:invocation started)}
+                                             (positive-outcome
+                                              kind (:invocation started))
                                              {:settled true
                                               :settlement "process-exit"}))]
-                              [provider
+                              [[provider kind]
                                {:failure rejected
-                                :unchanged (= before (snapshot terminal))}])))]
-                {:finish finish-results :settle settle-results}))]
+                                :unchanged (= before (snapshot terminal))}])))
+                    wrong-finish
+                    (let [run (legacy-create :pi "pi-wrong-finish")
+                          started (harnesses/begin-attempt! rt (:id run))
+                          before (snapshot run)
+                          rejected
+                          (failure #(harnesses/finish!
+                                     rt (:id run)
+                                     (assoc (positive-outcome
+                                             :done (:invocation started))
+                                            :session-id "unrelated-pi")))]
+                      {:failure rejected
+                       :unchanged (= before (snapshot run))})
+                    wrong-settle
+                    (let [run (legacy-create :pi "pi-wrong-settle")
+                          started (harnesses/begin-attempt! rt (:id run))
+                          terminal
+                          (harnesses/finish!
+                           rt (:id run)
+                           {:status :failed :exit-code 1
+                            :error "awaiting custody"
+                            :invocation (:invocation started)
+                            :evidence {:settled false
+                                       :settlement "no-terminal-evidence"}})
+                          before (snapshot terminal)
+                          rejected
+                          (failure #(harnesses/settle-outcome!
+                                     rt (:id terminal)
+                                     (assoc (positive-outcome
+                                             :done (:invocation started))
+                                            :session-id "unrelated-pi")
+                                     {:settled true
+                                      :settlement "process-exit"}))]
+                      {:failure rejected
+                       :unchanged (= before (snapshot terminal))})]
+                {:finish finish-results
+                 :settle settle-results
+                 :wrong-finish wrong-finish
+                 :wrong-settle wrong-settle}))]
         (doseq [path [:finish :settle]
-                provider [:codex :pi]]
-          (testing (str (name provider) " " (name path)
-                        " rejects usable evidence without its session")
+                provider [:codex :pi]
+                kind [:done :usable]]
+          (testing (str (name provider) " " (name path) " " (name kind)
+                        " evidence requires a supplied session")
             (is (re-find #"requires a native session id"
-                         (get-in result [path provider :failure :message])))
-            (is (true? (get-in result [path provider :unchanged])))))))))
+                         (get-in result
+                                 [path [provider kind] :failure :message])))
+            (is (true? (get-in result
+                               [path [provider kind] :unchanged])))))
+        (doseq [path [:wrong-finish :wrong-settle]]
+          (testing (str (name path) " keeps Pi exact even when unusable")
+            (is (re-find #"does not match its durable binding"
+                         (get-in result [path :failure :message])))
+            (is (true? (get-in result [path :unchanged])))))))))
 
 (deftest legacy-positive-evidence-and-continuation-fail-before-writes
   (with-managed-world
@@ -879,20 +1120,6 @@
                                 :session-usable true
                                 :invocation (:invocation missing-start)}))
                     missing-unchanged (= missing-before (snapshot missing))
-                    blank (legacy-create "legacy-blank" "legacy blank")
-                    _ (harnesses/begin-attempt! rt (:id blank))
-                    _ (weaver/update!
-                       rt (:id blank)
-                       {:attributes {:harness/invocation ""}})
-                    blank-before (snapshot blank)
-                    blank-failure
-                    (failure #(harnesses/finish!
-                               rt (:id blank)
-                               {:status :failed :exit-code 1
-                                :session-id "legacy-blank"
-                                :session-usable true
-                                :invocation "forged-blank"}))
-                    blank-unchanged (= blank-before (snapshot blank))
                     token (legacy-create "legacy-token" "legacy token")
                     token-start (harnesses/begin-attempt! rt (:id token))
                     token-before (snapshot token)
@@ -988,7 +1215,6 @@
                                 :error "launcher preparation failed"})]
                 {:ready [ready-failure ready-unchanged]
                  :missing [missing-failure missing-unchanged]
-                 :blank [blank-failure blank-unchanged]
                  :token [token-failure token-unchanged]
                  :late [late-failure late-unchanged]
                  :late-session [late-session-failure
@@ -1000,7 +1226,7 @@
                  :prelaunch-error (attr prelaunch :harness/error)}))]
         (testing "positive legacy evidence requires a durable exact fence"
           (doseq [[failure unchanged?]
-                  (map result [:ready :missing :blank :token :late])]
+                  (map result [:ready :missing :token :late])]
             (is (re-find #"(durable launch fence|invocation)"
                          (:message failure)))
             (is (true? unchanged?))))

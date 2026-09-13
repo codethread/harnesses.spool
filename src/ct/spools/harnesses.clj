@@ -4,7 +4,6 @@
             [clojure.string :as str]
             [ct.spools.harnesses.catalog :as catalog]
             [ct.spools.harnesses.internal.lifecycle :as life]
-            [ct.spools.harnesses.internal.managed-legacy :as legacy]
             [ct.spools.harnesses.internal.managed-repair :as managed-repair]
             [ct.spools.harnesses.internal.managed-startup :as managed]
             [ct.spools.harnesses.internal.registry :as registry]
@@ -109,10 +108,7 @@
                          (assoc :harness/extra-argv literal-extra-argv))
              effective (registry/merge-overlays generated overrides)
              cwd (or cwd (System/getProperty "user.dir"))
-             predecessor (when resumes (runs/require-run rt resumes))
-             _ (when predecessor
-                 (legacy/validate-continuation-request!
-                  rt predecessor harness session-id))
+             requested-session-id session-id
              session-id (or session-id (str (UUID/randomUUID)))]
          (when by-identity
            (identity/current rt by-identity))
@@ -135,6 +131,7 @@
            :generated generated :env env :overrides overrides
            :effective effective :literal-extra-argv literal-extra-argv
            :cwd cwd :session-id session-id
+           :requested-session-id requested-session-id
            :prompt prompt :resumes resumes :after after :target target
            :root-targets root-targets :context context :request-id request-id
            :fingerprint fingerprint
@@ -212,23 +209,17 @@
     (let [run (runs/require-run rt id)
           current (life/invocation run)
           status (if (keyword? status) status (keyword (str status)))
-          _ (managed/require-legacy-positive-attempt!
-             run (assoc outcome :status status))
-          _ (when (and (= "running" (life/status run))
-                       (nil? invocation))
-              (fail! "Running harness finish requires its invocation token"
-                     {:id id :invocation current}))
           stale? (or (and invocation current (not= invocation current))
                      (life/terminal? run))]
       (if stale?
-        (require-valid!
-         ::strand
-         (weaver/update! rt id
-                         {:attributes
-                          {:harness/fenced-callbacks
-                           (inc (or (attr-get run :harness/fenced-callbacks) 0))}})
-         "finish! produced an invalid fenced run strand")
-        (let [_ (when-not (contains? #{"ready" "running"} (life/status run))
+        run
+        (let [_ (when (and (= "running" (life/status run))
+                           (nil? invocation))
+                  (fail! "Running harness finish requires its invocation token"
+                         {:id id :invocation current}))
+              _ (managed/require-legacy-positive-attempt!
+                 run (assoc outcome :status status))
+              _ (when-not (contains? #{"ready" "running"} (life/status run))
                   (fail! "Harness finish transition is invalid"
                          {:id id :status (life/status run) :outcome status}))
               _ (when (and (= :done status) (not= 0 exit-code))

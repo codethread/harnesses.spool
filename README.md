@@ -410,9 +410,9 @@ A managed Codex/Pi run accepted before reservation-backed startup has no
 after a Weaver upgrade validates that the original unreserved identity belongs
 to the provider and performed the run. It also requires a durable positive
 attempt and an exact nonblank invocation fence before preserving that evidence.
-Any assertion that the legacy session is usable must supply a nonblank observed
-session ID; Pi must still exactly match its durable binding, while Codex remains
-eligible only for explicit repair. A failed outcome with no usable session
+Every positive legacy outcome—completion or usable-session evidence—must supply
+its nonblank observed session ID. Pi must exactly match its durable binding;
+Codex may differ but remains eligible only for explicit repair. A failed outcome with no usable session
 carries no optional identity attachment; its exact-invocation custody settlement
 remains recordable even if the historical identity is missing or damaged. A genuine prelaunch failure remains recordable
 without an attempt. A damaged current run still has startup-v1 representation
@@ -421,8 +421,10 @@ and is rejected by the strict reservation checks; it is never treated as legacy.
 A legacy Pi run may continue only when its stored session exactly matches one
 unique unreserved Pi identity and the `performed` provenance is intact. A raw
 continuation request must explicitly retain both the resolved Pi provider and
-that exact session before any child or provenance write. That continuation and
-an in-place retry retain the identity, session, frozen settings, and legacy
+that exact session before any child or provenance write. Reservation-backed
+Codex/Pi continuations enforce the same explicit provider/session intent before
+commit. That continuation and an in-place retry retain the identity, session,
+frozen settings, and legacy
 launcher transport without claiming startup-v1 bootstrap or attachment evidence. A legacy Codex binding cannot prove that its provisional identity names
 the observed session, so Codex native resume remains unavailable until explicit
 repair. Fresh `--after` work uses a new reservation. Cancellation settlement says

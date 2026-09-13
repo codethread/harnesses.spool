@@ -8,6 +8,9 @@
 
 (def ^:private managed-harnesses #{"codex" "pi"})
 
+(defn- managed-provider? [run]
+  (contains? managed-harnesses (attr-get run :harness/harness)))
+
 (defn managed-run?
   "Return whether `run` has the pre-reservation managed representation.
 
@@ -16,7 +19,7 @@
   damaged current row retains at least its native attachment or provisional
   session field and must continue through the strict startup-v1 path."
   [run]
-  (and (contains? managed-harnesses (attr-get run :harness/harness))
+  (and (managed-provider? run)
        (= "true" (attr-get run :harness/published))
        (nil? (attr-get run :identity/reservation-id))
        (nil? (attr-get run :harness/native-attached))
@@ -110,24 +113,29 @@
     identity-strand))
 
 (defn validate-continuation-request!
-  "Validate raw provider and session intent for a legacy native continuation.
+  "Validate explicit provider and session intent for a managed continuation.
 
-  Current reservation-backed predecessors and non-managed providers are not
-  legacy continuations and are left to their ordinary validation paths."
+  Reservation-backed predecessors retain their attached provider and session.
+  Pre-reservation predecessors must additionally be genuine exact-binding Pi
+  runs. Non-managed providers retain their ordinary continuation path."
   [rt predecessor requested-harness requested-session-id]
-  (when (managed-run? predecessor)
-    (require-pi-continuation! rt predecessor)
-    (let [expected-session-id (attr-get predecessor :harness/session-id)]
-      (when-not (= "pi" requested-harness)
-        (fail! "Legacy Pi continuation cannot change its managed provider"
+  (when (managed-provider? predecessor)
+    (let [expected-harness (attr-get predecessor :harness/harness)
+          expected-session-id (attr-get predecessor :harness/session-id)]
+      (when-not (= expected-harness requested-harness)
+        (fail! "Managed continuation cannot change its provider"
                {:predecessor (:id predecessor)
-                :expected "pi"
+                :expected expected-harness
                 :requested requested-harness}))
-      (when-not (= expected-session-id requested-session-id)
-        (fail! "Legacy Pi continuation requires its exact native session"
+      (when-not (and (string? requested-session-id)
+                     (not (str/blank? requested-session-id))
+                     (= expected-session-id requested-session-id))
+        (fail! "Managed continuation requires its exact explicit native session"
                {:predecessor (:id predecessor)
                 :expected expected-session-id
-                :requested requested-session-id}))))
+                :requested requested-session-id})))
+    (when (managed-run? predecessor)
+      (require-pi-continuation! rt predecessor)))
   nil)
 
 (defn commit-pi-identity!
@@ -171,11 +179,11 @@
   (or (= :done (if (keyword? status) status (keyword status)))
       (true? session-usable)))
 
-(defn- require-usable-session-id!
-  [run {:keys [session-id session-usable]}]
-  (when (and (managed-run? run) (true? session-usable)
+(defn- require-positive-session-id!
+  [run {:keys [session-id] :as outcome}]
+  (when (and (managed-run? run) (positive-outcome? outcome)
              (not (and (string? session-id) (not (str/blank? session-id)))))
-    (fail! "Usable legacy session evidence requires a native session id"
+    (fail! "Positive legacy outcome requires a native session id"
            {:run-id (:id run) :session-id session-id}))
   nil)
 
@@ -185,7 +193,7 @@
   Failed prelaunch outcomes without usable session evidence remain valid and do
   not require an attempt."
   [run {:keys [invocation] :as outcome}]
-  (require-usable-session-id! run outcome)
+  (require-positive-session-id! run outcome)
   (when (and (managed-run? run) (positive-outcome? outcome))
     (let [attempt (attr-get run :harness/attempt)
           durable-invocation (attr-get run :harness/invocation)]
@@ -219,9 +227,9 @@
   nil)
 
 (defn- require-pi-session-evidence!
-  [rt run session-id session-usable]
+  [rt run session-id outcome]
   (when (and (= "pi" (attr-get run :harness/harness))
-             (true? session-usable))
+             (positive-outcome? outcome))
     (let [identity-strand (require-pi-continuation! rt run)
           durable-session-id (attr-get run :harness/session-id)
           identity-session-id
@@ -239,10 +247,10 @@
 
   Failed outcomes without usable session evidence have nothing to attach and do
   not depend on the historical identity remaining valid."
-  [rt run {:keys [session-id session-usable] :as outcome}]
-  (require-usable-session-id! run outcome)
+  [rt run {:keys [session-id] :as outcome}]
+  (require-positive-session-id! run outcome)
   (when (and (managed-run? run) (positive-outcome? outcome))
     (require-positive-invocation! run outcome)
     (require-binding! rt run)
-    (require-pi-session-evidence! rt run session-id session-usable))
+    (require-pi-session-evidence! rt run session-id outcome))
   nil)
