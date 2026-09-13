@@ -1,3 +1,4 @@
 config.local.json
 init.local.clj
 deps.local.edn
+state/
