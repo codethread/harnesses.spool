@@ -1,7 +1,10 @@
+CLJ := clojure
 CLJ_KONDO := clj-kondo
 CLJ_KONDO_VERSION := 2026.08.04
 
-.PHONY: test format format-fix lint lint-splint check check-clj-kondo
+.PHONY: test format format-fix lint lint-splint check check-clj-kondo \
+	kondo kondo-import kondo-import-root kondo-import-workspace \
+	kondo-lint kondo-lint-root kondo-lint-workspace lsp-diagnostics
 
 test:
 	clojure -M:test
@@ -12,10 +15,46 @@ format:
 format-fix:
 	clojure -M:format/fix
 
-lint: check-clj-kondo
+lint: kondo
+
+kondo: kondo-import
+	$(MAKE) kondo-lint
+
+kondo-import: check-clj-kondo
+	$(MAKE) kondo-import-root
+	$(MAKE) kondo-import-workspace
+
+kondo-import-root:
 	mkdir -p .clj-kondo
-	$(CLJ_KONDO) --repro --lint "$$(clojure -Spath -M:test)" --dependencies --parallel --copy-configs --skip-lint
+	rm -rf .clj-kondo/imports
+	set -e; classpath="$$($(CLJ) -Srepro -Spath -M:test)"; \
+		$(CLJ_KONDO) --repro --lint "$$classpath" --copy-configs --skip-lint
+
+kondo-import-workspace:
+	mkdir -p .millstrand/.clj-kondo
+	rm -rf .millstrand/.clj-kondo/imports
+	cd .millstrand && set -e && classpath="$$($(CLJ) -Srepro -Spath)" && \
+		$(CLJ_KONDO) --repro --lint "$$classpath" --copy-configs --skip-lint
+
+kondo-lint:
+	$(MAKE) kondo-lint-root
+	$(MAKE) kondo-lint-workspace
+
+kondo-lint-root:
 	$(CLJ_KONDO) --repro --parallel --lint src test
+
+kondo-lint-workspace:
+	cd .millstrand && $(CLJ_KONDO) --repro --parallel --lint init.clj
+
+lsp-diagnostics:
+	@set -e; xdg="$$(mktemp -d)"; cache="$$(mktemp -d)"; \
+		trap 'rm -rf "$${xdg:?}" "$${cache:?}"' EXIT; \
+		XDG_CONFIG_HOME="$$xdg" clojure-lsp diagnostics --raw --project-root . \
+			--settings "{:cache-path \"$$cache\" :project-specs [{:project-path \"deps.edn\" :classpath-cmd [\"clojure\" \"-Srepro\" \"-Spath\" \"-M:test\"]}]}" \
+			--filenames src,test; \
+		XDG_CONFIG_HOME="$$xdg" clojure-lsp diagnostics --raw --project-root .millstrand \
+			--settings "{:cache-path \"$$cache\" :project-specs [{:project-path \"deps.edn\" :classpath-cmd [\"clojure\" \"-Srepro\" \"-Spath\"]}]}" \
+			--filenames init.clj
 
 check-clj-kondo:
 	@command -v $(CLJ_KONDO) >/dev/null 2>&1 || { \
@@ -32,4 +71,4 @@ check-clj-kondo:
 lint-splint:
 	clojure -M:lint/splint
 
-check: format lint lint-splint test
+check: format kondo lint-splint test

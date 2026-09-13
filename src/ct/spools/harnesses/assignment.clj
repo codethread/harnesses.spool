@@ -75,13 +75,11 @@
       :name ~(keyword policy-sym)
       :text ~text}))
 
-#_{:clj-kondo/ignore [:unresolved-symbol]}
 (def-assign-policy close-on-complete
   "When the work is complete, close the assigned feature yourself with
   `strand kanban finish <target-id>`. The coordinator does not need to accept
   it separately.")
 
-#_{:clj-kondo/ignore [:unresolved-symbol]}
 (def-assign-policy stop-on-complete
   "When the work is complete, leave the assigned feature open and return a
   useful result for coordinator acceptance.")

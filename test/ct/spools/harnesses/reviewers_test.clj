@@ -357,7 +357,7 @@
 
 (def ^:private consumer-kondo-import-command
   ["sh" "-c"
-   "clojure -M:lint --lint \"$(clojure -Spath)\" --dependencies --parallel --copy-configs --skip-lint"])
+   "set -e; classpath=\"$(clojure -Srepro -Spath)\"; clojure -M:lint --lint \"$classpath\" --copy-configs --skip-lint"])
 
 (def ^:private consumer-kondo-lint-command
   ["clojure" "-M:lint" "--lint" "src" "--cache" "false"])
@@ -379,7 +379,7 @@
 (defn- consumer-deps [repository]
   {:paths ["src"]
    :deps {'ct.spools/harnesses {:local/root (.getCanonicalPath repository)}
-          'clj-kondo/clj-kondo {:mvn/version "2025.06.05"}}
+          'clj-kondo/clj-kondo {:mvn/version "2026.08.04"}}
    :aliases {:lint {:main-opts ["-m" "clj-kondo.main"]}}})
 
 (deftest reviewer-export-imports-and-lints-consumer-macros
@@ -397,7 +397,11 @@
          "src/consumer/reviewers.clj"
          (str "(ns consumer.reviewers\n"
               "  \"Consumer reviewer macro proof.\"\n"
-              "  (:require [ct.spools.harnesses.reviewers :as reviewers]))\n\n"
+              "  (:require [ct.spools.harnesses.assignment :as assignment]\n"
+              "            [ct.spools.harnesses.reviewers :as reviewers]))\n\n"
+              "(assignment/def-assign-policy consumer-policy\n"
+              "  \"Keep the feature open for review.\")\n"
+              "(def consumer-policy-copy consumer-policy)\n"
               "(reviewers/defreviewer inert-reviewer\n"
               "  \"An inert reviewer declaration.\"\n"
               "  {:seat 'reviewer}\n"
