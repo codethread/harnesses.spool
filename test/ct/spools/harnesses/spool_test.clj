@@ -163,6 +163,96 @@
                             run :harness/appended-system-prompts)]))
                       ["--effort" "--thinking"]
                       ["adaptive" "maximum"]))))))
+        (testing "run provider argv uses ordinary caller overlay precedence"
+          (is (= {:generated ["--from-alias"]
+                  :overrides ["--provider-flag" "value with spaces" "" "--"
+                              ":stdin" ":payload/example"
+                              "Keep {{RUN_ID}} and {{AGENT_ID}} literal"]
+                  :effective ["--provider-flag" "value with spaces" "" "--"
+                              ":stdin" ":payload/example"
+                              "Keep {{RUN_ID}} and {{AGENT_ID}} literal"]
+                  :resumed ["--provider-flag" "value with spaces" "" "--"
+                            ":stdin" ":payload/example"
+                            "Keep {{RUN_ID}} and {{AGENT_ID}} literal"]
+                  :launcher true}
+                 (test-alpha/repl!
+                  ctx
+                  '(let [rt (millstrand.api.current.alpha/runtime)
+                         _ (harnesses/register-alias!
+                            rt :cli-tail
+                            {:doc "Exercise provider argv forwarding."
+                             :parent :pi
+                             :attributes
+                             {:harness/extra-argv ["--from-alias"]}})
+                         created
+                         (millstrand.api.weaver.alpha/op!
+                          rt 'agent
+                          ["run" "cli-tail" "--interactive" "--cwd" "/tmp"
+                           "--extra-argv" "=--provider-flag"
+                           "--extra-argv" "=value with spaces"
+                           "--extra-argv" "="
+                           "--extra-argv" "=--"
+                           "--extra-argv" "=:stdin"
+                           "--extra-argv" "=:payload/example"
+                           "--extra-argv"
+                           "=Keep {{RUN_ID}} and {{AGENT_ID}} literal"])
+                         run (millstrand.api.weaver.alpha/show rt (:id created))
+                         _ (harnesses/finish!
+                            rt (:id run)
+                            {:status :done :exit-code 0 :session-usable true})
+                         resumed (harnesses/resume! rt (:id run) {})]
+                     {:generated
+                      (get-in run [:attributes :harness/generated
+                                   :harness/extra-argv])
+                      :overrides
+                      (get-in run [:attributes :harness/overrides
+                                   :harness/extra-argv])
+                      :effective
+                      (millstrand.api.spool.alpha/attr-get
+                       run :harness/extra-argv)
+                      :resumed
+                      (millstrand.api.spool.alpha/attr-get
+                       resumed :harness/extra-argv)
+                      :launcher
+                      (let [script (slurp (:launcher created))]
+                        (and
+                         (clojure.string/includes?
+                          script
+                          "'--provider-flag' 'value with spaces' '' '--'")
+                         (clojure.string/includes?
+                          script
+                          "':stdin' ':payload/example'")
+                         (clojure.string/includes?
+                          script
+                          "'Keep {{RUN_ID}} and {{AGENT_ID}} literal'")))})))))
+        (testing "configured provider argv keeps invocation templating"
+          (is (true?
+               (test-alpha/repl!
+                ctx
+                '(let [rt (millstrand.api.current.alpha/runtime)
+                       _ (harnesses/register-alias!
+                          rt :configured-markers
+                          {:doc "Exercise configured argv templating."
+                           :parent :pi
+                           :attributes
+                           {:harness/extra-argv
+                            ["Configured {{RUN_ID}} and {{AGENT_ID}}"]}})
+                       created
+                       (millstrand.api.weaver.alpha/op!
+                        rt 'agent
+                        ["run" "configured-markers" "--interactive"
+                         "--cwd" "/tmp"])
+                       run (millstrand.api.weaver.alpha/show rt (:id created))
+                       identity
+                       (millstrand.api.spool.alpha/attr-get run :identity/id)
+                       expected (str "Configured " (:id run) " and " identity)]
+                   (and
+                    (= [expected]
+                       (millstrand.api.spool.alpha/attr-get
+                        run :harness/extra-argv))
+                    (clojure.string/includes?
+                     (slurp (:launcher created))
+                     (str "'" expected "'"))))))))
         (testing "aliases expose documentation, model, and open effort"
           (is (= {:registration
                   {:alias "reviewer"

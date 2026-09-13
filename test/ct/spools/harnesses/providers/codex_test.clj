@@ -22,7 +22,8 @@
             ["Review changes only." "Do not edit files."]
             :harness/model "gpt-test"
             :harness/effort "low"
-            :harness/extra-argv ["--skip-git-repo-check"]}
+            :harness/extra-argv
+            ["--skip-git-repo-check" "--provider-option" "value with spaces" ""]}
            attributes)}))
 
 (deftest prepare-builds-new-and-resumed-launch-specifications
@@ -34,7 +35,8 @@
                    (str "developer_instructions=\"You are agent tidy-brave-swan."
                         "\\n\\nReview changes only."
                         "\\n\\nDo not edit files.\"")
-                   "--skip-git-repo-check"]
+                   "--skip-git-repo-check"
+                   "--provider-option" "value with spaces" ""]
             :stdin "Do the work\n"}
            (codex/prepare runtime definition (run "headless")))))
   (testing "headless resume names the session and reapplies pinned guidance"
@@ -45,7 +47,8 @@
                    (str "developer_instructions=\"You are agent tidy-brave-swan."
                         "\\n\\nReview changes only."
                         "\\n\\nDo not edit files.\"")
-                   "--skip-git-repo-check" "provisional" "-"]
+                   "--skip-git-repo-check"
+                   "--provider-option" "value with spaces" "" "provisional" "-"]
             :stdin "Do the work\n"}
            (codex/prepare runtime definition
                           (run "headless" {:harness/resumes "prior"})))))
@@ -57,7 +60,9 @@
                    (str "developer_instructions=\"You are agent tidy-brave-swan."
                         "\\n\\nReview changes only."
                         "\\n\\nDo not edit files.\"")
-                   "--skip-git-repo-check" "provisional" "Do the work"]
+                   "--skip-git-repo-check"
+                   "--provider-option" "value with spaces" ""
+                   "provisional" "Do the work"]
             :stdin nil}
            (codex/prepare runtime definition
                           (run "interactive" {:harness/resumes "prior"})))))
@@ -69,7 +74,8 @@
                    (str "developer_instructions=\"You are agent tidy-brave-swan."
                         "\\n\\nReview changes only."
                         "\\n\\nDo not edit files.\"")
-                   "--skip-git-repo-check" "Do the work"]
+                   "--skip-git-repo-check"
+                   "--provider-option" "value with spaces" "" "Do the work"]
             :stdin nil}
            (codex/prepare runtime definition (run "interactive"))))))
 

@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 set -u
 
 strand_call() {
@@ -15,15 +15,16 @@ print_help() {
 Launch a tracked interactive coding-agent session.
 
 Usage:
-  mill bin run agent <agent> [options]
-  mill bin run agent --fzf [options]
+  mill bin run agent <agent> [wrapper options] -- <provider args>
+  mill bin run agent --fzf [wrapper options] -- <provider args>
   mill bin run agent resume [run-id]
 
-The agent bin creates or resumes an interactive agent run. Pass `--fzf` in
-place of an agent to pick from registered provider harnesses and aliases.
-Without a run ID, `agent resume` presents completed interactive runs in an fzf
-picker. It starts the selected provider in this terminal and records its
-lifecycle in Millstrand.
+The agent bin creates or resumes an interactive agent run. For a new run, the
+first literal `--` ends wrapper options; every following argument is forwarded
+verbatim to the provider. Pass `--fzf` in place of an agent to pick from
+registered provider harnesses and aliases. Without a run ID, `agent resume`
+presents completed interactive runs in an fzf picker. It starts the selected
+provider in this terminal and records its lifecycle in Millstrand.
 
 Arguments:
   <agent>                     A registered provider harness or alias.
@@ -40,6 +41,11 @@ Options forwarded to `strand agent run`:
   --title <text>              Title for the tracked run.
   --attributes <json-object>  Harness configuration overlay.
   -h, --help                  Show this help.
+
+Provider arguments:
+  Everything after the first `--` is appended to the provider argv exactly in
+  the order supplied. Quote shell arguments normally to preserve spaces.
+  Payload-reference and invocation-marker shaped values remain literal.
 
 Available agents:
 EOF
@@ -68,11 +74,44 @@ EOF
   '
 }
 
+split_arguments() {
+  wrapper_args=()
+  provider_args=()
+  local provider_tail=false
+  local argument
+
+  for argument in "$@"; do
+    if ! $provider_tail && [[ "$argument" == "--" ]]; then
+      provider_tail=true
+    elif $provider_tail; then
+      provider_args+=("$argument")
+    else
+      wrapper_args+=("$argument")
+    fi
+  done
+}
+
+run_interactive() {
+  local argv=(agent run "$@")
+  local argument
+
+  for argument in "${provider_args[@]}"; do
+    # Millstrand resolves whole-value payload references before dispatch. Prefix
+    # this private transport value so provider strings such as :stdin remain
+    # literal; the agent operation removes exactly this prefix.
+    argv+=(--extra-argv "=$argument")
+  done
+  argv+=(--interactive)
+  strand_call "${argv[@]}"
+}
+
 # Parse the complete lifecycle before launching an interactive process. Shells may
 # otherwise continue reading this file after the process exits, so an agent that
 # edits this script during its session can corrupt the running shell's input.
 main() {
-for argument in "$@"; do
+split_arguments "$@"
+
+for argument in "${wrapper_args[@]}"; do
   case "$argument" in
     -h|--help)
       print_help
@@ -81,8 +120,8 @@ for argument in "$@"; do
   esac
 done
 
-if [ "${1:-}" = "--fzf" ]; then
-  shift
+if [[ "${wrapper_args[0]:-}" == "--fzf" ]]; then
+  wrapper_args=("${wrapper_args[@]:1}")
   selected="$(strand_call agent list --full | jq -r '
     map(select(.available))
     | (map(.name | length) | max) as $name_width
@@ -100,14 +139,18 @@ if [ "${1:-}" = "--fzf" ]; then
   ' | fzf --ansi --delimiter='\t' --with-nth=2.. --prompt='Agent> ')" || exit $?
   [ -n "$selected" ] || exit 1
   agent="$(printf '%s\n' "$selected" | cut -f1)"
-  created="$(strand_call agent run "$agent" "$@" --interactive)" || exit $?
-elif [ "${1:-}" = "resume" ]; then
-  shift
-  if [ "$#" -gt 1 ]; then
+  created="$(run_interactive "$agent" "${wrapper_args[@]}")" || exit $?
+elif [[ "${wrapper_args[0]:-}" == "resume" ]]; then
+  if [[ "${#provider_args[@]}" -gt 0 ]]; then
+    printf '%s\n' "agent resume does not accept provider arguments" >&2
+    exit 2
+  fi
+  wrapper_args=("${wrapper_args[@]:1}")
+  if [[ "${#wrapper_args[@]}" -gt 1 ]]; then
     printf '%s\n' "agent resume accepts at most one run ID" >&2
     exit 2
   fi
-  predecessor="${1:-}"
+  predecessor="${wrapper_args[0]:-}"
   if [ -z "$predecessor" ]; then
     selected="$(strand_call agent resumable | jq -r '
       def clean: tostring | gsub("[\\t\\r\\n]"; " ");
@@ -129,7 +172,7 @@ elif [ "${1:-}" = "resume" ]; then
   fi
   created="$(strand_call agent resume --run-id "$predecessor" --interactive)" || exit $?
 else
-  created="$(strand_call agent run "$@" --interactive)" || exit $?
+  created="$(run_interactive "${wrapper_args[@]}")" || exit $?
 fi
 run_id="$(printf '%s' "$created" | jq -r '.id')"
 launcher="$(printf '%s' "$created" | jq -r '.launcher')"

@@ -1,6 +1,7 @@
 (ns ct.spools.harnesses.test-runner
   "Cold test runner for the consolidated Harnesses spool."
   (:require [clojure.test :as test]
+            [ct.spools.harnesses.agent-bin-test]
             [ct.spools.harnesses.assignment-test]
             [ct.spools.harnesses.execution-assignment-test]
             [ct.spools.harnesses.executors.agent-test]
@@ -15,7 +16,8 @@
             [ct.spools.harnesses.spool-test]))
 
 (def ^:private test-namespaces
-  '[ct.spools.harnesses.assignment-test
+  '[ct.spools.harnesses.agent-bin-test
+    ct.spools.harnesses.assignment-test
     ct.spools.harnesses.executors.agent-test
     ct.spools.harnesses.lifecycle-test
     ct.spools.harnesses.providers.claude-test

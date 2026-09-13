@@ -220,6 +220,17 @@
     (map? value) value
     :else (fail! "--context must be a JSON object" {:context value})))
 
+(defn- literal-extra-argv
+  "Decode provider argv protected from whole-value payload resolution."
+  [values]
+  (when values
+    (mapv (fn [value]
+            (when-not (str/starts-with? value "=")
+              (fail! "--extra-argv requires literal transport encoding"
+                     {:extra-argv value}))
+            (subs value 1))
+          values)))
+
 (defn- summary
   "Project one run into the compact record every agent verb returns.
 
@@ -329,11 +340,12 @@
     accepted))
 
 (defn- op-run
-  [rt {:keys [agent interactive prompt append-system-prompt cwd attributes title
-              by-identity target context request-id]
+  [rt {:keys [agent interactive prompt append-system-prompt extra-argv cwd
+              attributes title by-identity target context request-id]
        :as args}
    op-cwd]
   (let [effort (if (contains? args :effort) (:effort args) (:thinking args))
+        raw-extra-argv (literal-extra-argv extra-argv)
         attributes (cond-> (overlay-map attributes)
                      (some? effort) (assoc :harness/effort effort))
         run (harness/create!
@@ -342,6 +354,8 @@
                       :mode (if interactive :interactive :headless)
                       :cwd (or cwd op-cwd)
                       :attributes attributes}
+               (some? raw-extra-argv)
+               (assoc :literal-extra-argv raw-extra-argv)
                (some? prompt) (assoc :prompt prompt)
                (some? append-system-prompt)
                (assoc :append-system-prompt append-system-prompt)
