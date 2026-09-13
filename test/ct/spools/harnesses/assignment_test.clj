@@ -57,6 +57,7 @@
               '[ct.spools.harnesses.assignment :as assignment]
               '[ct.spools.harnesses.providers.pi :as pi]
               '[ct.spools.harnesses.execution :as execution]
+              '[ct.spools.harnesses.internal.process-custody :as custody]
               '[millstrand.api.current.alpha :as current]
               '[millstrand.api.graph.alpha :as graph]
               '[millstrand.api.runtime.alpha :as runtime]
@@ -531,6 +532,90 @@
         (is (re-find #"already has an accepted continuation"
                      (:stale-native result)))
         (is (= (:child result) (:selected result)))))))
+
+(deftest only-typed-malformed-launch-settles-without-custody
+  (with-assignment-world
+    (fn [ctx]
+      (let [result
+            (eval-world
+             ctx
+             '(do
+                (defn launch-prepare [_rt _definition _run]
+                  {:argv ["/bin/true"] :env {} :stdin nil})
+                (defn launch-finish [_rt _definition _run _observed]
+                  {:status :done :exit-code 0 :result "unexpected"})
+                (harnesses/register-harness!
+                 rt :launch-test
+                 {:modes #{:headless}
+                  :prepare (symbol (str (ns-name *ns*)) "launch-prepare")
+                  :finish (symbol (str (ns-name *ns*)) "launch-finish")})
+                (let [opened (#'execution/activate-state! rt)
+                      launch-error (atom nil)]
+                  (try
+                    (let [failures
+                          (with-redefs-fn
+                            {#'custody/launch!
+                             (fn [& _] (throw @launch-error))
+                             #'execution/inspect-owned! (constantly nil)
+                             #'execution/schedule! (constantly [])}
+                            #(mapv
+                              (fn [[case error]]
+                                (let [target (add-target! (str "Launch " case))
+                                      run (assign! (:id target)
+                                                   {:harness :launch-test
+                                                    :request-id (str "launch-" case)})]
+                                  (reset! launch-error error)
+                                  (#'execution/launch-headless! rt (:id run))
+                                  (let [failed (weaver/show rt (:id run))]
+                                    {:case case
+                                     :status (attr failed :harness/status)
+                                     :substatus (attr failed :harness/substatus)
+                                     :settled (attr failed :harness/settled)
+                                     :settlement (attr failed :harness/settlement)})))
+                              [["malformed"
+                                (ex-info "cwd does not exist"
+                                         {:code "process/malformed-launch"})]
+                               ["control"
+                                (ex-info "control unavailable"
+                                         {:code "process/control-unavailable"})]
+                               ["generic"
+                                (ex-info "generic process failure"
+                                         {:code "process/error"})]
+                               ["conflict"
+                                (ex-info "reservation conflict"
+                                         {:code "process/conflicting-key"})]
+                               ["untyped"
+                                (ex-info "ambiguous launch failure" {})]]))]
+                      (test-alpha/await-quiescent! rt)
+                      failures)
+                    (finally
+                      ((:close-fn (#'execution/deactivate-state! rt))))))))]
+        (is (= [{:case "malformed"
+                 :status "failed"
+                 :substatus "launch"
+                 :settled "true"
+                 :settlement "launch-failure"}
+                {:case "control"
+                 :status "failed"
+                 :substatus "execution"
+                 :settled "false"
+                 :settlement "no-terminal-evidence"}
+                {:case "generic"
+                 :status "failed"
+                 :substatus "execution"
+                 :settled "false"
+                 :settlement "no-terminal-evidence"}
+                {:case "conflict"
+                 :status "failed"
+                 :substatus "execution"
+                 :settled "false"
+                 :settlement "no-terminal-evidence"}
+                {:case "untyped"
+                 :status "failed"
+                 :substatus "execution"
+                 :settled "false"
+                 :settlement "no-terminal-evidence"}]
+               result))))))
 
 (deftest concurrent-schedulers-and-stale-workers-cannot-share-ownership
   (let [run {:id "run-1"}

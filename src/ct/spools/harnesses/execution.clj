@@ -450,21 +450,28 @@
           (if (life/terminal? (full-run rt id))
             (throw e)
             (let [current (full-run rt id)
+                  error-data (ex-data e)
                   message (str (ex-message e)
-                               (when-let [data (ex-data e)]
-                                 (str " " (pr-str data))))
+                               (when error-data
+                                 (str " " (pr-str error-data))))
+                  evidence
+                  (if (= "process/malformed-launch" (:code error-data))
+                    (assoc (life/settlement-evidence
+                            {:launch-failure error-data})
+                           :failure-class "launch")
+                    {:settled false
+                     :settlement "no-terminal-evidence"
+                     :failure-class
+                     (if (attr-get current :harness/process-handle)
+                       "execution"
+                       "launch")})
                   transition-error
                   (try
                     (harness/finish!
                      rt id
                      {:status :failed
                       :invocation invocation
-                      :evidence {:settled false
-                                 :settlement "no-terminal-evidence"
-                                 :failure-class
-                                 (if (attr-get current :harness/process-handle)
-                                   "execution"
-                                   "launch")}
+                      :evidence evidence
                       :error message})
                     nil
                     (catch Throwable finish-error finish-error))]
