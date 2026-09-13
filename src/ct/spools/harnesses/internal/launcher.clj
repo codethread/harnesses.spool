@@ -1,6 +1,7 @@
 (ns ct.spools.harnesses.internal.launcher
   "Host-TTY launcher materialization for interactive harness runs."
-  (:require [clojure.java.io :as io]
+  (:require [clojure.data.json :as json]
+            [clojure.java.io :as io]
             [clojure.string :as str]
             [millstrand.api.spool.alpha :refer [attr-get fail!]])
   (:import [java.nio.file Files]
@@ -19,6 +20,9 @@
 (defn- launcher-dir [runtime]
   (doto (io/file (get-in runtime [:metadata :state-dir]) "harness-launchers")
     (.mkdirs)))
+
+(def ^:private bootstrap-sentinel
+  "# MILLSTRAND_MANAGED_BOOTSTRAP_PENDING\nprintf '%s\\n' 'managed agent launcher was not armed' >&2\nexit 1\n")
 
 (defn workspace
   "Return the authoritative workspace configured for `runtime`."
@@ -40,6 +44,8 @@
     (spit file
           (str "#!/bin/sh\n"
                provider-exports
+               (when (attr-get run :identity/reservation-id)
+                 bootstrap-sentinel)
                "export MILLSTRAND_RUN_ID=" (sh-quote (:id run)) "\n"
                "export MILLSTRAND_AGENT_ID="
                (sh-quote (attr-get run :identity/id)) "\n"
@@ -50,4 +56,20 @@
     (Files/setPosixFilePermissions
      (.toPath file)
      (PosixFilePermissions/fromString "rwx------"))
+    (.getCanonicalPath file)))
+
+(defn arm!
+  "Replace one managed launcher's fail-closed sentinel with bootstrap export."
+  [runtime run bootstrap]
+  (let [file (io/file (launcher-dir runtime) (str (:id run) ".sh"))
+        source (slurp file)
+        first-index (str/index-of source bootstrap-sentinel)
+        last-index (str/last-index-of source bootstrap-sentinel)]
+    (when-not (and (some? first-index) (= first-index last-index))
+      (fail! "Managed launcher has no unique bootstrap sentinel"
+             {:run-id (:id run) :launcher (.getCanonicalPath file)}))
+    (spit file
+          (str/replace source bootstrap-sentinel
+                       (str "export MILLSTRAND_MANAGED_BOOTSTRAP="
+                            (sh-quote (json/write-str bootstrap)) "\n")))
     (.getCanonicalPath file)))

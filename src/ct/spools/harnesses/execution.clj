@@ -1,10 +1,12 @@
 (ns ct.spools.harnesses.execution
   "Asynchronous and interactive execution for provider-neutral harness runs."
-  (:require [clojure.spec.alpha :as s]
+  (:require [clojure.data.json :as json]
+            [clojure.spec.alpha :as s]
             [ct.spools.harnesses :as harness]
             [ct.spools.harnesses.assignment :as assignment]
             [ct.spools.harnesses.internal.launcher :as launcher]
             [ct.spools.harnesses.internal.lifecycle :as life]
+            [ct.spools.harnesses.internal.managed-startup :as managed]
             [ct.spools.harnesses.internal.process-custody :as custody]
             [ct.spools.harnesses.internal.runs :as runs]
             [millstrand.api.current.alpha :as current]
@@ -117,12 +119,27 @@
       (throw e))))
 
 (defn mark-interactive-running!
-  "Mark an interactive harness run as started, minting its fencing token."
+  "Mark an interactive run as started and arm its managed bootstrap."
   [rt id]
   (let [run (full-run rt id)]
     (when-not (= "interactive" (attr-get run :harness/mode))
       (fail! "_started applies only to interactive harness runs" {:id id}))
-    (:strand (harness/begin-attempt! rt id))))
+    (let [{:keys [strand invocation]} (harness/begin-attempt! rt id)]
+      (try
+        (when-let [bootstrap (managed/bootstrap rt strand)]
+          (launcher/arm! rt strand bootstrap))
+        strand
+        (catch Throwable error
+          (harness/finish!
+           rt id
+           {:status :failed
+            :invocation invocation
+            :evidence {:settled true
+                       :settlement "launch-not-started"
+                       :failure-class "launch"}
+            :error (str "Unable to arm managed launcher: "
+                        (ex-message error))})
+          (throw error))))))
 
 (defn finish-interactive!
   "Finish an interactive run through its provider callback."
@@ -339,14 +356,18 @@
      "Harness prepare must return a valid launch specification")))
 
 (defn- process-spec [rt run {:keys [argv env stdin]}]
-  {:argv argv
-   :cwd (attr-get run :harness/cwd)
-   :env (cond-> (assoc (or env {})
-                       "MILLSTRAND_RUN_ID" (:id run)
-                       "MILLSTRAND_WORKSPACE" (launcher/workspace rt))
-          (attr-get run :identity/id)
-          (assoc "MILLSTRAND_AGENT_ID" (attr-get run :identity/id)))
-   :stdin stdin})
+  (let [bootstrap (managed/bootstrap rt run)]
+    {:argv argv
+     :cwd (attr-get run :harness/cwd)
+     :env (cond-> (assoc (or env {})
+                         "MILLSTRAND_RUN_ID" (:id run)
+                         "MILLSTRAND_WORKSPACE" (launcher/workspace rt))
+            (attr-get run :identity/id)
+            (assoc "MILLSTRAND_AGENT_ID" (attr-get run :identity/id))
+            bootstrap
+            (assoc "MILLSTRAND_MANAGED_BOOTSTRAP"
+                   (json/write-str bootstrap)))
+     :stdin stdin}))
 
 (defn- finish-process!
   "Record one terminal custody fact as a fenced outcome plus settlement evidence.
@@ -371,13 +392,13 @@
                           :stderr (or (:stderr observed)
                                       (custody/terminal-error raw)
                                       "Process custody terminal failure")))
-        outcome ((callback (:finish definition)) rt definition run observed)]
+        outcome (assoc ((callback (:finish definition))
+                        rt definition run observed)
+                       :invocation (life/invocation run))]
     (if (life/terminal? (full-run rt (:id run)))
       (harness/settle-outcome! rt (:id run) outcome evidence)
       (harness/finish! rt (:id run)
-                       (assoc outcome
-                              :invocation (life/invocation run)
-                              :evidence evidence)))
+                       (assoc outcome :evidence evidence)))
     (custody/acknowledge! rt record)))
 
 (defn- enforce-stop!

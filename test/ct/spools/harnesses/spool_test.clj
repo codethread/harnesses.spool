@@ -45,8 +45,8 @@
                                   (mapcat #(vector % :subcommands) (butlast path))
                                   [(last path) :flags])))
                    :by-identity)))
-  (doseq [path [["_started"] ["_finished"] ["config" "list"]
-                ["config" "set"] ["config" "unset"]]]
+  (doseq [path [["startup"] ["repair-startup"] ["_started"] ["_finished"]
+                ["config" "list"] ["config" "set"] ["config" "unset"]]]
     (is (not (contains? (or (get-in cli/agent-arg-spec
                                     (into [:subcommands]
                                           (concat
@@ -174,6 +174,8 @@
                   :resumed ["--provider-flag" "value with spaces" "" "--"
                             ":stdin" ":payload/example"
                             "Keep {{RUN_ID}} and {{AGENT_ID}} literal"]
+                  :retried ["--one" "{{RUN_ID}}" "{{AGENT_ID}}"
+                            ":stdin" ":payload/example"]
                   :launcher true}
                  (test-alpha/repl!
                   ctx
@@ -197,10 +199,61 @@
                            "--extra-argv"
                            "=Keep {{RUN_ID}} and {{AGENT_ID}} literal"])
                          run (millstrand.api.weaver.alpha/show rt (:id created))
+                         started (harnesses/begin-attempt! rt (:id run))
+                         _ (harnesses/managed-startup!
+                            rt {:harness "pi"
+                                :native-session-id
+                                (millstrand.api.spool.alpha/attr-get
+                                 run :harness/session-id)
+                                :cwd "/tmp"
+                                :scope "root"
+                                :bootstrap
+                                (harnesses/managed-bootstrap rt (:id run))})
                          _ (harnesses/finish!
                             rt (:id run)
-                            {:status :done :exit-code 0 :session-usable true})
-                         resumed (harnesses/resume! rt (:id run) {})]
+                            {:status :done
+                             :exit-code 0
+                             :session-id
+                             (millstrand.api.spool.alpha/attr-get
+                              run :harness/session-id)
+                             :session-usable true
+                             :invocation (:invocation started)})
+                         resumed (harnesses/resume! rt (:id run) {})
+                         retry-created
+                         (millstrand.api.weaver.alpha/op!
+                          rt 'agent
+                          ["run" "pi" "--interactive" "--cwd" "/tmp"
+                           "--extra-argv" "=--one"
+                           "--extra-argv" "={{RUN_ID}}"
+                           "--extra-argv" "={{AGENT_ID}}"
+                           "--extra-argv" "=:stdin"
+                           "--extra-argv" "=:payload/example"])
+                         retry-run
+                         (millstrand.api.weaver.alpha/show
+                          rt (:id retry-created))
+                         retry-start
+                         (harnesses/begin-attempt! rt (:id retry-run))
+                         _ (harnesses/managed-startup!
+                            rt {:harness "pi"
+                                :native-session-id
+                                (millstrand.api.spool.alpha/attr-get
+                                 retry-run :harness/session-id)
+                                :cwd "/tmp"
+                                :scope "root"
+                                :bootstrap
+                                (harnesses/managed-bootstrap
+                                 rt (:id retry-run))})
+                         retry-failed
+                         (harnesses/finish!
+                          rt (:id retry-run)
+                          {:status :failed
+                           :exit-code 1
+                           :error "retry literal argv"
+                           :invocation (:invocation retry-start)
+                           :evidence {:settled true
+                                      :settlement "process-exit"}})
+                         retried
+                         (harnesses/retry! rt (:id retry-failed) {})]
                      {:generated
                       (get-in run [:attributes :harness/generated
                                    :harness/extra-argv])
@@ -213,6 +266,9 @@
                       :resumed
                       (millstrand.api.spool.alpha/attr-get
                        resumed :harness/extra-argv)
+                      :retried
+                      (millstrand.api.spool.alpha/attr-get
+                       retried :harness/extra-argv)
                       :launcher
                       (let [script (slurp (:launcher created))]
                         (and
@@ -438,10 +494,24 @@
                              "--cwd" "/tmp"
                              "--by-identity" child-id])
                            grandchild-id (:identity grandchild-run)
+                           grandchild-start
+                           (harnesses/begin-attempt! rt (:id grandchild-run))
+                           grandchild-bootstrap
+                           (harnesses/managed-bootstrap
+                            rt (:id grandchild-run))
+                           _ (harnesses/managed-startup!
+                              rt {:harness (:harness grandchild-run)
+                                  :native-session-id
+                                  (:session-id grandchild-run)
+                                  :cwd "/tmp"
+                                  :scope "root"
+                                  :bootstrap grandchild-bootstrap})
                            _ (harnesses/finish!
                               rt (:id grandchild-run)
                               {:status :done :exit-code 0
-                               :session-usable true})
+                               :session-id (:session-id grandchild-run)
+                               :session-usable true
+                               :invocation (:invocation grandchild-start)})
                            resumed-run
                            (weaver/op!
                             rt 'agent

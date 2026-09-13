@@ -109,6 +109,16 @@
      ["run"] (op-run runtime args cwd)
      ["show"] (op-show runtime args)
      ["runs"] (op-runs runtime args)
+     ["repair-startup"]
+     (harness/repair-managed-startup!
+      runtime (select-keys args [:run-id :identity :native-session-id]))
+     ["startup"] (harness/managed-startup!
+                  runtime
+                  {:harness (:harness args)
+                   :native-session-id (:native-session-id args)
+                   :cwd cwd
+                   :scope (:scope args)
+                   :bootstrap (:bootstrap args)})
      ["stop"] (summary (execution/stop! runtime (:run-id args)
                                         (select-keys args [:reason])))
      ["retry"] (op-retry runtime args)

@@ -77,6 +77,43 @@
                           :type :string
                           :required? true
                           :doc "Available provider harness or alias."}]}
+    "startup"
+    {:doc "Attach a managed Codex/Pi run at native root startup."
+     :hook-class :mutating
+     :deadline-class :standard
+     :flags {:bootstrap
+             {:type :string
+              :parse :json
+              :required? true
+              :doc "Exact versioned MILLSTRAND_MANAGED_BOOTSTRAP document."}
+             :scope
+             {:type :string
+              :required? true
+              :doc "Native event scope; managed launches require root."}}
+     :positionals [{:name :harness
+                    :type :string
+                    :required? true
+                    :doc "Concrete native provider: codex or pi."}
+                   {:name :native-session-id
+                    :type :string
+                    :required? true
+                    :doc "Actual native session ID reported by the host."}]}
+    "repair-startup"
+    {:doc "Explicitly repair one completed legacy Codex native binding."
+     :hook-class :mutating
+     :deadline-class :standard
+     :flags {:identity
+             {:type :string
+              :required? true
+              :doc "Exact friendly identity recorded on the run."}
+             :native-session-id
+             {:type :string
+              :required? true
+              :doc "Exact usable native session recorded on the run."}}
+     :positionals [{:name :run-id
+                    :type :string
+                    :required? true
+                    :doc "Exact completed legacy Codex run ID."}]}
     "show" {:doc "Show one agent run, or the run serving a task or request."
             :hook-class :read
             :deadline-class :standard

@@ -6,6 +6,7 @@
             [ct.spools.harnesses.execution-assignment-test]
             [ct.spools.harnesses.executors.agent-test]
             [ct.spools.harnesses.lifecycle-test]
+            [ct.spools.harnesses.managed-startup-test]
             [ct.spools.harnesses.providers.claude-test]
             [ct.spools.harnesses.providers.codex-test]
             [ct.spools.harnesses.providers.cursor-test]
@@ -20,6 +21,7 @@
     ct.spools.harnesses.assignment-test
     ct.spools.harnesses.executors.agent-test
     ct.spools.harnesses.lifecycle-test
+    ct.spools.harnesses.managed-startup-test
     ct.spools.harnesses.providers.claude-test
     ct.spools.harnesses.providers.codex-test
     ct.spools.harnesses.providers.cursor-test

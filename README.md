@@ -257,8 +257,8 @@ strand agent run reviewer --prompt "Review this change" \
 
 Claude and Pi receive one native append flag per contribution. Codex and Cursor
 receive the identity and accumulated contributions joined with blank lines.
-System-prompt injection applies when creating a provider session and is not
-replayed when resuming one.
+System-prompt injection is rebuilt from frozen run data for every launch,
+including native resume.
 
 Runtime flags are intentionally process-local:
 
@@ -320,6 +320,104 @@ The bin carries provider arguments through repeated internal `--extra-argv`
 values rather than encoding shell argv as JSON. The created run remains the
 same tracked interactive lifecycle driven by `agent run --interactive`, its
 private launcher, `_started`, and `_finished`.
+
+## Managed Codex/Pi native startup
+
+Managed Codex and Pi runs reserve identity before run publication. This is an
+optional compatibility adapter: unmanaged desktop startup continues to use the
+identity spool directly and requires no Harnesses run, launcher environment, or
+reservation. Claude and Cursor retain their existing binding and prompt paths.
+
+Every running managed root receives `MILLSTRAND_MANAGED_BOOTSTRAP` as JSON. The
+document contains routing and fencing metadata only—never the user prompt,
+identity instruction, assignment policy, or appended guidance. Its exact v1
+shape is:
+
+```json
+{
+  "schema": "millstrand.agent-managed-bootstrap/v1",
+  "run-id": "abc12",
+  "harness": "codex",
+  "identity": "warm-silver-lemur",
+  "reservation-id": "907302db-f1a1-4f20-9908-da397415a7c8",
+  "cwd": "/canonical/session/cwd",
+  "workspace": "/canonical/workspace",
+  "attempt": 1,
+  "invocation": "fencing-uuid",
+  "scope": "root"
+}
+```
+
+`expected-native-session-id` is additionally present for Pi, whose pinned
+session ID must equal the host's actual ID, and for an already attached Codex
+native resume. The adapter passes the complete document unchanged and supplies
+the host event's actual harness, native session ID, cwd, and scope:
+
+```text
+strand --workspace WORKSPACE --cwd SESSION_CWD \
+  agent startup HARNESS ACTUAL_NATIVE_ID \
+  --scope root --bootstrap "$MILLSTRAND_MANAGED_BOOTSTRAP"
+```
+
+Startup validates the published run, concrete Codex/Pi provider, canonical cwd
+and workspace, root scope, positive durable attempt, nonblank durable invocation,
+reservation, friendly identity, immutable prior attachment, target writer, and
+native-session writer. Pi additionally requires the bootstrap pin and compares
+both it and the actual host ID independently with the durable provisional ID.
+Identity binding, `performed`/`parent-of` provenance, and run attachment evidence
+then commit in one transaction. Exact replay converges. Never-launched runs,
+child scope, stale launch metadata, and conflicts fail without attachment writes.
+
+A successful startup response has this exact context structure (normal Strand
+output also adds its `operation` key):
+
+```json
+{
+  "schema": "millstrand.agent-managed-context/v1",
+  "run-id": "abc12",
+  "harness": "codex",
+  "native-session-id": "actual-thread-id",
+  "identity": "warm-silver-lemur",
+  "strand-id": "identity-strand-id",
+  "result": "attached",
+  "instruction": "Your Millstrand identity is …",
+  "context": {
+    "schema": "millstrand.agent-managed-context/v1",
+    "identity-instruction": "Your Millstrand identity is …",
+    "appended-system-prompts": ["ordered frozen contribution"]
+  }
+}
+```
+
+The context omits the main user task. Identity instruction comes first;
+`appended-system-prompts` retains parent-to-child-to-run ordering. The Codex/Pi
+native adapters own how this structured result is delivered. Existing CLI prompt
+flags remain active until an explicit native transport version selects their
+replacement.
+
+Provider finish and late custody settlement use the same fenced attachment when
+they observe usable native evidence. Hook-confirmed interactive Codex identity
+survives a finish callback with no stdout. Attachment never substitutes for
+process settlement, and settlement evidence remains durable when attachment
+fails. Fresh retry and `--after` reserve fresh identities. Native resume and a
+retry of that continuation retain the attached identity, session, cwd, provider
+settings, and frozen guidance without consulting a changed or disabled alias;
+incompatible retry replacements fail before writes.
+
+One completed legacy Codex mismatch can be repaired only with all three recorded
+values supplied explicitly:
+
+```text
+strand agent repair-startup RUN_ID \
+  --identity FRIENDLY_ID --native-session-id ACTUAL_NATIVE_ID
+```
+
+Repair requires a settled, usable Codex run, matching `performed` provenance, an
+unoccupied native session, and no conflicting active target/session writer. It
+converts only that identity to an attached reservation, committing identity,
+provenance, and run evidence atomically, and is replay-safe. There is no
+discovery scan, broad migration, fallback mint, identity stealing, or automatic
+repair.
 
 ## Declarative reviewers
 

@@ -2,13 +2,13 @@
   "Durable run publication, reservation, and continuation helpers."
   (:require [clojure.string :as str]
             [ct.spools.harnesses.internal.lifecycle :as life]
+            [ct.spools.harnesses.internal.managed-startup :as managed]
             [ct.spools.harnesses.internal.registry :as registry]
-            [millhouse.spools.identity :as identity]
             [millstrand.api.graph.alpha :as graph]
             [millstrand.api.spool.alpha :refer [attr-get fail! require-valid!]]
             [millstrand.api.weaver.alpha :as weaver]))
 
-(defn- bind-invocation-markers
+(defn bind-invocation-markers
   "Replace assignment markers with the current published invocation values."
   [value run-id identity-id]
   (cond
@@ -66,20 +66,18 @@
                  {:request-id request-id :run (:id existing)}))
         existing))))
 
-(declare accepted-lineage)
-
 (defn continuation-child
   "Return an accepted continuation of `run-id`, if one exists."
   [rt run-id]
-  (let [run (require-run rt run-id)
-        child-ids (set (concat
+  (require-run rt run-id)
+  (let [child-ids (set (concat
                         (map :from_strand_id
                              (graph/incoming-edges rt [run-id] "resumes"))
                         (map :from_strand_id
                              (graph/incoming-edges rt [run-id] "continues"))))]
-    (some #(when (contains? child-ids (:id %)) %)
-          (accepted-lineage rt :harness/logical-id
-                            (attr-get run :harness/logical-id)))))
+    (some #(let [child (weaver/show rt %)]
+             (when (and child (life/published? child)) child))
+          child-ids)))
 
 (defn require-continuation-head!
   "Reject a predecessor that already has an accepted continuation."
@@ -134,7 +132,12 @@
                         (when (some? literal-extra-argv)
                           {:harness.internal/literal-extra-argv "true"})
                         (when-not (str/blank? prompt)
-                          {:harness/prompt prompt})
+                          {:harness/prompt prompt
+                           :harness/prompt-template prompt})
+                        (when context
+                          {:harness/context-template context})
+                        (when by-identity
+                          {:harness/caller-identity by-identity})
                         (when resumes {:harness/resumes resumes})
                         (when after {:harness/after after})
                         (when target {:harness/target target})
@@ -155,48 +158,50 @@
                                          :to root-target}))))))
              "create! produced an invalid run strand")
         predecessor (when resumes (require-run rt resumes))
-        identity-binding (identity/bind!
+        identity-binding (managed/commit-identity!
                           rt
-                          (cond-> {:harness harness
-                                   :native-session-id session-id
-                                   :run-id (:id run)}
-                            predecessor
-                            (assoc :expected-identity
-                                   (attr-get predecessor :identity/id))))]
-    (when by-identity
-      (let [caller (identity/current rt by-identity)]
-        (when-not (= (:id caller) (:strand-id identity-binding))
-          (weaver/update!
-           rt (:id caller)
-           {:edges [{:type "parent-of"
-                     :to (:strand-id identity-binding)}]}))))
-    (let [run-id (:id run)
-          identity-id (:identity identity-binding)
-          effective (bind-invocation-markers effective run-id identity-id)
-          effective (cond-> effective
-                      (some? literal-extra-argv)
-                      (assoc :harness/extra-argv literal-extra-argv))
-          prompt (bind-invocation-markers prompt run-id identity-id)
-          context (bind-invocation-markers context run-id identity-id)
-          published (require-valid!
-                     :ct.spools.harnesses/strand
-                     (weaver/update!
-                      rt (:id run)
-                      {:attributes (merge effective
-                                          (when (some? prompt) {:harness/prompt prompt})
-                                          (when context {:harness/context context})
-                                          {:identity/id identity-id
-                                           :identity/prompt (:prompt identity-binding)
-                                           :harness/logical-id (or logical-id (:id run))
-                                           ;; Last write of the create: everything a scheduler needs
-                                           ;; to act on this run is durable before it becomes visible
-                                           ;; as published.
-                                           :harness/published "true"})})
-                     "create! produced an invalid published run")]
-      (when-let [predecessor-id (or resumes after)]
-        (weaver/update! rt predecessor-id
-                        {:attributes {:harness/continued "true"}}))
-      published)))
+                          {:harness harness
+                           :session-id session-id
+                           :run run
+                           :predecessor predecessor
+                           :by-identity by-identity
+                           :effective effective})
+        run-id (:id run)
+        identity-id (:identity identity-binding)
+        effective (bind-invocation-markers effective run-id identity-id)
+        effective (cond-> effective
+                    (some? literal-extra-argv)
+                    (assoc :harness/extra-argv literal-extra-argv))
+        prompt (bind-invocation-markers prompt run-id identity-id)
+        context (bind-invocation-markers context run-id identity-id)
+        published (require-valid!
+                   :ct.spools.harnesses/strand
+                   (weaver/update!
+                    rt (:id run)
+                    {:attributes (merge effective
+                                        (when (some? prompt) {:harness/prompt prompt})
+                                        (when context {:harness/context context})
+                                        {:identity/id identity-id
+                                         :identity/prompt (:prompt identity-binding)
+                                         :harness/logical-id (or logical-id (:id run))
+                                         ;; Last write of the create: everything a scheduler needs
+                                         ;; to act on this run is durable before it becomes visible
+                                         ;; as published.
+                                         :harness/published "true"}
+                                        (when-let [reservation-id
+                                                   (:reservation-id
+                                                    identity-binding)]
+                                          {:identity/reservation-id reservation-id
+                                           :harness/provisional-session-id session-id
+                                           :harness/native-attached
+                                           (if (:native-attached identity-binding)
+                                             "true"
+                                             "false")}))})
+                   "create! produced an invalid published run")]
+    (when-let [predecessor-id (or resumes after)]
+      (weaver/update! rt predecessor-id
+                      {:attributes {:harness/continued "true"}}))
+    published))
 
 (defn inspectable-headless
   "Return published headless runs that still need a custody observation.
@@ -255,10 +260,25 @@
 
 (defn retry-attribute-patch
   "Return the attribute delta that resets one failed run for retry."
-  [run {:keys [requested concrete env generated overrides effective cwd]}]
+  [run {:keys [requested concrete env generated overrides effective cwd
+               session-id identity-binding]}]
   (let [old-attrs (:attributes run)
         old-generated (registry/normalize-overlay (attr-get run :harness/generated))
         old-overrides (registry/normalize-overlay (attr-get run :harness/overrides))
+        identity-id (or (:identity identity-binding)
+                        (attr-get run :identity/id))
+        literal-extra-argv?
+        (= "true" (attr-get run :harness.internal/literal-extra-argv))
+        literal-extra-argv (when literal-extra-argv?
+                             (attr-get run :harness/extra-argv))
+        effective (bind-invocation-markers
+                   (cond-> effective
+                     literal-extra-argv? (dissoc :harness/extra-argv))
+                   (:id run)
+                   identity-id)
+        effective (cond-> effective
+                    literal-extra-argv?
+                    (assoc :harness/extra-argv literal-extra-argv))
         old-overlay-keys (set (filter registry/overlay-key? (keys old-attrs)))
         all-overlay-keys (into old-overlay-keys (keys effective))
         overlay-delta (into {} (map (fn [k] [k (get effective k)]) all-overlay-keys))
@@ -268,7 +288,8 @@
         overrides-delta (into {}
                               (map (fn [k] [k (get overrides k)]))
                               (into (set (keys old-overrides)) (keys overrides)))
-        resumed? (some? (attr-get run :harness/resumes))]
+        prompt-template (attr-get run :harness/prompt-template)
+        context-template (attr-get run :harness/context-template)]
     (merge overlay-delta
            {:harness/alias requested
             :harness/harness concrete
@@ -281,9 +302,25 @@
             :harness/invocation nil
             :harness/generated generated-delta
             :harness/overrides overrides-delta
-            :harness/session-id (if resumed?
-                                  (attr-get run :harness/session-id)
-                                  (str (java.util.UUID/randomUUID)))
+            :harness/session-id session-id
+            :harness/session-usable nil
             :harness/error nil
             :harness/result nil
-            :harness/exit-code nil})))
+            :harness/exit-code nil
+            :harness/native-attached-at nil
+            :harness/native-attachment-source nil
+            :harness/native-attachment-attempt nil
+            :harness/native-attachment-invocation nil}
+           (when (some? prompt-template)
+             {:harness/prompt
+              (bind-invocation-markers prompt-template (:id run) identity-id)})
+           (when (some? context-template)
+             {:harness/context
+              (bind-invocation-markers context-template (:id run) identity-id)})
+           (when identity-binding
+             {:identity/id identity-id
+              :identity/prompt (:prompt identity-binding)
+              :identity/reservation-id (:reservation-id identity-binding)
+              :harness/provisional-session-id session-id
+              :harness/native-attached
+              (if (:native-attached identity-binding) "true" "false")}))))
