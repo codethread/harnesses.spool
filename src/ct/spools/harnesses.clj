@@ -308,13 +308,15 @@
   "Record provider outcome and settlement for an already terminal run.
 
   Custody evidence is persisted independently before optional
-  reservation-backed Codex/Pi attachment. An attachment failure therefore cannot erase proof that
-  the provider process settled. Existing hook-confirmed session evidence is
-  never replaced by an unobserved interactive outcome.
+  reservation-backed Codex/Pi attachment. An attachment failure therefore
+  cannot erase proof that the provider process settled. Existing hook-confirmed
+  session evidence is never replaced by an unobserved interactive outcome.
 
   Positive legacy evidence is validated before the custody update so malformed
-  callbacks write nothing. Valid pre-reservation runs keep their historical
-  identity representation without invented attachment evidence."
+  callbacks write nothing. A fenced failed outcome with no usable session has
+  no identity evidence to attach, so its custody settlement remains recordable
+  even when the historical identity is damaged. Valid pre-reservation runs keep
+  their historical representation without invented attachment evidence."
   [rt id outcome evidence]
   (require-valid! ::runtime rt "settle-outcome! requires a Weaver runtime")
   (require-valid! ::id id "settle-outcome! requires a run id")

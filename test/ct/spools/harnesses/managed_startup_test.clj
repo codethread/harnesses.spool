@@ -854,6 +854,147 @@
           (is (= "launcher preparation failed"
                  (:prelaunch-error result))))))))
 
+(deftest legacy-negative-custody-survives-invalid-identity-binding
+  (with-managed-world
+    (fn [ctx]
+      (let [result
+            (eval-world
+             ctx
+             '(let [legacy-create
+                    (fn [harness session-id title]
+                      (with-redefs [managed/managed-harness?
+                                    (constantly false)]
+                        (harnesses/create!
+                         rt {:harness harness :mode :interactive
+                             :cwd "/tmp/legacy-negative-custody"
+                             :session-id session-id
+                             :title title})))
+                    fail-unsettled
+                    (fn [run]
+                      (let [started (harnesses/begin-attempt! rt (:id run))]
+                        {:invocation (:invocation started)
+                         :run
+                         (harnesses/finish!
+                          rt (:id run)
+                          {:status :failed :exit-code 1
+                           :error "primary provider failure"
+                           :invocation (:invocation started)
+                           :evidence {:settled false
+                                      :settlement
+                                      "no-terminal-evidence"}})}))
+                    cancellation
+                    (fn [session-id invocation]
+                      {:status :failed :exit-code 143
+                       :error "cancelled"
+                       :session-id session-id
+                       :session-usable false
+                       :invocation invocation})
+                    evidence {:settled true
+                              :settlement "graceful-cancellation"
+                              :cancelled? true}
+                    codex-start
+                    (fail-unsettled
+                     (legacy-create :codex "legacy-codex-custody"
+                                    "legacy Codex custody"))
+                    codex-run (:run codex-start)
+                    codex-invocation (:invocation codex-start)
+                    _ (weaver/update!
+                       rt (:id codex-run)
+                       {:attributes {:identity/id
+                                     "missing-legacy-identity"}})
+                    codex-run (weaver/show rt (:id codex-run))
+                    codex-outcome
+                    (cancellation "legacy-codex-custody"
+                                  codex-invocation)
+                    codex-attachment-failure
+                    (failure #(managed/validate-legacy-outcome!
+                               rt codex-run
+                               (assoc codex-outcome
+                                      :session-usable true)))
+                    codex-before [(weaver/show rt (:id codex-run))
+                                  (count (weaver/list rt))]
+                    codex-stale
+                    (failure #(harnesses/settle-outcome!
+                               rt (:id codex-run)
+                               (assoc codex-outcome :invocation "stale")
+                               evidence))
+                    codex-after-stale
+                    [(weaver/show rt (:id codex-run))
+                     (count (weaver/list rt))]
+                    codex-settled
+                    (harnesses/settle-outcome!
+                     rt (:id codex-run) codex-outcome evidence)
+                    pi-start
+                    (fail-unsettled
+                     (legacy-create :pi "legacy-pi-custody"
+                                    "legacy Pi custody"))
+                    pi-run (:run pi-start)
+                    pi-invocation (:invocation pi-start)
+                    pi-identity-id (attr pi-run :identity/id)
+                    pi-identity (identity/current rt pi-identity-id)
+                    _ (weaver/update!
+                       rt (:id pi-identity)
+                       {:attributes {:identity/harness "codex"}})
+                    pi-run (weaver/show rt (:id pi-run))
+                    pi-outcome
+                    (cancellation "legacy-pi-custody" pi-invocation)
+                    pi-attachment-failure
+                    (failure #(managed/validate-legacy-outcome!
+                               rt pi-run
+                               (assoc pi-outcome :session-usable true)))
+                    pi-settled
+                    (harnesses/settle-outcome!
+                     rt (:id pi-run) pi-outcome evidence)
+                    projection
+                    (fn [run]
+                      {:status (attr run :harness/status)
+                       :error (attr run :harness/error)
+                       :exit-code (attr run :harness/exit-code)
+                       :session-id (attr run :harness/session-id)
+                       :session-usable
+                       (attr run :harness/session-usable)
+                       :settled (attr run :harness/settled)
+                       :settlement (attr run :harness/settlement)
+                       :reservation
+                       (attr run :identity/reservation-id)
+                       :native-attached
+                       (attr run :harness/native-attached)})]
+                {:codex-attachment-failure codex-attachment-failure
+                 :codex-stale codex-stale
+                 :codex-stale-no-write
+                 (= codex-before codex-after-stale)
+                 :codex (projection codex-settled)
+                 :pi-attachment-failure pi-attachment-failure
+                 :pi (projection pi-settled)
+                 :pi-identity-harness
+                 (attr (identity/current rt pi-identity-id)
+                       :identity/harness)}))]
+        (testing "broken legacy identities still fail positive validation"
+          (is (re-find #"does not resolve uniquely"
+                       (get-in result
+                               [:codex-attachment-failure :message])))
+          (is (re-find #"belongs to another harness"
+                       (get-in result [:pi-attachment-failure :message]))))
+        (testing "negative custody remains exactly invocation-fenced"
+          (is (re-find #"missing or stale invocation"
+                       (get-in result [:codex-stale :message])))
+          (is (true? (:codex-stale-no-write result))))
+        (testing "failed unusable cancellation settles without attachment"
+          (doseq [[provider session-id]
+                  [[:codex "legacy-codex-custody"]
+                   [:pi "legacy-pi-custody"]]]
+            (is (= {:status "failed"
+                    :error "primary provider failure"
+                    :exit-code 143
+                    :session-id session-id
+                    :session-usable "false"
+                    :settled "true"
+                    :settlement "graceful-cancellation"
+                    :reservation nil
+                    :native-attached nil}
+                   (provider result))))
+          (is (= "codex" (:pi-identity-harness result))))))))
+
 (deftest provider-finish-late-settlement-and-retry-converge
   (with-managed-world
     (fn [ctx]

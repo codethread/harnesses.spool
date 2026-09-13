@@ -563,9 +563,13 @@
   nil)
 
 (defn validate-legacy-outcome!
-  "Validate legacy identity, invocation, and positive Pi session evidence."
+  "Validate identity and invocation before accepting positive legacy evidence.
+
+  Failed outcomes without usable session evidence have nothing to attach and do
+  not depend on the historical identity remaining valid."
   [rt run {:keys [session-id session-usable] :as outcome}]
-  (when (legacy-managed-run? run)
+  (when (and (legacy-managed-run? run)
+             (positive-legacy-outcome? outcome))
     (require-legacy-positive-invocation! run outcome)
     (require-legacy-binding! rt run)
     (require-legacy-pi-session-evidence!
@@ -665,13 +669,13 @@
   records no invented attachment evidence. Its binding and `performed`
   provenance are still validated before completion is accepted.
 
-  Returns a legacy result after validating a pre-reservation binding, or nil
-  for maintenance providers and outcomes with no usable native evidence. The
-  caller must hold the lifecycle publication lock."
+  Returns a legacy result after validating positive pre-reservation evidence.
+  Returns nil for maintenance providers and failed legacy outcomes without a
+  usable session. The caller must hold the lifecycle publication lock."
   [rt run {:keys [session-id session-usable invocation] :as outcome}]
   (when (managed-harness? (attr-get run :harness/harness))
     (if (legacy-managed-run? run)
-      (do
+      (when (positive-legacy-outcome? outcome)
         (validate-legacy-outcome! rt run outcome)
         {:result "legacy"})
       (when (and session-usable session-id)

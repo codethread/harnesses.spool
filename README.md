@@ -406,15 +406,15 @@ incompatible retry replacements fail before writes.
 
 A managed Codex/Pi run accepted before reservation-backed startup has no
 `identity/reservation-id`, `harness/native-attached`, or
-`harness/provisional-session-id`. Completion after a Weaver upgrade validates
-that its original unreserved identity belongs to the provider and performed the
-run, then preserves the provider outcome, session usability, and custody
-settlement without creating reservation or native-attachment evidence. Positive
-completion or session evidence additionally requires a durable positive attempt
-and an exact nonblank invocation fence. A genuine prelaunch failure remains
-recordable without an attempt. A damaged current run still has startup-v1
-representation and is rejected by the strict reservation checks; it is never
-treated as legacy.
+`harness/provisional-session-id`. Positive completion or usable session evidence
+after a Weaver upgrade validates that the original unreserved identity belongs
+to the provider and performed the run. It also requires a durable positive
+attempt and an exact nonblank invocation fence before preserving that evidence.
+A failed outcome with no usable session carries no optional identity attachment;
+its exact-invocation custody settlement remains recordable even if the historical
+identity is missing or damaged. A genuine prelaunch failure remains recordable
+without an attempt. A damaged current run still has startup-v1 representation
+and is rejected by the strict reservation checks; it is never treated as legacy.
 
 A legacy Pi run may continue only when its stored session exactly matches one
 unique unreserved Pi identity and the `performed` provenance is intact. That
