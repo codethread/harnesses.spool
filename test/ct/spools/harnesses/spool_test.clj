@@ -131,7 +131,7 @@
                        "agent-work-root-complete"
                        "agent-work-root-complete-or-intervention"]]
           (is (contains? queries query)))
-        (is (= #{:strand/added :strand/updated :batch/applied}
+        (is (= #{:strand/added :strand/updated :batch/applied :strand/burned}
                (:types handler)))
         (doseq [effect [:harness-core-runtime
                         :claude-harness-runtime

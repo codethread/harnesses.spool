@@ -42,7 +42,12 @@
                         [millstrand.api.lifecycle.alpha :as lifecycle]))
             (lifecycle/use-resource!
              harnesses/harness-core-runtime
-             assignment/assignment-runtime)"}}]
+             assignment/assignment-runtime)"
+           "modules/assignment_scheduler.clj"
+           "(ns modules.assignment-scheduler
+              (:require [ct.spools.harnesses.execution :as execution]
+                        [millstrand.api.millstrand.alpha :as millstrand]))
+            (millstrand/use-handler! execution/on-event)"}}]
     (f ctx)))
 
 (def ^:private setup
@@ -54,8 +59,10 @@
               '[ct.spools.harnesses.execution :as execution]
               '[millstrand.api.current.alpha :as current]
               '[millstrand.api.graph.alpha :as graph]
+              '[millstrand.api.runtime.alpha :as runtime]
               '[millstrand.api.spool.alpha :as spool]
-              '[millstrand.api.weaver.alpha :as weaver])
+              '[millstrand.api.weaver.alpha :as weaver]
+              '[millstrand.test.alpha :as test-alpha])
      (def rt (current/runtime))
      (harnesses/register-harness!
       rt :fake
@@ -648,3 +655,38 @@
         (is (= [(:blocked result)] (get-in result [:claimed :second])))
         (is (= #{(:blocked result) (:independent result)}
                (set (:launched result))))))))
+
+(deftest burning-a-blocker-wakes-its-assigned-agent
+  (with-assignment-world
+    (fn [ctx]
+      (let [result
+            (eval-world
+             ctx
+             '(let [blocker (add-target! "Removed blocker")
+                    target (add-target! "Waiting assignment" {}
+                                        [{:type "depends-on" :to (:id blocker)}])
+                    run (assign! (:id target) {})
+                    launched (promise)
+                    _ (#'execution/activate-state! rt)]
+                (try
+                  (with-redefs-fn
+                    {#'execution/launch-headless!
+                     (fn [_ id] (deliver launched id))}
+                    #(do
+                       (test-alpha/await-quiescent! rt)
+                       (runtime/module! rt :assignment-scheduler
+                                        {:file "modules/assignment_scheduler.clj"
+                                         :after [:assignment-test]
+                                         :required? true})
+                       (test-alpha/await-quiescent! rt)
+                       (let [launched-before? (realized? launched)]
+                         (graph/burn-by-ids! rt [(:id blocker)])
+                         {:launched-before? launched-before?
+                          :ready? (assignment/target-ready? rt (:id target))
+                          :expected (:id run)
+                          :launched (deref launched 1000 :not-launched)})))
+                  (finally
+                    ((:close-fn (#'execution/deactivate-state! rt)))))))]
+        (is (false? (:launched-before? result)))
+        (is (true? (:ready? result)))
+        (is (= (:expected result) (:launched result)))))))

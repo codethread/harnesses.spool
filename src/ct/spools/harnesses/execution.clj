@@ -16,7 +16,8 @@
   (:import [java.util.concurrent Executors ThreadFactory TimeUnit]))
 
 (def ^:private state-version 4)
-(def ^:private event-types #{:strand/added :strand/updated :batch/applied})
+(def ^:private event-types
+  #{:strand/added :strand/updated :batch/applied :strand/burned})
 
 (declare schedule! inspect-owned! launch-in-flight?
          ^:private finish-process! ^:private state
