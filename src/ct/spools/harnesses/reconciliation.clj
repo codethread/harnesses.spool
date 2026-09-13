@@ -296,7 +296,7 @@
   "Inspect active interactive runs without changing lifecycle state.
 
   With `:run-id`, inspect exactly that run, including an already terminal run.
-  Without it, inspect published running interactive attempts only."
+  Without it, inspect published running Codex and Pi attempts only."
   ([rt] (inspect rt {}))
   ([rt {:keys [run-id limit] :as opts}]
    (require-valid! ::runtime rt "inspect requires a Weaver runtime")
@@ -306,6 +306,7 @@
            [(runs/require-run rt run-id)]
            (runs/runs-where
             rt [[:= [:attr "harness/mode"] "interactive"]
+                [:in [:attr "harness/harness"] ["codex" "pi"]]
                 [:= [:attr "harness/published"] "true"]
                 [:= [:attr "harness/status"] "running"]]))]
      (mapv (fn [run]
