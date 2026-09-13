@@ -9,7 +9,7 @@
    :deps/root "spools/workflow"}
   millhouse.spools/identity
   {:git/url "https://github.com/codethread/millhouse.spool.git"
-   :git/sha "89e5e32f8a948547c233d5dd183bb73f9c5abe4a"
+   :git/sha "b1955a96ad91bf2909a407859fca1565ec4b9fdb"
    :deps/root "spools/identity"}
   millhouse.spools/kanban
   {:git/url "https://github.com/codethread/millhouse.spool.git"
@@ -25,6 +25,6 @@
    :deps/root "kanban-adapter"}
   codethread/config
   {:git/url "https://github.com/codethread/codethread.spool.git"
-   :git/sha "3dcf5f051842512d444b9d111d3998f4078081f6"
+   :git/sha "45a49d538b1073f35d5e3b32c1baa7d2309be483"
    :deps/root "spools/config"}
   ct.spools/harnesses {:local/root ".."}}}
