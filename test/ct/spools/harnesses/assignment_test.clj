@@ -451,10 +451,20 @@
                                     :policy "close-on-complete"
                                     :append-system-prompt explicit-guidance})
                     first-id (:id first)
+                    started (harnesses/begin-attempt! rt first-id)
+                    _ (harnesses/managed-startup!
+                       rt {:harness "pi"
+                           :native-session-id (attr first :harness/session-id)
+                           :cwd "/tmp/assignment-work"
+                           :scope "root"
+                           :bootstrap
+                           (harnesses/managed-bootstrap rt first-id)})
                     _ (harnesses/finish!
                        rt first-id
                        {:status :done :exit-code 0 :result "done"
-                        :session-usable true})
+                        :session-id (attr first :harness/session-id)
+                        :session-usable true
+                        :invocation (:invocation started)})
                     _ (assignment/register-assign-policy!
                        rt {:kind :assign-policy
                            :name :close-on-complete

@@ -45,8 +45,8 @@
                                   (mapcat #(vector % :subcommands) (butlast path))
                                   [(last path) :flags])))
                    :by-identity)))
-  (doseq [path [["_started"] ["_finished"] ["config" "list"]
-                ["config" "set"] ["config" "unset"]]]
+  (doseq [path [["startup"] ["repair-startup"] ["_started"] ["_finished"]
+                ["config" "list"] ["config" "set"] ["config" "unset"]]]
     (is (not (contains? (or (get-in cli/agent-arg-spec
                                     (into [:subcommands]
                                           (concat
@@ -197,9 +197,25 @@
                            "--extra-argv"
                            "=Keep {{RUN_ID}} and {{AGENT_ID}} literal"])
                          run (millstrand.api.weaver.alpha/show rt (:id created))
+                         started (harnesses/begin-attempt! rt (:id run))
+                         _ (harnesses/managed-startup!
+                            rt {:harness "pi"
+                                :native-session-id
+                                (millstrand.api.spool.alpha/attr-get
+                                 run :harness/session-id)
+                                :cwd "/tmp"
+                                :scope "root"
+                                :bootstrap
+                                (harnesses/managed-bootstrap rt (:id run))})
                          _ (harnesses/finish!
                             rt (:id run)
-                            {:status :done :exit-code 0 :session-usable true})
+                            {:status :done
+                             :exit-code 0
+                             :session-id
+                             (millstrand.api.spool.alpha/attr-get
+                              run :harness/session-id)
+                             :session-usable true
+                             :invocation (:invocation started)})
                          resumed (harnesses/resume! rt (:id run) {})]
                      {:generated
                       (get-in run [:attributes :harness/generated
@@ -438,10 +454,24 @@
                              "--cwd" "/tmp"
                              "--by-identity" child-id])
                            grandchild-id (:identity grandchild-run)
+                           grandchild-start
+                           (harnesses/begin-attempt! rt (:id grandchild-run))
+                           grandchild-bootstrap
+                           (harnesses/managed-bootstrap
+                            rt (:id grandchild-run))
+                           _ (harnesses/managed-startup!
+                              rt {:harness (:harness grandchild-run)
+                                  :native-session-id
+                                  (:session-id grandchild-run)
+                                  :cwd "/tmp"
+                                  :scope "root"
+                                  :bootstrap grandchild-bootstrap})
                            _ (harnesses/finish!
                               rt (:id grandchild-run)
                               {:status :done :exit-code 0
-                               :session-usable true})
+                               :session-id (:session-id grandchild-run)
+                               :session-usable true
+                               :invocation (:invocation grandchild-start)})
                            resumed-run
                            (weaver/op!
                             rt 'agent

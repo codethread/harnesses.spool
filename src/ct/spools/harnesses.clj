@@ -4,9 +4,12 @@
             [clojure.string :as str]
             [ct.spools.harnesses.catalog :as catalog]
             [ct.spools.harnesses.internal.lifecycle :as life]
+            [ct.spools.harnesses.internal.managed-repair :as managed-repair]
+            [ct.spools.harnesses.internal.managed-startup :as managed]
             [ct.spools.harnesses.internal.registry :as registry]
             [ct.spools.harnesses.internal.runs :as runs]
             [ct.spools.harnesses.internal.specs]
+            [millhouse.spools.identity :as identity]
             [millstrand.api.lifecycle.alpha :as lifecycle]
             [millstrand.api.spool.alpha :refer [attr-get fail! require-valid!]]
             [millstrand.api.weaver.alpha :as weaver])
@@ -26,6 +29,34 @@
 (def harnesses catalog/harnesses)
 (def open-harness-core! catalog/open-harness-core!)
 (def close-harness-core! catalog/close-harness-core!)
+
+(def managed-bootstrap-schema
+  "Schema identifier for managed launch bootstrap metadata."
+  managed/managed-bootstrap-schema)
+
+(def managed-context-schema
+  "Schema identifier for context returned by managed native startup."
+  managed/managed-context-schema)
+
+(defn managed-bootstrap
+  "Return prompt-free bootstrap metadata for a managed running invocation."
+  [rt id]
+  (require-valid! ::runtime rt "managed-bootstrap requires a Weaver runtime")
+  (require-valid! ::id id "managed-bootstrap requires a run id")
+  (managed/bootstrap rt (runs/require-run rt id)))
+
+(defn managed-startup!
+  "Attach a managed Codex/Pi run to its actual native root session.
+
+  The request must carry the exact versioned bootstrap exported for the current
+  launch plus explicit native harness, session, cwd, and root scope."
+  [rt request]
+  (managed/startup! rt request))
+
+(defn repair-managed-startup!
+  "Repair one explicitly identified completed legacy Codex binding."
+  [rt request]
+  (managed-repair/repair! rt request))
 
 (defn run
   "Return one harness run strand by id, failing when it is absent or foreign."
@@ -78,6 +109,8 @@
              effective (registry/merge-overlays generated overrides)
              cwd (or cwd (System/getProperty "user.dir"))
              session-id (or session-id (str (UUID/randomUUID)))]
+         (when by-identity
+           (identity/current rt by-identity))
          (when-not (contains? (:modes definition) mode)
            (fail! "Harness does not support requested mode"
                   {:harness harness :mode mode :modes (:modes definition)}))
@@ -151,65 +184,85 @@
 
   `:invocation` names the execution the outcome belongs to. A callback naming a
   superseded attempt, or arriving after the run is already terminal, changes
-  nothing and returns the run as it stands: a stale callback can neither finish
-  newer work nor rewrite a settled one. Settlement evidence is separate from the
-  outcome, because a failure is not by itself proof the process stopped.
+  nothing and returns the run as it stands: a stale callback can neither attach
+  native identity, finish newer work, nor rewrite a settled result. Settlement
+  evidence remains separate from identity attachment.
 
-  `:session-usable` is provider evidence. When omitted, the session remains
-  unusable; a provisional session id is never enough for native resume."
+  Positive Codex/Pi session evidence first attaches the reserved identity. A
+  hook-confirmed session survives an interactive finish that cannot observe
+  provider stdout; clean completion plus that binding makes native resume
+  usable."
   [rt id {:keys [status exit-code result session-id error session-usable
                  invocation evidence]
           :as outcome}]
   (require-valid! ::runtime rt "finish! requires a Weaver runtime")
   (require-valid! ::id id "finish! requires a run id")
   (require-valid! ::outcome outcome "finish! requires a valid outcome")
-  (let [run (runs/require-run rt id)
-        current (life/invocation run)
-        status (if (keyword? status) status (keyword (str status)))
-        _ (when (and (= "running" (life/status run))
-                     (nil? invocation))
-            (fail! "Running harness finish requires its invocation token"
-                   {:id id :invocation current}))
-        stale? (or (and invocation current (not= invocation current))
-                   (life/terminal? run))]
-    (if stale?
-      (require-valid!
-       ::strand
-       (weaver/update! rt id
-                       {:attributes
-                        {:harness/fenced-callbacks
-                         (inc (or (attr-get run :harness/fenced-callbacks) 0))}})
-       "finish! produced an invalid fenced run strand")
-      (let [_ (when-not (contains? #{"ready" "running"} (life/status run))
-                (fail! "Harness finish transition is invalid"
-                       {:id id :status (life/status run) :outcome status}))
-            _ (when (and (= :done status) (not= 0 exit-code))
-                (fail! "Successful harness outcome requires exit code zero"
-                       {:id id :exit-code exit-code}))
-            _ (when (and (= :done status)
-                         (= "headless" (attr-get run :harness/mode))
-                         (str/blank? result))
-                (fail! "Successful headless harness outcome requires a result"
-                       {:id id}))
-            session-id (or session-id (attr-get run :harness/session-id))
-            evidence (or evidence
-                         (life/settlement-evidence {:exit-code exit-code}))
-            usable? (true? session-usable)
-            patch (life/terminal-patch run status evidence usable?)]
+  #_{:clj-kondo/ignore [:locking-suspicious-lock]}
+  #_{:splint/disable [lint/locking-object]}
+  (locking (catalog/publication-lock rt)
+    (let [run (runs/require-run rt id)
+          current (life/invocation run)
+          status (if (keyword? status) status (keyword (str status)))
+          _ (when (and (= "running" (life/status run))
+                       (nil? invocation))
+              (fail! "Running harness finish requires its invocation token"
+                     {:id id :invocation current}))
+          stale? (or (and invocation current (not= invocation current))
+                     (life/terminal? run))]
+      (if stale?
         (require-valid!
          ::strand
-         (weaver/update!
-          rt id
-          {:state (if (= "stopped" (:harness/status patch)) "closed" "active")
-           :attributes
-           (merge patch
-                  {:harness/exit-code exit-code
-                   :harness/result result
-                   :harness/session-id session-id
-                   :harness/finished-at (life/now)
-                   :harness/error (when (= :failed status)
-                                    (or error "Harness process failed"))})})
-         "finish! produced an invalid run strand")))))
+         (weaver/update! rt id
+                         {:attributes
+                          {:harness/fenced-callbacks
+                           (inc (or (attr-get run :harness/fenced-callbacks) 0))}})
+         "finish! produced an invalid fenced run strand")
+        (let [_ (when-not (contains? #{"ready" "running"} (life/status run))
+                  (fail! "Harness finish transition is invalid"
+                         {:id id :status (life/status run) :outcome status}))
+              _ (when (and (= :done status) (not= 0 exit-code))
+                  (fail! "Successful harness outcome requires exit code zero"
+                         {:id id :exit-code exit-code}))
+              _ (when (and (= :done status)
+                           (= "headless" (attr-get run :harness/mode))
+                           (str/blank? result))
+                  (fail! "Successful headless harness outcome requires a result"
+                         {:id id}))
+              _ (managed/attach-outcome! rt run outcome)
+              run (runs/require-run rt id)
+              attached? (= "true" (attr-get run :harness/native-attached))
+              session-id (if attached?
+                           (attr-get run :harness/session-id)
+                           (or session-id (attr-get run :harness/session-id)))
+              evidence (or evidence
+                           (life/settlement-evidence {:exit-code exit-code}))
+              _ (when (and (managed/managed-harness?
+                            (attr-get run :harness/harness))
+                           (true? session-usable)
+                           (not attached?))
+                  (fail! "Managed session evidence was not attached to the run"
+                         {:id id :session-id session-id}))
+              usable? (or (and attached? (true? session-usable))
+                          (and attached? (= :done status) (zero? exit-code))
+                          (and (not (managed/managed-harness?
+                                     (attr-get run :harness/harness)))
+                               (true? session-usable)))
+              patch (life/terminal-patch run status evidence usable?)]
+          (require-valid!
+           ::strand
+           (weaver/update!
+            rt id
+            {:state (if (= "stopped" (:harness/status patch)) "closed" "active")
+             :attributes
+             (merge patch
+                    {:harness/exit-code exit-code
+                     :harness/result result
+                     :harness/session-id session-id
+                     :harness/finished-at (life/now)
+                     :harness/error (when (= :failed status)
+                                      (or error "Harness process failed"))})})
+           "finish! produced an invalid run strand"))))))
 
 (s/fdef finish! :args (s/cat :runtime ::runtime :id ::id :outcome ::outcome) :ret ::strand)
 
@@ -247,40 +300,70 @@
 (defn settle-outcome!
   "Record provider outcome and settlement for an already terminal run.
 
-  This recovery path is used when custody reaches a terminal fact after a
-  reconciliation failure already made the run terminal. It preserves the
-  terminal status while retaining observed provider evidence and settlement.
-  "
+  Custody evidence is persisted independently before optional Codex/Pi native
+  attachment. An attachment failure therefore cannot erase proof that the
+  provider process settled. Existing hook-confirmed session evidence is never
+  replaced by an unobserved interactive outcome."
   [rt id outcome evidence]
   (require-valid! ::runtime rt "settle-outcome! requires a Weaver runtime")
   (require-valid! ::id id "settle-outcome! requires a run id")
   (require-valid! ::outcome outcome "settle-outcome! requires a valid outcome")
   (require-valid! ::evidence evidence "settle-outcome! requires evidence")
-  (let [run (runs/require-run rt id)]
-    (when-not (life/terminal? run)
-      (fail! "Only a terminal harness run may receive late outcome evidence"
-             {:id id :status (life/status run)}))
-    (require-valid!
-     ::strand
-     (weaver/update!
-      rt id
-      {:attributes (merge
-                    {:harness/exit-code (:exit-code outcome)
-                     :harness/result (:result outcome)
-                     :harness/session-id (or (:session-id outcome)
-                                             (attr-get run :harness/session-id))
-                     :harness/session-usable (if (true? (:session-usable outcome))
-                                               "true"
-                                               "false")
-                     :harness/error (or (attr-get run :harness/error)
-                                        (when (= :failed (:status outcome))
-                                          (or (:error outcome)
-                                              "Harness process failed")))
-                     :harness/settled (if (:settled evidence) "true" "false")
-                     :harness/settlement (:settlement evidence)}
-                    (when-let [gap (:gap evidence)]
-                      {:harness/settlement-gap gap}))})
-     "settle-outcome! produced an invalid run strand")))
+  #_{:clj-kondo/ignore [:locking-suspicious-lock]}
+  #_{:splint/disable [lint/locking-object]}
+  (locking (catalog/publication-lock rt)
+    (let [run (runs/require-run rt id)
+          invocation (:invocation outcome)]
+      (when-not (life/terminal? run)
+        (fail! "Only a terminal harness run may receive late outcome evidence"
+               {:id id :status (life/status run)}))
+      (when (and (attr-get run :harness/invocation)
+                 (not= invocation (attr-get run :harness/invocation)))
+        (fail! "Late harness outcome has a missing or stale invocation"
+               {:id id
+                :expected (attr-get run :harness/invocation)
+                :actual invocation}))
+      (let [managed? (managed/managed-harness?
+                      (attr-get run :harness/harness))
+            attached? (= "true" (attr-get run :harness/native-attached))
+            session-id (if attached?
+                         (attr-get run :harness/session-id)
+                         (or (:session-id outcome)
+                             (attr-get run :harness/session-id)))
+            usable? (or (= "true" (attr-get run :harness/session-usable))
+                        (and (or (not managed?) attached?)
+                             (true? (:session-usable outcome))))
+            settled (require-valid!
+                     ::strand
+                     (weaver/update!
+                      rt id
+                      {:attributes
+                       (merge
+                        {:harness/exit-code (:exit-code outcome)
+                         :harness/result (:result outcome)
+                         :harness/session-id session-id
+                         :harness/session-usable (if usable? "true" "false")
+                         :harness/error
+                         (or (attr-get run :harness/error)
+                             (when (= :failed (:status outcome))
+                               (or (:error outcome)
+                                   "Harness process failed")))
+                         :harness/settled (if (:settled evidence) "true" "false")
+                         :harness/settlement (:settlement evidence)}
+                        (when-let [gap (:gap evidence)]
+                          {:harness/settlement-gap gap}))})
+                     "settle-outcome! produced an invalid run strand")
+            attached-result (managed/attach-outcome! rt settled outcome)]
+        (if attached-result
+          (require-valid!
+           ::strand
+           (weaver/update!
+            rt id
+            {:attributes
+             {:harness/session-usable
+              (if (true? (:session-usable outcome)) "true" "false")}})
+           "settle-outcome! produced invalid attached session evidence")
+          settled)))))
 
 (defn settle!
   "Record positive settlement evidence for a run that is already terminal.
@@ -329,45 +412,81 @@
   "Reconstruct and reset one failed ad-hoc run, applying replacement options.
 
   Request-bound assigned work cannot be retried in place: continue it with
-  `resume!` or submit a new request. A target-only workflow run may retry
-  once it is failed and settled, because that is the same run serving the
-  same gate rather than a new caller contract."
+  `resume!` or submit a new request. A fresh Codex/Pi retry reserves a fresh
+  identity and refreshes invocation markers before becoming ready. Retrying a
+  native-resume attempt keeps its attached native identity and session."
   [rt id {:keys [harness cwd attributes] :as request}]
   (require-valid! ::runtime rt "retry! requires a Weaver runtime")
   (require-valid! ::id id "retry! requires a run id")
   (require-valid! ::retry-request request "retry! requires valid replacements")
-  (let [run (runs/require-run rt id)
-        _ (when-not (= "failed" (life/status run))
-            (fail! "Only a failed harness run may be retried"
-                   {:id id :status (life/status run)}))
-        _ (when-not (life/settled? run)
-            (fail! "Only a settled failed harness run may be retried"
-                   {:id id :settlement (attr-get run :harness/settlement)}))
-        _ (when (attr-get run :harness/request-id)
-            (fail! "A request-bound run cannot be retried in place"
-                   {:id id :request-id (attr-get run :harness/request-id)}))
-        requested (or harness (attr-get run :harness/alias))
-        resolved (resolve-harness rt requested)
-        generated (:generated resolved)
-        old-overrides (registry/normalize-overlay (attr-get run :harness/overrides))
-        overrides (reduce-kv (fn [m k v] (if (nil? v) (dissoc m k) (assoc m k v)))
-                             old-overrides (registry/normalize-overlay attributes))
-        effective (registry/merge-overlays generated overrides)]
-    (concrete-harness rt (:harness resolved))
-    (require-valid!
-     ::strand
-     (weaver/update!
-      rt id
-      {:attributes
-       (runs/retry-attribute-patch
-        run {:requested requested
-             :concrete (:harness resolved)
-             :env (:env resolved)
-             :generated generated
-             :overrides overrides
-             :effective effective
-             :cwd (or cwd (attr-get run :harness/cwd))})})
-     "retry! produced an invalid run strand")))
+  #_{:clj-kondo/ignore [:locking-suspicious-lock]}
+  #_{:splint/disable [lint/locking-object]}
+  (locking (catalog/publication-lock rt)
+    (let [run (runs/require-run rt id)
+          _ (when-not (= "failed" (life/status run))
+              (fail! "Only a failed harness run may be retried"
+                     {:id id :status (life/status run)}))
+          _ (when-not (life/settled? run)
+              (fail! "Only a settled failed harness run may be retried"
+                     {:id id :settlement (attr-get run :harness/settlement)}))
+          _ (when (attr-get run :harness/request-id)
+              (fail! "A request-bound run cannot be retried in place"
+                     {:id id :request-id (attr-get run :harness/request-id)}))
+          _ (runs/require-continuation-head! rt id)
+          requested (or harness (attr-get run :harness/alias))
+          resolved (resolve-harness rt requested)
+          concrete (:harness resolved)
+          old-concrete (attr-get run :harness/harness)
+          _ (when (and (managed/managed-harness? old-concrete)
+                       (not (managed/managed-harness? concrete)))
+              (fail! "Retry cannot move a managed identity to a maintenance provider"
+                     {:id id :retained old-concrete :requested concrete}))
+          generated (:generated resolved)
+          old-overrides (registry/normalize-overlay
+                         (attr-get run :harness/overrides))
+          overrides (reduce-kv
+                     (fn [m k v] (if (nil? v) (dissoc m k) (assoc m k v)))
+                     old-overrides
+                     (registry/normalize-overlay attributes))
+          effective (registry/merge-overlays generated overrides)
+          resumed? (some? (attr-get run :harness/resumes))
+          session-id (if resumed?
+                       (attr-get run :harness/session-id)
+                       (str (UUID/randomUUID)))
+          target (attr-get run :harness/target)
+          target-writers (when target
+                           (remove #(= id (:id %))
+                                   (runs/reserving-target-runs rt target)))
+          session-writers (when resumed?
+                            (remove #(= id (:id %))
+                                    (runs/reserving-session-writers
+                                     rt session-id)))]
+      (when (seq target-writers)
+        (fail! "Retry target already has an active managed run"
+               {:id id :target target :runs (mapv :id target-writers)}))
+      (when (seq session-writers)
+        (fail! "Retry native session already has an active managed writer"
+               {:id id :session-id session-id
+                :runs (mapv :id session-writers)}))
+      (concrete-harness rt concrete)
+      (let [identity-binding (managed/retry-identity!
+                              rt run concrete session-id effective)]
+        (require-valid!
+         ::strand
+         (weaver/update!
+          rt id
+          {:attributes
+           (runs/retry-attribute-patch
+            run {:requested requested
+                 :concrete concrete
+                 :env (:env resolved)
+                 :generated generated
+                 :overrides overrides
+                 :effective effective
+                 :cwd (or cwd (attr-get run :harness/cwd))
+                 :session-id session-id
+                 :identity-binding identity-binding})})
+         "retry! produced an invalid run strand")))))
 
 (s/fdef retry! :args (s/cat :runtime ::runtime :id ::id :request ::retry-request) :ret ::strand)
 
