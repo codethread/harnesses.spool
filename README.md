@@ -196,6 +196,10 @@ with `strand agent retry <run-id>`. `stalled-agent-gates` reports failed runs an
 gates carrying `gate/error`. After fixing a spawn request, remove `gate/error`
 to start a fresh bounded attempt series.
 
+## Development
+
+Follow the shared [Clojure lint and editor configuration](https://github.com/codethread/codethread.spool/blob/main/docs/processes/kondo-and-lsp.md) when refreshing static-analysis configuration.
+
 ## Providers
 
 The core owns the shared `harness/model`, `harness/effort`, and
