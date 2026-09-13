@@ -65,7 +65,7 @@
                           :extra-argv
                           {:type :string
                            :repeat? true
-                           :doc "Provider argument; repeat to preserve argv order."}
+                           :doc "Private literal provider-argument transport."}
                           :title
                           {:type :string
                            :doc "Display title; defaults to the first 80 prompt characters or the agent and mode."}

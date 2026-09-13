@@ -105,9 +105,9 @@
 
 (defn commit-run!
   "Commit one run strand, then publish it once every binding is durable."
-  [rt {:keys [title alias harness mode generated env overrides effective cwd
-              session-id prompt resumes after target root-targets context request-id fingerprint
-              logical-id by-identity]}]
+  [rt {:keys [title alias harness mode generated env overrides effective
+              literal-extra-argv cwd session-id prompt resumes after target
+              root-targets context request-id fingerprint logical-id by-identity]}]
   (when resumes
     (require-continuation-head! rt resumes))
   (when after
@@ -131,6 +131,8 @@
                          :harness/generated generated
                          :harness/overrides overrides}
                         effective
+                        (when (some? literal-extra-argv)
+                          {:harness.internal/literal-extra-argv "true"})
                         (when-not (str/blank? prompt)
                           {:harness/prompt prompt})
                         (when resumes {:harness/resumes resumes})
@@ -171,6 +173,9 @@
     (let [run-id (:id run)
           identity-id (:identity identity-binding)
           effective (bind-invocation-markers effective run-id identity-id)
+          effective (cond-> effective
+                      (some? literal-extra-argv)
+                      (assoc :harness/extra-argv literal-extra-argv))
           prompt (bind-invocation-markers prompt run-id identity-id)
           context (bind-invocation-markers context run-id identity-id)
           published (require-valid!

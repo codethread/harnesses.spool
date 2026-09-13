@@ -45,6 +45,7 @@ Options forwarded to `strand agent run`:
 Provider arguments:
   Everything after the first `--` is appended to the provider argv exactly in
   the order supplied. Quote shell arguments normally to preserve spaces.
+  Payload-reference and invocation-marker shaped values remain literal.
 
 Available agents:
 EOF
@@ -95,7 +96,10 @@ run_interactive() {
   local argument
 
   for argument in "${provider_args[@]}"; do
-    argv+=(--extra-argv "$argument")
+    # Millstrand resolves whole-value payload references before dispatch. Prefix
+    # this private transport value so provider strings such as :stdin remain
+    # literal; the agent operation removes exactly this prefix.
+    argv+=(--extra-argv "=$argument")
   done
   argv+=(--interactive)
   strand_call "${argv[@]}"

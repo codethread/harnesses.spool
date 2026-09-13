@@ -48,10 +48,13 @@
 
   A `:request-id` makes the call idempotent. Repeating it with an equivalent
   request returns the original run; repeating it with a different one fails and
-  names the run already holding the key."
+  names the run already holding the key.
+
+  `:literal-extra-argv` is the interactive CLI's raw provider tail. It follows
+  caller overlay precedence but remains exempt from invocation templating."
   [rt {:keys [harness mode prompt cwd attributes title resumes after session-id
-              append-system-prompt by-identity target root-targets context request-id
-              logical-id frozen]
+              append-system-prompt literal-extra-argv by-identity target
+              root-targets context request-id logical-id frozen]
        :as request}]
   (require-valid! ::runtime rt "create! requires a Weaver runtime")
   (require-valid! ::create-request request "create! requires a valid run request")
@@ -69,7 +72,9 @@
              overrides (cond-> (registry/normalize-overlay attributes)
                          append-system-prompt
                          (update registry/appended-system-prompts-attribute
-                                 (fnil conj []) append-system-prompt))
+                                 (fnil conj []) append-system-prompt)
+                         (some? literal-extra-argv)
+                         (assoc :harness/extra-argv literal-extra-argv))
              effective (registry/merge-overlays generated overrides)
              cwd (or cwd (System/getProperty "user.dir"))
              session-id (or session-id (str (UUID/randomUUID)))]
@@ -90,7 +95,8 @@
           {:title (or title (registry/run-title alias mode prompt))
            :alias alias :harness harness :mode mode :definition definition
            :generated generated :env env :overrides overrides
-           :effective effective :cwd cwd :session-id session-id
+           :effective effective :literal-extra-argv literal-extra-argv
+           :cwd cwd :session-id session-id
            :prompt prompt :resumes resumes :after after :target target
            :root-targets root-targets :context context :request-id request-id
            :fingerprint fingerprint
@@ -486,6 +492,9 @@
         replacements (registry/normalize-overlay attributes)
         overrides (reduce-kv (fn [m k v] (if (nil? v) (dissoc m k) (assoc m k v)))
                              retained replacements)
+        literal-extra-argv
+        (when (= "true" (attr-get run :harness.internal/literal-extra-argv))
+          (attr-get run :harness/extra-argv))
         generated (registry/normalize-overlay (attr-get run :harness/generated))
         create-request (cond-> {:harness (attr-get run :harness/harness)
                                 :frozen {:alias (attr-get run :harness/alias)
@@ -500,6 +509,8 @@
                                 :session-id (attr-get run :harness/session-id)}
                          (some? prompt) (assoc :prompt prompt)
                          (some? title) (assoc :title title)
+                         (some? literal-extra-argv)
+                         (assoc :literal-extra-argv literal-extra-argv)
                          (some? by-identity) (assoc :by-identity by-identity)
                          (some? target) (assoc :target target)
                          (some? root-targets) (assoc :root-targets root-targets)

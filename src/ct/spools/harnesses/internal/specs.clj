@@ -21,6 +21,8 @@
 (s/def :ct.spools.harnesses/model (s/and string? (complement str/blank?)))
 (s/def :ct.spools.harnesses/append-system-prompt
   (s/and string? (complement str/blank?)))
+(s/def :ct.spools.harnesses/literal-extra-argv
+  (s/coll-of string? :kind vector?))
 (s/def :ct.spools.harnesses/appended-system-prompts
   (s/coll-of :ct.spools.harnesses/append-system-prompt :kind vector?))
 (s/def :ct.spools.harnesses/strand
@@ -170,8 +172,8 @@
 (def create-keys
   "Closed key set accepted by `create!`."
   #{:harness :mode :prompt :cwd :attributes :title :resumes :after :session-id
-    :append-system-prompt :by-identity :target :root-targets :context :request-id
-    :logical-id :frozen})
+    :append-system-prompt :literal-extra-argv :by-identity :target :root-targets
+    :context :request-id :logical-id :frozen})
 (s/def :ct.spools.harnesses/create-request
   (s/and
    (s/keys :req-un [:ct.spools.harnesses/harness]
@@ -181,6 +183,7 @@
                     :ct.spools.harnesses/after
                     :ct.spools.harnesses/session-id
                     :ct.spools.harnesses/append-system-prompt
+                    :ct.spools.harnesses/literal-extra-argv
                     :ct.spools.harnesses/by-identity
                     :ct.spools.harnesses/target :ct.spools.harnesses/root-targets
                     :ct.spools.harnesses/context

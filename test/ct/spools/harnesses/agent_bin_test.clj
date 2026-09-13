@@ -89,7 +89,9 @@
               "--cwd" "/tmp/working dir"
               "--prompt" "wrapper prompt"
               "--"
-              "--provider-flag" "value with spaces" "" "--help" "--"]
+              "--provider-flag" "value with spaces" "" "--help" "--"
+              ":stdin" ":payload/example"
+              "Keep {{RUN_ID}} and {{AGENT_ID}} literal"]
              {"PATH" path
               "MILLSTRAND_WORKSPACE" (.getCanonicalPath workspace)
               "AGENT_BIN_TEST_LOG" (.getCanonicalPath log-dir)
@@ -100,11 +102,14 @@
                   "agent" "run" "pi"
                   "--cwd" "/tmp/working dir"
                   "--prompt" "wrapper prompt"
-                  "--extra-argv" "--provider-flag"
-                  "--extra-argv" "value with spaces"
-                  "--extra-argv" ""
-                  "--extra-argv" "--help"
-                  "--extra-argv" "--"
+                  "--extra-argv" "=--provider-flag"
+                  "--extra-argv" "=value with spaces"
+                  "--extra-argv" "="
+                  "--extra-argv" "=--help"
+                  "--extra-argv" "=--"
+                  "--extra-argv" "=:stdin"
+                  "--extra-argv" "=:payload/example"
+                  "--extra-argv" "=Keep {{RUN_ID}} and {{AGENT_ID}} literal"
                   "--interactive"]
                  (nul-argv (io/file log-dir "call-1")))))
         (testing "the tracked interactive lifecycle remains intact"

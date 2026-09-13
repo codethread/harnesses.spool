@@ -305,6 +305,8 @@ Use `mill bin run agent <agent> [wrapper options] -- <provider args>` to launch
 an interactive tracked session. The first literal `--` ends wrapper options;
 every later shell argument is appended to `harness/extra-argv` in its original
 order, including dash-prefixed values and quoted values containing spaces.
+Values such as `:stdin`, `:payload/example`, `{{RUN_ID}}`, and `{{AGENT_ID}}`
+remain literal provider arguments rather than payload or invocation templates.
 Caller arguments use the ordinary Harnesses overlay precedence, so they replace
 an alias or provider's generated `harness/extra-argv` value.
 
