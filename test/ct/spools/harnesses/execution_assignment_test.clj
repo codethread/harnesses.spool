@@ -19,6 +19,7 @@
                [ct.spools.harnesses.assignment :as assignment]
                [ct.spools.harnesses.execution :as execution]
                [ct.spools.harnesses.process-custody :as process-custody]
+               [ct.spools.harnesses.queries :as queries]
                [ct.spools.harnesses.providers.claude :as claude]
                [ct.spools.harnesses.providers.codex :as codex]
                [ct.spools.harnesses.providers.cursor :as cursor]
@@ -84,6 +85,7 @@
    (millstrand/use-op! agent-cli/agent)
    (millstrand/use-handler! execution/on-event)
    (millstrand/use-bin! agent-bin/agent)
+   (millstrand/use-query! queries/agent-run-settled)
 
    (lifecycle/use-resource!
     harnesses/harness-core-runtime
@@ -199,15 +201,19 @@
               "{\"kanban/card\":\"true\",\"kanban/type\":\"feature\",\"kanban/lane\":\"pending\"}"
               edge)))
 
-(defn- assign! [strand workspace markers target name]
+(defn- assign-at! [strand workspace markers target name cwd]
   (strand! strand workspace "agent" "assign" "fixture"
            "--task" target
-           "--cwd" (.getCanonicalPath markers)
+           "--cwd" cwd
            "--policy" "fixture-policy"
            "--request-id" (str "fixture-" target)
            "--attributes"
            (json/write-str {"harness.fixture/root" (.getCanonicalPath markers)
                             "harness.fixture/name" name})))
+
+(defn- assign! [strand workspace markers target name]
+  (assign-at! strand workspace markers target name
+              (.getCanonicalPath markers)))
 
 (defn run-acceptance!
   "Run the assignment fixture through an external, Mill-admitted Weaver."
@@ -227,8 +233,24 @@
                                         "--edge" (str "depends-on:" predecessor-target))
               parallel-a-target (add-card! strand workspace "Fixture parallel A")
               parallel-b-target (add-card! strand workspace "Fixture parallel B")
+              malformed-target (add-card! strand workspace "Fixture malformed launch")
+              malformed (assign-at! strand workspace markers malformed-target
+                                    "malformed"
+                                    (.getCanonicalPath
+                                     (io/file root "nonexistent-cwd")))
               predecessor (assign! strand workspace markers predecessor-target "predecessor")
               blocked (assign! strand workspace markers blocked-target "blocked")]
+          (let [failed (await-run! strand workspace (:id malformed) :settled)
+                selected (strand! strand workspace "list"
+                                  "--query" "agent-run-settled"
+                                  "--param" (str "run-id=" (:id malformed)))]
+            (testing "a malformed launch settles without starting a provider"
+              (is (not (.exists (io/file markers "malformed.started"))))
+              (is (= ["failed" "launch" true "launch-failure"]
+                     ((juxt :status :substatus :settled :settlement) failed))
+                  (pr-str failed))
+              (is (= [(:id malformed)] (mapv :id selected))
+                  (pr-str selected))))
           (await-file! (io/file markers "predecessor.started"))
           (testing "a blocked accepted assignment has no process or owner"
             (is (not (.exists (io/file markers "blocked.started"))))
@@ -287,7 +309,7 @@
                 (is (= "active" (:state (strand! strand workspace "show" target)))))))
           {:millstrand-sha millstrand-sha
            :workspace workspace
-           :runs 4
+           :runs 5
            :assertions :passed})
         (finally
           (mill! mill workspace "weaver" "stop")))
@@ -296,6 +318,6 @@
 
 (deftest external-weaver-obeys-assignment-readiness-and-custody
   (is (= {:millstrand-sha millstrand-sha
-          :runs 4
+          :runs 5
           :assertions :passed}
          (dissoc (run-acceptance!) :workspace))))
