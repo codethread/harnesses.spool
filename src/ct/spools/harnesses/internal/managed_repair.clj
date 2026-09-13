@@ -4,6 +4,7 @@
             [clojure.string :as str]
             [ct.spools.harnesses.catalog :as catalog]
             [ct.spools.harnesses.internal.lifecycle :as life]
+            [ct.spools.harnesses.internal.managed-identity :as managed-identity]
             [ct.spools.harnesses.internal.managed-startup :as managed]
             [millhouse.spools.identity :as identity]
             [millstrand.api.graph.alpha :as graph]
@@ -48,16 +49,6 @@
                  (life/reserving? %))
            (weaver/list rt [:= [:attr attribute-name] value] {})))
 
-(defn- with-identity-guard [rt f]
-  ;; Legacy repair must serialize with the pinned identity implementation, but
-  ;; it deliberately is not part of the general identity API. Resolve the
-  ;; implementation guard explicitly so this one scoped migration cannot race
-  ;; native startup while changing the historical binding.
-  (let [guard (ns-resolve 'millhouse.spools.identity 'with-identity-guard)]
-    (when-not guard
-      (fail! "Pinned identity implementation has no repair guard" {}))
-    (guard rt f)))
-
 (defn repair!
   "Repair one explicitly named completed legacy Codex binding.
 
@@ -72,11 +63,14 @@
   #_{:clj-kondo/ignore [:locking-suspicious-lock]}
   #_{:splint/disable [lint/locking-object]}
   (locking (catalog/publication-lock rt)
-    (with-identity-guard
+    (managed-identity/with-identity-guard
       rt
       (fn []
         (let [run (require-run rt run-id)
               identity-strand (identity/current rt identity)
+              parent (when-let [parent-identity
+                                (attr-get run :harness/caller-identity)]
+                       (identity/current rt parent-identity))
               harness (attr-get run :harness/harness)
               recorded-session (attr-get run :harness/session-id)
               run-reservation (attr-get run :identity/reservation-id)
@@ -172,30 +166,32 @@
                     :runs (mapv :id target-writers)}))
           (let [reservation-id (or identity-reservation
                                    (str (java.util.UUID/randomUUID)))
-                _ (when-not identity-reservation
-                    (weaver/update!
-                     rt (:id identity-strand)
-                     {:attributes
+                {:keys [run]}
+                (if repair-replay?
+                  {:run run}
+                  (managed-identity/persist-attachment!
+                   rt
+                   {:identity-strand identity-strand
+                    :run run
+                    :parent parent
+                    :identity-attributes
+                    (when-not identity-reservation
                       {:identity/native-session-id native-session-id
                        :identity/reservation-id reservation-id
-                       :identity/reservation-state "attached"}}))
-                updated (if repair-replay?
-                          run
-                          (weaver/update!
-                           rt run-id
-                           {:attributes
-                            {:identity/reservation-id reservation-id
-                             :harness/provisional-session-id
-                             (or (attr-get run :harness/provisional-session-id)
-                                 identity-native)
-                             :harness/native-attached "true"
-                             :harness/native-attachment-source "legacy-repair"
-                             :harness/native-attached-at
-                             (str (java.time.Instant/now))
-                             :harness/native-attachment-attempt
-                             (attr-get run :harness/attempt)
-                             :harness/native-attachment-invocation
-                             (attr-get run :harness/invocation)}}))]
+                       :identity/reservation-state "attached"})
+                    :run-attributes
+                    {:identity/reservation-id reservation-id
+                     :harness/provisional-session-id
+                     (or (attr-get run :harness/provisional-session-id)
+                         identity-native)
+                     :harness/native-attached "true"
+                     :harness/native-attachment-source "legacy-repair"
+                     :harness/native-attached-at
+                     (str (java.time.Instant/now))
+                     :harness/native-attachment-attempt
+                     (attr-get run :harness/attempt)
+                     :harness/native-attachment-invocation
+                     (attr-get run :harness/invocation)}}))]
             {:schema managed/managed-context-schema
              :run-id run-id
              :harness harness
@@ -208,6 +204,6 @@
                        :identity-instruction
                        (managed/identity-instruction identity)
                        :appended-system-prompts
-                       (or (attr-get updated
+                       (or (attr-get run
                                      :harness/appended-system-prompts)
                            [])}}))))))

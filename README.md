@@ -360,11 +360,13 @@ strand --workspace WORKSPACE --cwd SESSION_CWD \
 ```
 
 Startup validates the published run, concrete Codex/Pi provider, canonical cwd
-and workspace, root scope, attempt, invocation, reservation, friendly identity,
-Pi pin, immutable prior attachment, target writer, and native-session writer
-before calling the identity spool's reservation attachment. Exact replay
-converges. Child scope, stale launch metadata, and conflicting sessions fail
-before identity or provenance writes.
+and workspace, root scope, positive durable attempt, nonblank durable invocation,
+reservation, friendly identity, immutable prior attachment, target writer, and
+native-session writer. Pi additionally requires the bootstrap pin and compares
+both it and the actual host ID independently with the durable provisional ID.
+Identity binding, `performed`/`parent-of` provenance, and run attachment evidence
+then commit in one transaction. Exact replay converges. Never-launched runs,
+child scope, stale launch metadata, and conflicts fail without attachment writes.
 
 A successful startup response has this exact context structure (normal Strand
 output also adds its `operation` key):
@@ -397,8 +399,10 @@ Provider finish and late custody settlement use the same fenced attachment when
 they observe usable native evidence. Hook-confirmed interactive Codex identity
 survives a finish callback with no stdout. Attachment never substitutes for
 process settlement, and settlement evidence remains durable when attachment
-fails. Fresh retry and `--after` reserve fresh identities; native resume retains
-the attached identity, native session, and frozen settings.
+fails. Fresh retry and `--after` reserve fresh identities. Native resume and a
+retry of that continuation retain the attached identity, session, cwd, provider
+settings, and frozen guidance without consulting a changed or disabled alias;
+incompatible retry replacements fail before writes.
 
 One completed legacy Codex mismatch can be repaired only with all three recorded
 values supplied explicitly:
@@ -410,9 +414,10 @@ strand agent repair-startup RUN_ID \
 
 Repair requires a settled, usable Codex run, matching `performed` provenance, an
 unoccupied native session, and no conflicting active target/session writer. It
-converts only that identity to an attached reservation and is replay-safe. There
-is no discovery scan, broad migration, fallback mint, identity stealing, or
-automatic repair.
+converts only that identity to an attached reservation, committing identity,
+provenance, and run evidence atomically, and is replay-safe. There is no
+discovery scan, broad migration, fallback mint, identity stealing, or automatic
+repair.
 
 ## Declarative reviewers
 

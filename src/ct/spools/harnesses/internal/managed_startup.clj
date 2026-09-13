@@ -5,6 +5,7 @@
             [clojure.string :as str]
             [ct.spools.harnesses.catalog :as catalog]
             [ct.spools.harnesses.internal.lifecycle :as life]
+            [ct.spools.harnesses.internal.managed-identity :as managed-identity]
             [millhouse.spools.identity :as identity]
             [millstrand.api.batch.alpha :as batch]
             [millstrand.api.spool.alpha :refer [attr-get fail! require-valid!]]
@@ -204,6 +205,8 @@
           reservation-id (attr-get run :identity/reservation-id)
           identity-id (attr-get run :identity/id)
           harness (attr-get run :harness/harness)
+          provisional-session-id
+          (attr-get run :harness/provisional-session-id)
           attached? (= "true" (attr-get run :harness/native-attached))]
       (when-not (= "true" (attr-get run :harness/published))
         (fail! "Managed startup run is not published" {:run-id (:id run)}))
@@ -215,6 +218,12 @@
                      (string? identity-id) (not (str/blank? identity-id)))
         (fail! "Managed startup run has no identity reservation"
                {:run-id (:id run)}))
+      (when (and (= "pi" harness)
+                 (not (and (string? provisional-session-id)
+                           (not (str/blank? provisional-session-id)))))
+        (fail! "Managed Pi startup has no durable native session pin"
+               {:run-id (:id run)
+                :provisional-session-id provisional-session-id}))
       (cond-> {"schema" managed-bootstrap-schema
                "run-id" (:id run)
                "harness" harness
@@ -226,8 +235,7 @@
                "invocation" invocation
                "scope" root-scope}
         (= "pi" harness)
-        (assoc "expected-native-session-id"
-               (attr-get run :harness/provisional-session-id))
+        (assoc "expected-native-session-id" provisional-session-id)
         (and (not= "pi" harness) attached?)
         (assoc "expected-native-session-id"
                (attr-get run :harness/session-id))))))
@@ -270,7 +278,12 @@
         target (attr-get run :harness/target)
         target-conflicts (when target
                            (remove #(= (:id run) (:id %))
-                                   (reserving-writers rt :harness/target target)))]
+                                   (reserving-writers rt :harness/target target)))
+        durable-attempt (attr-get run :harness/attempt)
+        durable-invocation (attr-get run :harness/invocation)
+        durable-pi-pin (when (= "pi" stored-harness)
+                         (attr-get run
+                                   :harness/provisional-session-id))]
     (when-not (managed-harness? stored-harness)
       (fail! "Managed startup applies only to Codex and Pi"
              {:run-id (:id run) :harness stored-harness}))
@@ -281,6 +294,30 @@
       (fail! "Managed startup run has not begun"
              {:run-id (:id run)
               :status (attr-get run :harness/status)}))
+    (when-not (and (pos-int? durable-attempt)
+                   (string? durable-invocation)
+                   (not (str/blank? durable-invocation)))
+      (fail! "Managed startup run has no durable launch fence"
+             {:run-id (:id run)
+              :attempt durable-attempt
+              :invocation durable-invocation}))
+    (when (= "pi" stored-harness)
+      (when-not (and (string? durable-pi-pin)
+                     (not (str/blank? durable-pi-pin)))
+        (fail! "Managed Pi startup has no durable native session pin"
+               {:run-id (:id run)
+                :provisional-session-id durable-pi-pin}))
+      (when-not (contains? bootstrap "expected-native-session-id")
+        (fail! "Managed Pi startup bootstrap requires its native session pin"
+               {:run-id (:id run)}))
+      (when-not (= durable-pi-pin
+                   (get bootstrap "expected-native-session-id")
+                   native-session-id)
+        (fail! "Managed Pi startup native session does not match its durable pin"
+               {:run-id (:id run)
+                :expected durable-pi-pin
+                :bootstrap (get bootstrap "expected-native-session-id")
+                :actual native-session-id})))
     (doseq [[label expected actual]
             [["schema" managed-bootstrap-schema (get bootstrap "schema")]
              ["run" (:id run) (get bootstrap "run-id")]
@@ -296,9 +333,8 @@
              ["workspace" stored-workspace
               (canonical-path (get bootstrap "workspace")
                               "bootstrap workspace")]
-             ["attempt" (attr-get run :harness/attempt)
-              (get bootstrap "attempt")]
-             ["invocation" (attr-get run :harness/invocation)
+             ["attempt" durable-attempt (get bootstrap "attempt")]
+             ["invocation" durable-invocation
               (get bootstrap "invocation")]
              ["scope" root-scope scope]
              ["bootstrap scope" root-scope (get bootstrap "scope")]]]
@@ -339,37 +375,59 @@
              :appended-system-prompts
              (or (attr-get run :harness/appended-system-prompts) [])}})
 
+(defn- attachment-result [identity-strand]
+  (let [friendly-id (attr-get identity-strand :identity/id)]
+    {:identity friendly-id
+     :strand-id (:id identity-strand)
+     :result "attached"
+     :instruction (identity-instruction friendly-id)}))
+
 (defn- attach-validated!
   [rt run native-session-id]
-  (let [attachment-recorded?
-        (and (= "true" (attr-get run :harness/native-attached))
-             (= (attr-get run :harness/invocation)
-                (attr-get run :harness/native-attachment-invocation)))
-        attached (identity/attach!
-                  rt
-                  (cond-> {:harness (attr-get run :harness/harness)
-                           :native-session-id native-session-id
-                           :reservation-id
-                           (attr-get run :identity/reservation-id)
-                           :identity (attr-get run :identity/id)
-                           :run-id (:id run)}
-                    (attr-get run :harness/caller-identity)
-                    (assoc :parent-identity
-                           (attr-get run :harness/caller-identity))))
-        updated (if attachment-recorded?
-                  run
-                  (weaver/update!
-                   rt (:id run)
-                   {:attributes
-                    {:harness/session-id native-session-id
-                     :harness/native-attached "true"
-                     :harness/native-attached-at (str (java.time.Instant/now))
-                     :harness/native-attachment-source "managed-startup"
-                     :harness/native-attachment-attempt
-                     (attr-get run :harness/attempt)
-                     :harness/native-attachment-invocation
-                     (attr-get run :harness/invocation)}}))]
-    (context-result updated attached)))
+  (managed-identity/with-identity-guard
+    rt
+    (fn []
+      (let [attachment-recorded?
+            (and (= "true" (attr-get run :harness/native-attached))
+                 (= (attr-get run :harness/invocation)
+                    (attr-get run :harness/native-attachment-invocation)))
+            {:keys [identity-strand parent already-attached?]}
+            (managed-identity/reservation-binding
+             rt
+             {:harness (attr-get run :harness/harness)
+              :native-session-id native-session-id
+              :reservation-id (attr-get run :identity/reservation-id)
+              :friendly-id (attr-get run :identity/id)
+              :parent-identity
+              (attr-get run :harness/caller-identity)})]
+        (when (and attachment-recorded? (not already-attached?))
+          (fail! "Managed run attachment evidence conflicts with its reservation"
+                 {:run-id (:id run)
+                  :reservation-id
+                  (attr-get run :identity/reservation-id)}))
+        (if attachment-recorded?
+          (context-result run (attachment-result identity-strand))
+          (let [{:keys [identity-strand run]}
+                (managed-identity/persist-attachment!
+                 rt
+                 {:identity-strand identity-strand
+                  :run run
+                  :parent parent
+                  :identity-attributes
+                  (when-not already-attached?
+                    {:identity/native-session-id native-session-id
+                     :identity/reservation-state "attached"})
+                  :run-attributes
+                  {:harness/session-id native-session-id
+                   :harness/native-attached "true"
+                   :harness/native-attached-at
+                   (str (java.time.Instant/now))
+                   :harness/native-attachment-source "managed-startup"
+                   :harness/native-attachment-attempt
+                   (attr-get run :harness/attempt)
+                   :harness/native-attachment-invocation
+                   (attr-get run :harness/invocation)}})]
+            (context-result run (attachment-result identity-strand))))))))
 
 (defn startup!
   "Attach one managed run to its actual root native session.

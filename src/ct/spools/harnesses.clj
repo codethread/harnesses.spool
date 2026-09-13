@@ -408,6 +408,58 @@
 
 (s/fdef self-complete! :args (s/cat :runtime ::runtime :id ::id :result string?) :ret ::strand)
 
+(defn- validate-native-retry-settings!
+  [run request]
+  (let [retained-harness (attr-get run :harness/harness)
+        requested-harness (some-> (:harness request)
+                                  (registry/name-string "Retry harness"))]
+    (when (and requested-harness
+               (not= retained-harness requested-harness))
+      (fail! "Native resume retry cannot replace its frozen provider"
+             {:id (:id run)
+              :retained retained-harness
+              :requested requested-harness}))
+    (when (and (contains? request :cwd)
+               (not= (:cwd request) (attr-get run :harness/cwd)))
+      (fail! "Native resume retry cannot change frozen cwd"
+             {:id (:id run)
+              :retained (attr-get run :harness/cwd)
+              :requested (:cwd request)}))
+    (when (and (contains? request :attributes)
+               (not= (registry/normalize-overlay (:attributes request))
+                     (registry/normalize-overlay
+                      (attr-get run :harness/overrides))))
+      (fail! "Native resume retry cannot change frozen provider settings"
+             {:id (:id run)}))))
+
+(defn- native-retry-plan [rt run request]
+  (validate-native-retry-settings! run request)
+  (let [harness (attr-get run :harness/harness)]
+    {:requested (attr-get run :harness/alias)
+     :resolved (runs/frozen-resolution
+                rt
+                {:alias (attr-get run :harness/alias)
+                 :harness harness
+                 :generated (attr-get run :harness/generated)
+                 :env (attr-get run :harness/env)}
+                concrete-harness)
+     :overrides (registry/normalize-overlay
+                 (attr-get run :harness/overrides))
+     :cwd (attr-get run :harness/cwd)}))
+
+(defn- ordinary-retry-plan [rt run {:keys [harness cwd attributes]}]
+  (let [requested (or harness (attr-get run :harness/alias))
+        resolved (resolve-harness rt requested)
+        old-overrides (registry/normalize-overlay
+                       (attr-get run :harness/overrides))]
+    {:requested requested
+     :resolved resolved
+     :overrides (reduce-kv
+                 (fn [m k v] (if (nil? v) (dissoc m k) (assoc m k v)))
+                 old-overrides
+                 (registry/normalize-overlay attributes))
+     :cwd (or cwd (attr-get run :harness/cwd))}))
+
 (defn retry!
   "Reconstruct and reset one failed ad-hoc run, applying replacement options.
 
@@ -415,7 +467,7 @@
   `resume!` or submit a new request. A fresh Codex/Pi retry reserves a fresh
   identity and refreshes invocation markers before becoming ready. Retrying a
   native-resume attempt keeps its attached native identity and session."
-  [rt id {:keys [harness cwd attributes] :as request}]
+  [rt id request]
   (require-valid! ::runtime rt "retry! requires a Weaver runtime")
   (require-valid! ::id id "retry! requires a run id")
   (require-valid! ::retry-request request "retry! requires valid replacements")
@@ -433,23 +485,21 @@
               (fail! "A request-bound run cannot be retried in place"
                      {:id id :request-id (attr-get run :harness/request-id)}))
           _ (runs/require-continuation-head! rt id)
-          requested (or harness (attr-get run :harness/alias))
-          resolved (resolve-harness rt requested)
-          concrete (:harness resolved)
           old-concrete (attr-get run :harness/harness)
+          resumed? (some? (attr-get run :harness/resumes))
+          managed-native-resume?
+          (and resumed? (managed/managed-harness? old-concrete))
+          {:keys [requested resolved overrides cwd]}
+          (if managed-native-resume?
+            (native-retry-plan rt run request)
+            (ordinary-retry-plan rt run request))
+          concrete (:harness resolved)
           _ (when (and (managed/managed-harness? old-concrete)
                        (not (managed/managed-harness? concrete)))
               (fail! "Retry cannot move a managed identity to a maintenance provider"
                      {:id id :retained old-concrete :requested concrete}))
           generated (:generated resolved)
-          old-overrides (registry/normalize-overlay
-                         (attr-get run :harness/overrides))
-          overrides (reduce-kv
-                     (fn [m k v] (if (nil? v) (dissoc m k) (assoc m k v)))
-                     old-overrides
-                     (registry/normalize-overlay attributes))
           effective (registry/merge-overlays generated overrides)
-          resumed? (some? (attr-get run :harness/resumes))
           session-id (if resumed?
                        (attr-get run :harness/session-id)
                        (str (UUID/randomUUID)))
@@ -483,7 +533,7 @@
                  :generated generated
                  :overrides overrides
                  :effective effective
-                 :cwd (or cwd (attr-get run :harness/cwd))
+                 :cwd cwd
                  :session-id session-id
                  :identity-binding identity-binding})})
          "retry! produced an invalid run strand")))))

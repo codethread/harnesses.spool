@@ -48,6 +48,7 @@
               '[millhouse.spools.identity :as identity]
               '[millstrand.api.current.alpha :as current]
               '[millstrand.api.graph.alpha :as graph]
+              '[millstrand.api.hooks.alpha :as hooks]
               '[millstrand.api.spool.alpha :as spool]
               '[millstrand.api.weaver.alpha :as weaver])
      (def rt (current/runtime))
@@ -66,7 +67,18 @@
            {:message (ex-message error) :data (ex-data error)})))
      (defn targets [strand type]
        (into #{} (map :to_strand_id)
-             (graph/outgoing-edges rt [(:id strand)] type)))))
+             (graph/outgoing-edges rt [(:id strand)] type)))
+     (def reject-attachment-batches? (atom false))
+     (defn reject-attachment-batch [ctx]
+       (when (and @reject-attachment-batches?
+                  (some #(contains? (:attributes %)
+                                    :harness/native-attachment-source)
+                        (get-in ctx [:batch/payload :strands])))
+         (throw (ex-info "reject managed attachment batch"
+                         {:code "test/reject-attachment"}))))
+     (hooks/register-hook!
+      rt :reject-managed-attachment #{:batch/apply-before-commit}
+      (symbol (str (ns-name *ns*)) "reject-attachment-batch") {})))
 
 (defn- eval-world [ctx body]
   (test-alpha/repl! ctx (list 'do setup body)))
@@ -205,7 +217,7 @@
         (is (= 2 (count (:performed result))))
         (is (= #{(:child-strand result)} (:parented result)))))))
 
-(deftest stale-child-mismatch-and-writer-conflicts-do-not-attach
+(deftest invalid-fences-pins-and-atomic-rejection-do-not-attach
   (with-managed-world
     (fn [ctx]
       (let [result
@@ -234,54 +246,114 @@
                                 :cwd "/tmp/other" :session-id "actual"
                                 :title "writer"})
                     conflict (try-start "actual" "root" bootstrap)
-                    before-stop (identity/current rt identity-id)
                     _ (harnesses/stop! rt (:id writer) {:reason "release"})
+                    atomic-before
+                    [(weaver/show rt (:id codex))
+                     (identity/current rt identity-id)
+                     (targets (identity/current rt identity-id) "performed")]
+                    _ (reset! reject-attachment-batches? true)
+                    atomic-failure (try-start "actual" "root" bootstrap)
+                    _ (reset! reject-attachment-batches? false)
+                    atomic-after
+                    [(weaver/show rt (:id codex))
+                     (identity/current rt identity-id)
+                     (targets (identity/current rt identity-id) "performed")]
                     attached (try-start "actual" "root" bootstrap)
                     different (try-start "other-native" "root" bootstrap)
                     after (identity/current rt identity-id)
+                    never-run (harnesses/create!
+                               rt {:harness :codex :mode :interactive
+                                   :cwd "/tmp/never" :title "never launched"})
+                    _ (harnesses/stop! rt (:id never-run)
+                                       {:reason "stopped before launch"})
+                    never-bootstrap
+                    (assoc bootstrap
+                           "run-id" (:id never-run)
+                           "identity" (attr never-run :identity/id)
+                           "reservation-id"
+                           (attr never-run :identity/reservation-id)
+                           "cwd" "/tmp/never"
+                           "attempt" nil
+                           "invocation" nil)
+                    never-before
+                    [(weaver/show rt (:id never-run))
+                     (identity/current rt (attr never-run :identity/id))]
+                    never-failure
+                    (failure #(harnesses/managed-startup!
+                               rt {:harness "codex"
+                                   :native-session-id "never-started-thread"
+                                   :cwd "/tmp/never"
+                                   :scope "root"
+                                   :bootstrap never-bootstrap}))
+                    never-after
+                    [(weaver/show rt (:id never-run))
+                     (identity/current rt (attr never-run :identity/id))]
                     pi-run (harnesses/create!
                             rt {:harness :pi :mode :interactive
                                 :cwd "/tmp/pi" :session-id "pi-expected"
                                 :title "pi"})
                     _ (harnesses/begin-attempt! rt (:id pi-run))
                     pi-bootstrap (harnesses/managed-bootstrap rt (:id pi-run))
-                    pi-mismatch
-                    (failure #(harnesses/managed-startup!
-                               rt {:harness "pi"
-                                   :native-session-id "pi-wrong"
-                                   :cwd "/tmp/pi"
-                                   :scope "root"
-                                   :bootstrap pi-bootstrap}))]
+                    try-pi (fn [native document]
+                             (failure #(harnesses/managed-startup!
+                                        rt {:harness "pi"
+                                            :native-session-id native
+                                            :cwd "/tmp/pi"
+                                            :scope "root"
+                                            :bootstrap document})))
+                    pi-before
+                    [(weaver/show rt (:id pi-run))
+                     (identity/current rt (attr pi-run :identity/id))]
+                    pi-omitted
+                    (try-pi "pi-expected"
+                            (dissoc pi-bootstrap
+                                    "expected-native-session-id"))
+                    pi-changed
+                    (try-pi "pi-changed"
+                            (assoc pi-bootstrap
+                                   "expected-native-session-id"
+                                   "pi-changed"))
+                    pi-mismatch (try-pi "pi-wrong" pi-bootstrap)
+                    pi-after
+                    [(weaver/show rt (:id pi-run))
+                     (identity/current rt (attr pi-run :identity/id))]]
                 {:attempt (:attempt started)
                  :stale stale
                  :child child
                  :conflict conflict
-                 :before-state
-                 (attr before-stop :identity/reservation-state)
-                 :before-native
-                 (attr before-stop :identity/native-session-id)
+                 :atomic-failure atomic-failure
+                 :atomic-unchanged (= atomic-before atomic-after)
                  :attached attached
                  :different different
                  :after-state (attr after :identity/reservation-state)
                  :after-native (attr after :identity/native-session-id)
+                 :never-failure never-failure
+                 :never-unchanged (= never-before never-after)
+                 :pi-omitted pi-omitted
+                 :pi-changed pi-changed
                  :pi-mismatch pi-mismatch
-                 :pi-state
-                 (attr (identity/current rt (attr pi-run :identity/id))
-                       :identity/reservation-state)}))]
+                 :pi-unchanged (= pi-before pi-after)}))]
         (is (re-find #"invocation" (get-in result [:stale :message])))
         (is (re-find #"scope" (get-in result [:child :message])))
         (is (re-find #"active managed writer"
                      (get-in result [:conflict :message])))
-        (is (= "reserved" (:before-state result)))
-        (is (nil? (:before-native result)))
+        (is (some? (:atomic-failure result)))
+        (is (true? (:atomic-unchanged result)))
         (is (nil? (:attached result)))
         (is (re-find #"already attached"
                      (get-in result [:different :message])))
         (is (= "attached" (:after-state result)))
         (is (= "actual" (:after-native result)))
-        (is (re-find #"does not match the launch"
+        (is (re-find #"durable launch fence"
+                     (get-in result [:never-failure :message])))
+        (is (true? (:never-unchanged result)))
+        (is (re-find #"requires its native session pin"
+                     (get-in result [:pi-omitted :message])))
+        (is (re-find #"durable pin"
+                     (get-in result [:pi-changed :message])))
+        (is (re-find #"durable pin"
                      (get-in result [:pi-mismatch :message])))
-        (is (= "reserved" (:pi-state result)))))))
+        (is (true? (:pi-unchanged result)))))))
 
 (deftest provider-finish-late-settlement-and-retry-converge
   (with-managed-world
@@ -384,6 +456,36 @@
                         :invocation (:invocation pi-start)}
                        {:settled true :settlement "process-exit"}))
                     pi-after (weaver/show rt (:id pi-run))
+                    atomic-late-run
+                    (harnesses/create!
+                     rt {:harness :codex :mode :interactive
+                         :cwd "/tmp/atomic-late"
+                         :title "atomic late settlement"})
+                    atomic-late-start
+                    (harnesses/begin-attempt! rt (:id atomic-late-run))
+                    atomic-late-failed
+                    (harnesses/finish!
+                     rt (:id atomic-late-run)
+                     {:status :failed :exit-code 1 :error "primary"
+                      :invocation (:invocation atomic-late-start)
+                      :evidence {:settled false
+                                 :settlement "no-terminal-evidence"}})
+                    _ (reset! reject-attachment-batches? true)
+                    atomic-late-rejection
+                    (failure
+                     #(harnesses/settle-outcome!
+                       rt (:id atomic-late-failed)
+                       {:status :done :exit-code 0
+                        :session-id "atomic-late-thread"
+                        :session-usable true
+                        :invocation (:invocation atomic-late-start)}
+                       {:settled true :settlement "process-exit"}))
+                    _ (reset! reject-attachment-batches? false)
+                    atomic-late-after
+                    (weaver/show rt (:id atomic-late-run))
+                    atomic-late-identity
+                    (identity/current
+                     rt (attr atomic-late-run :identity/id))
                     retry-run (harnesses/create!
                                rt {:harness :codex :mode :interactive
                                    :cwd "/tmp/retry"
@@ -425,6 +527,17 @@
                  :pi-settled (attr pi-after :harness/settled)
                  :pi-native-attached (attr pi-after :harness/native-attached)
                  :pi-usable (attr pi-after :harness/session-usable)
+                 :atomic-late-rejection atomic-late-rejection
+                 :atomic-late-settled
+                 (attr atomic-late-after :harness/settled)
+                 :atomic-late-settlement
+                 (attr atomic-late-after :harness/settlement)
+                 :atomic-late-attached
+                 (attr atomic-late-after :harness/native-attached)
+                 :atomic-late-reservation-state
+                 (attr atomic-late-identity :identity/reservation-state)
+                 :atomic-late-native
+                 (attr atomic-late-identity :identity/native-session-id)
                  :retry-old old-identity
                  :retry-new new-identity
                  :retry-session-changed
@@ -450,11 +563,17 @@
         (is (= "primary" (:late-error result)))
         (is (= "late-thread" (:late-session result)))
         (is (= "true" (:late-settled result)))
-        (is (re-find #"does not match the launch"
+        (is (re-find #"durable pin"
                      (get-in result [:pi-late-mismatch :message])))
         (is (= "true" (:pi-settled result)))
         (is (= "false" (:pi-native-attached result)))
         (is (= "false" (:pi-usable result)))
+        (is (some? (:atomic-late-rejection result)))
+        (is (= "true" (:atomic-late-settled result)))
+        (is (= "process-exit" (:atomic-late-settlement result)))
+        (is (= "false" (:atomic-late-attached result)))
+        (is (= "reserved" (:atomic-late-reservation-state result)))
+        (is (nil? (:atomic-late-native result)))
         (is (not= (:retry-old result) (:retry-new result)))
         (is (true? (:retry-session-changed result)))
         (is (= "reserved" (:retry-reserved result)))
@@ -462,6 +581,113 @@
         (is (not (str/includes? (:prompt result) (:retry-old result))))
         (is (str/includes? (first (:appends result)) (:retry-new result)))
         (is (str/includes? (first (:appends result)) (:run-id result)))))))
+
+(deftest native-resume-retry-retains-frozen-settings-and-guidance
+  (with-managed-world
+    (fn [ctx]
+      (let [result
+            (eval-world
+             ctx
+             '(let [_ (harnesses/register-alias!
+                       rt :frozen-codex
+                       {:doc "Frozen retry alias."
+                        :parent :codex
+                        :env {"FROZEN_SETTING" "old"}
+                        :attributes
+                        {:harness/model "old-model"
+                         :harness/appended-system-prompts
+                         ["Old instruction for {{AGENT_ID}} / {{RUN_ID}}."]}})
+                    root (harnesses/create!
+                          rt {:harness :frozen-codex
+                              :mode :interactive
+                              :cwd "/tmp/frozen-retry"
+                              :title "frozen root"})
+                    root-start (harnesses/begin-attempt! rt (:id root))
+                    _ (harnesses/managed-startup!
+                       rt {:harness "codex"
+                           :native-session-id "frozen-thread"
+                           :cwd "/tmp/frozen-retry"
+                           :scope "root"
+                           :bootstrap
+                           (harnesses/managed-bootstrap rt (:id root))})
+                    root (harnesses/finish!
+                          rt (:id root)
+                          {:status :done :exit-code 0
+                           :invocation (:invocation root-start)})
+                    resumed (harnesses/resume! rt (:id root) {})
+                    resumed-start
+                    (harnesses/begin-attempt! rt (:id resumed))
+                    _ (harnesses/managed-startup!
+                       rt {:harness "codex"
+                           :native-session-id "frozen-thread"
+                           :cwd "/tmp/frozen-retry"
+                           :scope "root"
+                           :bootstrap
+                           (harnesses/managed-bootstrap rt (:id resumed))})
+                    failed (harnesses/finish!
+                            rt (:id resumed)
+                            {:status :failed :exit-code 1
+                             :error "retry me"
+                             :invocation (:invocation resumed-start)
+                             :evidence {:settled true
+                                        :settlement "process-exit"}})
+                    frozen-identity (attr failed :identity/id)
+                    frozen-session (attr failed :harness/session-id)
+                    _ (harnesses/unregister-alias! rt :frozen-codex)
+                    _ (harnesses/register-alias!
+                       rt :frozen-codex
+                       {:doc "Incompatible live replacement."
+                        :parent :pi
+                        :env {"FROZEN_SETTING" "new"}
+                        :attributes
+                        {:harness/model "new-model"
+                         :harness/appended-system-prompts
+                         ["New live instruction."]}})
+                    before-rejections (weaver/show rt (:id failed))
+                    alias-replacement
+                    (failure #(harnesses/retry!
+                               rt (:id failed) {:harness :frozen-codex}))
+                    cwd-replacement
+                    (failure #(harnesses/retry!
+                               rt (:id failed) {:cwd "/tmp/changed"}))
+                    settings-replacement
+                    (failure #(harnesses/retry!
+                               rt (:id failed)
+                               {:attributes {:harness/model "new-model"}}))
+                    after-rejections (weaver/show rt (:id failed))
+                    _ (harnesses/unregister-alias! rt :frozen-codex)
+                    retried (harnesses/retry! rt (:id failed) {})]
+                {:alias-replacement alias-replacement
+                 :cwd-replacement cwd-replacement
+                 :settings-replacement settings-replacement
+                 :rejections-no-write
+                 (= before-rejections after-rejections)
+                 :same-identity
+                 (= frozen-identity (attr retried :identity/id))
+                 :same-session
+                 (= frozen-session (attr retried :harness/session-id))
+                 :cwd (attr retried :harness/cwd)
+                 :model (attr retried :harness/model)
+                 :env (attr retried :harness/env)
+                 :guidance
+                 (attr retried :harness/appended-system-prompts)
+                 :run-id (:id retried)
+                 :identity (attr retried :identity/id)}))]
+        (is (re-find #"cannot replace its frozen provider"
+                     (get-in result [:alias-replacement :message])))
+        (is (re-find #"cannot change frozen cwd"
+                     (get-in result [:cwd-replacement :message])))
+        (is (re-find #"cannot change frozen provider settings"
+                     (get-in result [:settings-replacement :message])))
+        (is (true? (:rejections-no-write result)))
+        (is (true? (:same-identity result)))
+        (is (true? (:same-session result)))
+        (is (= "/tmp/frozen-retry" (:cwd result)))
+        (is (= "old-model" (:model result)))
+        (is (= {:FROZEN_SETTING "old"} (:env result)))
+        (is (= [(str "Old instruction for " (:identity result)
+                     " / " (:run-id result) ".")]
+               (:guidance result)))))))
 
 (deftest maintenance-providers-and-explicit-legacy-repair-stay-scoped
   (with-managed-world
@@ -488,6 +714,23 @@
                           :session-usable true
                           :invocation (:invocation started)})))
                     legacy-identity (attr legacy :identity/id)
+                    repair-before
+                    [(weaver/show rt (:id legacy))
+                     (identity/current rt legacy-identity)
+                     (targets (identity/current rt legacy-identity)
+                              "performed")]
+                    _ (reset! reject-attachment-batches? true)
+                    repair-failure
+                    (failure #(harnesses/repair-managed-startup!
+                               rt {:run-id (:id legacy)
+                                   :identity legacy-identity
+                                   :native-session-id "legacy-actual"}))
+                    _ (reset! reject-attachment-batches? false)
+                    repair-after
+                    [(weaver/show rt (:id legacy))
+                     (identity/current rt legacy-identity)
+                     (targets (identity/current rt legacy-identity)
+                              "performed")]
                     repaired (harnesses/repair-managed-startup!
                               rt {:run-id (:id legacy)
                                   :identity legacy-identity
@@ -535,6 +778,8 @@
                        :identity/native-session-id)
                  :claude-bootstrap
                  (harnesses/managed-bootstrap rt (:id claude))
+                 :repair-failure repair-failure
+                 :repair-unchanged (= repair-before repair-after)
                  :repair-result (:result repaired)
                  :repair-replay (:result repair-replay)
                  :repair-timestamp-stable (= repaired-at replayed-at)
@@ -554,6 +799,8 @@
         (is (nil? (:claude-reservation result)))
         (is (= "claude-native" (:claude-native result)))
         (is (nil? (:claude-bootstrap result)))
+        (is (some? (:repair-failure result)))
+        (is (true? (:repair-unchanged result)))
         (is (= "repaired" (:repair-result result)))
         (is (= "recovered" (:repair-replay result)))
         (is (true? (:repair-timestamp-stable result)))

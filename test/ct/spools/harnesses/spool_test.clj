@@ -174,6 +174,8 @@
                   :resumed ["--provider-flag" "value with spaces" "" "--"
                             ":stdin" ":payload/example"
                             "Keep {{RUN_ID}} and {{AGENT_ID}} literal"]
+                  :retried ["--one" "{{RUN_ID}}" "{{AGENT_ID}}"
+                            ":stdin" ":payload/example"]
                   :launcher true}
                  (test-alpha/repl!
                   ctx
@@ -216,7 +218,42 @@
                               run :harness/session-id)
                              :session-usable true
                              :invocation (:invocation started)})
-                         resumed (harnesses/resume! rt (:id run) {})]
+                         resumed (harnesses/resume! rt (:id run) {})
+                         retry-created
+                         (millstrand.api.weaver.alpha/op!
+                          rt 'agent
+                          ["run" "pi" "--interactive" "--cwd" "/tmp"
+                           "--extra-argv" "=--one"
+                           "--extra-argv" "={{RUN_ID}}"
+                           "--extra-argv" "={{AGENT_ID}}"
+                           "--extra-argv" "=:stdin"
+                           "--extra-argv" "=:payload/example"])
+                         retry-run
+                         (millstrand.api.weaver.alpha/show
+                          rt (:id retry-created))
+                         retry-start
+                         (harnesses/begin-attempt! rt (:id retry-run))
+                         _ (harnesses/managed-startup!
+                            rt {:harness "pi"
+                                :native-session-id
+                                (millstrand.api.spool.alpha/attr-get
+                                 retry-run :harness/session-id)
+                                :cwd "/tmp"
+                                :scope "root"
+                                :bootstrap
+                                (harnesses/managed-bootstrap
+                                 rt (:id retry-run))})
+                         retry-failed
+                         (harnesses/finish!
+                          rt (:id retry-run)
+                          {:status :failed
+                           :exit-code 1
+                           :error "retry literal argv"
+                           :invocation (:invocation retry-start)
+                           :evidence {:settled true
+                                      :settlement "process-exit"}})
+                         retried
+                         (harnesses/retry! rt (:id retry-failed) {})]
                      {:generated
                       (get-in run [:attributes :harness/generated
                                    :harness/extra-argv])
@@ -229,6 +266,9 @@
                       :resumed
                       (millstrand.api.spool.alpha/attr-get
                        resumed :harness/extra-argv)
+                      :retried
+                      (millstrand.api.spool.alpha/attr-get
+                       retried :harness/extra-argv)
                       :launcher
                       (let [script (slurp (:launcher created))]
                         (and

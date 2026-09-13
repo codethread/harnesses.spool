@@ -267,7 +267,18 @@
         old-overrides (registry/normalize-overlay (attr-get run :harness/overrides))
         identity-id (or (:identity identity-binding)
                         (attr-get run :identity/id))
-        effective (bind-invocation-markers effective (:id run) identity-id)
+        literal-extra-argv?
+        (= "true" (attr-get run :harness.internal/literal-extra-argv))
+        literal-extra-argv (when literal-extra-argv?
+                             (attr-get run :harness/extra-argv))
+        effective (bind-invocation-markers
+                   (cond-> effective
+                     literal-extra-argv? (dissoc :harness/extra-argv))
+                   (:id run)
+                   identity-id)
+        effective (cond-> effective
+                    literal-extra-argv?
+                    (assoc :harness/extra-argv literal-extra-argv))
         old-overlay-keys (set (filter registry/overlay-key? (keys old-attrs)))
         all-overlay-keys (into old-overlay-keys (keys effective))
         overlay-delta (into {} (map (fn [k] [k (get effective k)]) all-overlay-keys))
