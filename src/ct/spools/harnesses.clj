@@ -191,7 +191,10 @@
   Positive Codex/Pi session evidence first attaches the reserved identity. A
   hook-confirmed session survives an interactive finish that cannot observe
   provider stdout; clean completion plus that binding makes native resume
-  usable."
+  usable.
+
+  A pre-reservation Codex/Pi run retains its historical identity binding and
+  provider session evidence without claiming native startup attachment."
   [rt id {:keys [status exit-code result session-id error session-usable
                  invocation evidence]
           :as outcome}]
@@ -229,6 +232,7 @@
                            (str/blank? result))
                   (fail! "Successful headless harness outcome requires a result"
                          {:id id}))
+              legacy-managed? (managed/legacy-managed-run? run)
               _ (managed/attach-outcome! rt run outcome)
               run (runs/require-run rt id)
               attached? (= "true" (attr-get run :harness/native-attached))
@@ -240,11 +244,12 @@
               _ (when (and (managed/managed-harness?
                             (attr-get run :harness/harness))
                            (true? session-usable)
-                           (not attached?))
+                           (not (or attached? legacy-managed?)))
                   (fail! "Managed session evidence was not attached to the run"
                          {:id id :session-id session-id}))
               usable? (or (and attached? (true? session-usable))
                           (and attached? (= :done status) (zero? exit-code))
+                          (and legacy-managed? (true? session-usable))
                           (and (not (managed/managed-harness?
                                      (attr-get run :harness/harness)))
                                (true? session-usable)))
@@ -303,7 +308,9 @@
   Custody evidence is persisted independently before optional Codex/Pi native
   attachment. An attachment failure therefore cannot erase proof that the
   provider process settled. Existing hook-confirmed session evidence is never
-  replaced by an unobserved interactive outcome."
+  replaced by an unobserved interactive outcome. Pre-reservation managed runs
+  keep their historical identity representation without invented attachment
+  evidence."
   [rt id outcome evidence]
   (require-valid! ::runtime rt "settle-outcome! requires a Weaver runtime")
   (require-valid! ::id id "settle-outcome! requires a run id")
@@ -545,7 +552,8 @@
 
   Eligibility is positive evidence only: the run must be terminal, provably
   settled, hold a native session the provider has verified as usable, and have
-  no other run currently reserving that session."
+  no other run currently reserving that session. Pre-reservation managed runs
+  require an explicit supported repair before native resume."
   [rt id]
   (require-valid! ::runtime rt "resume-eligibility requires a Weaver runtime")
   (require-valid! ::id id "resume-eligibility requires a run id")
@@ -554,9 +562,13 @@
         writers (if (str/blank? session-id)
                   []
                   (remove #(= id (:id %))
-                          (runs/reserving-session-writers rt session-id)))]
-    (require-valid! ::resume-eligibility
-                    (life/resume-eligibility run (count writers))
+                          (runs/reserving-session-writers rt session-id)))
+        result (if (managed/legacy-managed-run? run)
+                 {:eligible? false
+                  :reason (str "legacy managed run has no startup reservation; "
+                               "native resume requires an explicit supported repair")}
+                 (life/resume-eligibility run (count writers)))]
+    (require-valid! ::resume-eligibility result
                     "resume-eligibility produced an invalid result")))
 
 (s/fdef resume-eligibility

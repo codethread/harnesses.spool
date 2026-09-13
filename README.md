@@ -404,6 +404,22 @@ retry of that continuation retain the attached identity, session, cwd, provider
 settings, and frozen guidance without consulting a changed or disabled alias;
 incompatible retry replacements fail before writes.
 
+A managed Codex/Pi run accepted before reservation-backed startup has no
+`identity/reservation-id`, `harness/native-attached`, or
+`harness/provisional-session-id`. Completion after a Weaver upgrade validates
+that its original unreserved identity belongs to the provider and performed the
+run, then preserves the provider outcome, session usability, and custody
+settlement without creating a reservation or native-attachment evidence. The
+originating invocation fence remains mandatory. A damaged current run still has
+startup-v1 representation and is rejected by the strict reservation checks; it
+is never treated as legacy.
+
+This compatibility path cannot prove that the old provisional identity binding
+names the provider's observed session. Native resume is therefore unavailable
+until an explicit supported repair records that relationship. Fresh `--after`
+work remains available and uses a new reservation. Cancellation settlement says
+only that custody is settled; it never invents successful completion.
+
 One completed legacy Codex mismatch can be repaired only with all three recorded
 values supplied explicitly:
 

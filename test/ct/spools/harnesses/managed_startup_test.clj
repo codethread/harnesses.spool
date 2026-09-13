@@ -355,6 +355,218 @@
                      (get-in result [:pi-mismatch :message])))
         (is (true? (:pi-unchanged result)))))))
 
+(deftest pre-reservation-runs-finish-under-the-new-backend
+  (with-managed-world
+    (fn [ctx]
+      (let [result
+            (eval-world
+             ctx
+             '(let [legacy-create
+                    (fn [request]
+                      (with-redefs [managed/managed-harness?
+                                    (constantly false)]
+                        (harnesses/create! rt request)))
+                    completed-run
+                    (legacy-create
+                     {:harness :codex :mode :interactive
+                      :cwd "/tmp/legacy-complete"
+                      :title "serialized legacy completion"})
+                    completed-provisional
+                    (attr completed-run :harness/session-id)
+                    completed-start
+                    (harnesses/begin-attempt! rt (:id completed-run))
+                    identity-before
+                    (identity/current rt (attr completed-run :identity/id))
+                    stale
+                    (harnesses/finish!
+                     rt (:id completed-run)
+                     {:status :done :exit-code 0 :result "stale"
+                      :session-id "legacy-thread"
+                      :session-usable true
+                      :invocation "originating-stale-invocation"})
+                    identity-after-stale
+                    (identity/current rt (attr completed-run :identity/id))
+                    completed
+                    (harnesses/finish!
+                     rt (:id completed-run)
+                     {:status :done :exit-code 0 :result "complete"
+                      :session-id "legacy-thread"
+                      :session-usable true
+                      :invocation (:invocation completed-start)})
+                    before-resume-count (count (weaver/list rt))
+                    legacy-resume
+                    (failure #(harnesses/resume! rt (:id completed) {}))
+                    after-resume-count (count (weaver/list rt))
+                    fresh
+                    (harnesses/create!
+                     rt {:harness :codex :mode :interactive
+                         :cwd "/tmp/legacy-complete"
+                         :title "fresh after legacy"
+                         :after (:id completed)})
+                    cancelled-run
+                    (legacy-create
+                     {:harness :pi :mode :interactive
+                      :cwd "/tmp/legacy-cancel"
+                      :session-id "legacy-pi-session"
+                      :title "serialized legacy cancellation"})
+                    cancelled-start
+                    (harnesses/begin-attempt! rt (:id cancelled-run))
+                    _ (harnesses/stop! rt (:id cancelled-run)
+                                       {:reason "replacement cancellation"})
+                    cancelled
+                    (harnesses/finish!
+                     rt (:id cancelled-run)
+                     {:status :failed :exit-code 143
+                      :error "cancelled"
+                      :session-id "legacy-pi-session"
+                      :session-usable true
+                      :invocation (:invocation cancelled-start)
+                      :evidence {:settled true
+                                 :settlement "graceful-cancellation"
+                                 :cancelled? true}})
+                    late-run
+                    (legacy-create
+                     {:harness :codex :mode :interactive
+                      :cwd "/tmp/legacy-late"
+                      :title "serialized legacy late custody"})
+                    late-start
+                    (harnesses/begin-attempt! rt (:id late-run))
+                    _ (harnesses/stop! rt (:id late-run)
+                                       {:reason "late custody"})
+                    late-failed
+                    (harnesses/finish!
+                     rt (:id late-run)
+                     {:status :failed :exit-code 1
+                      :error "primary failure"
+                      :invocation (:invocation late-start)
+                      :evidence {:settled false
+                                 :settlement "no-terminal-evidence"}})
+                    late-settled
+                    (harnesses/settle-outcome!
+                     rt (:id late-failed)
+                     {:status :failed :exit-code 143
+                      :error "cancelled"
+                      :session-id "legacy-late-thread"
+                      :session-usable true
+                      :invocation (:invocation late-start)}
+                     {:settled true
+                      :settlement "graceful-cancellation"
+                      :cancelled? true})
+                    malformed-run
+                    (harnesses/create!
+                     rt {:harness :codex :mode :interactive
+                         :cwd "/tmp/malformed-current"
+                         :title "malformed current reservation"})
+                    malformed-start
+                    (harnesses/begin-attempt! rt (:id malformed-run))
+                    malformed-identity
+                    (attr malformed-run :identity/id)
+                    _ (weaver/update!
+                       rt (:id malformed-run)
+                       {:attributes {:identity/reservation-id nil}})
+                    malformed-before
+                    [(weaver/show rt (:id malformed-run))
+                     (identity/current rt malformed-identity)
+                     (targets (identity/current rt malformed-identity)
+                              "performed")]
+                    malformed-failure
+                    (failure
+                     #(harnesses/finish!
+                       rt (:id malformed-run)
+                       {:status :done :exit-code 0 :result "must reject"
+                        :session-id "malformed-thread"
+                        :session-usable true
+                        :invocation (:invocation malformed-start)}))
+                    malformed-after
+                    [(weaver/show rt (:id malformed-run))
+                     (identity/current rt malformed-identity)
+                     (targets (identity/current rt malformed-identity)
+                              "performed")]]
+                {:completed-status (attr completed :harness/status)
+                 :completed-substatus (attr completed :harness/substatus)
+                 :completed-session (attr completed :harness/session-id)
+                 :completed-usable (attr completed :harness/session-usable)
+                 :completed-reservation
+                 (attr completed :identity/reservation-id)
+                 :completed-native-attached
+                 (attr completed :harness/native-attached)
+                 :completed-provisional-attribute
+                 (attr completed :harness/provisional-session-id)
+                 :identity-native-before
+                 (attr identity-before :identity/native-session-id)
+                 :identity-native-after
+                 (attr (identity/current rt (attr completed :identity/id))
+                       :identity/native-session-id)
+                 :stale-status (attr stale :harness/status)
+                 :stale-session (attr stale :harness/session-id)
+                 :stale-fenced (attr stale :harness/fenced-callbacks)
+                 :stale-identity-unchanged
+                 (= identity-before identity-after-stale)
+                 :completed-provisional completed-provisional
+                 :legacy-resume legacy-resume
+                 :resume-no-write (= before-resume-count after-resume-count)
+                 :fresh-identity-different
+                 (not= (attr completed :identity/id)
+                       (attr fresh :identity/id))
+                 :fresh-reservation (attr fresh :identity/reservation-id)
+                 :cancelled-status (attr cancelled :harness/status)
+                 :cancelled-substatus (attr cancelled :harness/substatus)
+                 :cancelled-settled (attr cancelled :harness/settled)
+                 :cancelled-settlement
+                 (attr cancelled :harness/settlement)
+                 :cancelled-reservation
+                 (attr cancelled :identity/reservation-id)
+                 :late-status (attr late-settled :harness/status)
+                 :late-error (attr late-settled :harness/error)
+                 :late-settled (attr late-settled :harness/settled)
+                 :late-settlement
+                 (attr late-settled :harness/settlement)
+                 :late-session (attr late-settled :harness/session-id)
+                 :late-usable (attr late-settled :harness/session-usable)
+                 :malformed-failure malformed-failure
+                 :malformed-unchanged
+                 (= malformed-before malformed-after)}))]
+        (testing "an old serialized binding completes without invented evidence"
+          (is (= "stopped" (:completed-status result)))
+          (is (= "completed" (:completed-substatus result)))
+          (is (= "legacy-thread" (:completed-session result)))
+          (is (= "true" (:completed-usable result)))
+          (is (nil? (:completed-reservation result)))
+          (is (nil? (:completed-native-attached result)))
+          (is (nil? (:completed-provisional-attribute result)))
+          (is (= (:completed-provisional result)
+                 (:identity-native-before result)
+                 (:identity-native-after result))))
+        (testing "the originating invocation still fences legacy evidence"
+          (is (= "running" (:stale-status result)))
+          (is (= (:completed-provisional result)
+                 (:stale-session result)))
+          (is (= 1 (:stale-fenced result)))
+          (is (true? (:stale-identity-unchanged result))))
+        (testing "legacy continuity is explicit while fresh work remains native-v1"
+          (is (re-find #"legacy managed run has no startup reservation"
+                       (get-in result [:legacy-resume :data :reason])))
+          (is (true? (:resume-no-write result)))
+          (is (true? (:fresh-identity-different result)))
+          (is (string? (:fresh-reservation result))))
+        (testing "a replacement backend records cancellation and late custody"
+          (is (= "stopped" (:cancelled-status result)))
+          (is (= "requested" (:cancelled-substatus result)))
+          (is (= "true" (:cancelled-settled result)))
+          (is (= "graceful-cancellation"
+                 (:cancelled-settlement result)))
+          (is (nil? (:cancelled-reservation result)))
+          (is (= "failed" (:late-status result)))
+          (is (= "primary failure" (:late-error result)))
+          (is (= "true" (:late-settled result)))
+          (is (= "graceful-cancellation" (:late-settlement result)))
+          (is (= "legacy-late-thread" (:late-session result)))
+          (is (= "true" (:late-usable result))))
+        (testing "a damaged reservation-backed run is not treated as legacy"
+          (is (re-find #"no identity reservation"
+                       (get-in result [:malformed-failure :message])))
+          (is (true? (:malformed-unchanged result))))))))
+
 (deftest provider-finish-late-settlement-and-retry-converge
   (with-managed-world
     (fn [ctx]

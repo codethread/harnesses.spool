@@ -8,6 +8,7 @@
             [ct.spools.harnesses.internal.managed-identity :as managed-identity]
             [millhouse.spools.identity :as identity]
             [millstrand.api.batch.alpha :as batch]
+            [millstrand.api.graph.alpha :as graph]
             [millstrand.api.spool.alpha :refer [attr-get fail! require-valid!]]
             [millstrand.api.weaver.alpha :as weaver]))
 
@@ -46,6 +47,20 @@
   "Return whether concrete `harness` uses managed native attachment."
   [harness]
   (contains? managed-harnesses harness))
+
+(defn legacy-managed-run?
+  "Return whether `run` has the pre-reservation managed representation.
+
+  Accepted legacy Codex/Pi rows have a published identity binding but none of
+  the three fields introduced by reservation-backed startup. A partially
+  damaged current row retains at least its native attachment or provisional
+  session field and must continue through the strict startup-v1 path."
+  [run]
+  (and (managed-harness? (attr-get run :harness/harness))
+       (= "true" (attr-get run :harness/published))
+       (nil? (attr-get run :identity/reservation-id))
+       (nil? (attr-get run :harness/native-attached))
+       (nil? (attr-get run :harness/provisional-session-id))))
 
 (defn identity-instruction
   "Return the canonical managed identity instruction for `friendly-id`."
@@ -361,6 +376,44 @@
              {:target target
               :runs (mapv :id target-conflicts)}))))
 
+(defn- performed-run? [rt identity-strand run-id]
+  (boolean
+   (some #(= run-id (:to_strand_id %))
+         (graph/outgoing-edges rt [(:id identity-strand)] "performed"))))
+
+(defn- require-legacy-binding!
+  [rt run]
+  (let [friendly-id (attr-get run :identity/id)
+        identity-strand (identity/current rt friendly-id)
+        harness (attr-get run :harness/harness)
+        identity-harness (attr-get identity-strand :identity/harness)
+        native-session-id
+        (attr-get identity-strand :identity/native-session-id)
+        reservation-id
+        (attr-get identity-strand :identity/reservation-id)
+        reservation-state
+        (attr-get identity-strand :identity/reservation-state)]
+    (when-not (= harness identity-harness)
+      (fail! "Legacy managed identity belongs to another harness"
+             {:run-id (:id run)
+              :identity friendly-id
+              :expected harness
+              :actual identity-harness}))
+    (when-not (and (string? native-session-id)
+                   (not (str/blank? native-session-id)))
+      (fail! "Legacy managed identity has no native session binding"
+             {:run-id (:id run) :identity friendly-id}))
+    (when (or reservation-id reservation-state)
+      (fail! "Legacy managed identity has reservation metadata"
+             {:run-id (:id run)
+              :identity friendly-id
+              :reservation-id reservation-id
+              :reservation-state reservation-state}))
+    (when-not (performed-run? rt identity-strand (:id run))
+      (fail! "Legacy managed identity did not perform the run"
+             {:run-id (:id run) :identity friendly-id}))
+    identity-strand))
+
 (defn- context-result [run attached]
   {:schema managed-context-schema
    :run-id (:id run)
@@ -450,23 +503,32 @@
 (defn attach-outcome!
   "Attach positive provider session evidence to a managed invocation.
 
-  Returns nil when the provider is maintenance-only or supplied no usable
-  native evidence. The caller must hold the lifecycle publication lock."
+  A genuine pre-reservation run keeps its historical identity binding and
+  records no invented attachment evidence. Its binding and `performed`
+  provenance are still validated before completion is accepted.
+
+  Returns a legacy result after validating a pre-reservation binding, or nil
+  for maintenance providers and outcomes with no usable native evidence. The
+  caller must hold the lifecycle publication lock."
   [rt run {:keys [session-id session-usable invocation]}]
-  (when (and (managed-harness? (attr-get run :harness/harness))
-             session-usable session-id)
-    (when-not (and (string? invocation)
-                   (not (str/blank? invocation))
-                   (= invocation (attr-get run :harness/invocation)))
-      (fail! "Managed provider evidence has a missing or stale invocation"
-             {:run-id (:id run)
-              :expected (attr-get run :harness/invocation)
-              :actual invocation}))
-    (let [bootstrap (bootstrap rt run)
-          request {:harness (attr-get run :harness/harness)
-                   :native-session-id session-id
-                   :cwd (attr-get run :harness/cwd)
-                   :scope root-scope
-                   :bootstrap bootstrap}]
-      (validate-attachment! rt run request)
-      (attach-validated! rt run session-id))))
+  (when (managed-harness? (attr-get run :harness/harness))
+    (if (legacy-managed-run? run)
+      (do
+        (require-legacy-binding! rt run)
+        {:result "legacy"})
+      (when (and session-usable session-id)
+        (when-not (and (string? invocation)
+                       (not (str/blank? invocation))
+                       (= invocation (attr-get run :harness/invocation)))
+          (fail! "Managed provider evidence has a missing or stale invocation"
+                 {:run-id (:id run)
+                  :expected (attr-get run :harness/invocation)
+                  :actual invocation}))
+        (let [bootstrap (bootstrap rt run)
+              request {:harness (attr-get run :harness/harness)
+                       :native-session-id session-id
+                       :cwd (attr-get run :harness/cwd)
+                       :scope root-scope
+                       :bootstrap bootstrap}]
+          (validate-attachment! rt run request)
+          (attach-validated! rt run session-id))))))
