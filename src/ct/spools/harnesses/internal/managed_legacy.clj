@@ -165,7 +165,9 @@
   (require-pi-continuation! rt run)
   nil)
 
-(defn positive-outcome? [{:keys [status session-usable]}]
+(defn positive-outcome?
+  "Return whether an outcome is done or carries explicit usable-session evidence."
+  [{:keys [status session-usable]}]
   (or (= :done (if (keyword? status) status (keyword status)))
       (true? session-usable)))
 
