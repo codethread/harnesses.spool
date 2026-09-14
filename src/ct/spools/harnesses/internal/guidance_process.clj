@@ -4,6 +4,7 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [ct.spools.harnesses.internal.guidance-closure :as closure]
+            [ct.spools.harnesses.internal.guidance-process-cleanup :as cleanup]
             [ct.spools.harnesses.internal.guidance-process-identity :as identity]
             [ct.spools.harnesses.internal.guidance-process-scan :as scan]
             [ct.spools.harnesses.internal.strict-json :as strict-json]
@@ -276,78 +277,6 @@
           (do (Thread/sleep 1) (recur))))
       (do (Thread/sleep 1) (recur)))))
 
-(defn- record-cleanup-error! [errors error]
-  (swap! errors conj error)
-  nil)
-
-(defn- attempt-cleanup! [errors operation]
-  (try
-    (operation)
-    (catch Throwable error
-      (record-cleanup-error! errors error))))
-
-(defn- distinct-identities [identities]
-  (vals (into {} (map (fn [retained]
-                        [[(:pid retained) (:started-at retained)] retained]))
-              (remove nil? identities))))
-
-(defn- cleanup-owned!
-  [ownership executor streams profile process-environment root scanner deadline]
-  (let [{:keys [anchor helper supervisor pgid proven-children]} @ownership
-        errors (atom [])
-        discovered (atom [])
-        independently-proven (atom (vec proven-children))]
-    (when-not pgid
-      (doseq [parent [anchor supervisor]
-              :when (identity/live? parent)]
-        (attempt-cleanup!
-         errors #(swap! independently-proven into
-                        (identity/retain-children
-                         parent "proven-child-for-cleanup")))))
-    (when pgid
-      (if (identity/live? anchor)
-        (try
-          (let [first-rows
-                (scan/scan! profile process-environment root scanner
-                            deadline remaining-nanos)
-                retained
-                (identity/retain-members! anchor first-rows pgid)
-                confirming-rows
-                (scan/scan! profile process-environment root scanner
-                            deadline remaining-nanos)
-                confirmed
-                (identity/correlate! anchor retained confirming-rows pgid)]
-            (reset! discovered confirmed))
-          (catch Throwable error
-            (record-cleanup-error! errors error)))
-        (record-cleanup-error!
-         errors
-         (ex-info "Guidance ownership anchor identity disappeared before cleanup"
-                  {:anchor-pid (:pid anchor) :pgid pgid}))))
-    (let [identities (distinct-identities
-                      (concat @discovered @independently-proven
-                              [helper anchor supervisor]))]
-      (doseq [retained identities]
-        (attempt-cleanup! errors #(identity/signal! retained)))
-      (doseq [stream streams]
-        (try (.close stream) (catch Exception _ nil)))
-      (.shutdownNow executor)
-      (doseq [retained identities]
-        (attempt-cleanup!
-         errors #(identity/join! retained deadline remaining-nanos)))
-      (let [remaining (remaining-nanos deadline)]
-        (when-not (and (pos? remaining)
-                       (.awaitTermination executor remaining
-                                          TimeUnit/NANOSECONDS))
-          (record-cleanup-error!
-           errors (ex-info "Guidance preflight I/O workers did not terminate"
-                           {}))))
-      (when-let [error (first @errors)]
-        (doseq [suppressed (rest @errors)]
-          (.addSuppressed ^Throwable error ^Throwable suppressed))
-        (throw error))
-      (mapv :pid identities))))
-
 (defn- delete-directory! [^Path directory]
   (doseq [file (reverse (file-seq (.toFile directory)))]
     (Files/deleteIfExists (.toPath file))))
@@ -474,8 +403,9 @@
                               :helper-pid (:pid (:helper @ownership))}}))
             (finally
               (try
-                (cleanup-owned! ownership executor streams reviewed-profile
-                                process-environment root scanner deadline)
+                (cleanup/cleanup-owned!
+                 ownership executor streams reviewed-profile
+                 process-environment root scanner deadline remaining-nanos)
                 (finally
                   (when (.isAlive process)
                     (.destroyForcibly process))

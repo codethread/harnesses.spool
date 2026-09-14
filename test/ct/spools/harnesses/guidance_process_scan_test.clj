@@ -43,8 +43,12 @@
        "});\n"))
 
 (defn- scanner-source [root mode]
-  (let [anchor (str (io/file root "anchor.pid"))
-        flood-count (if (contains? #{:stdout-overflow :stderr-overflow} mode)
+  (let [failure-mode (if (map? mode) (:mode mode) mode)
+        fail-at (when (map? mode) (:fail-at mode))
+        anchor (str (io/file root "anchor.pid"))
+        counter (str (io/file root "scanner.count"))
+        flood-count (if (contains? #{:stdout-overflow :stderr-overflow}
+                                   failure-mode)
                       80000
                       20000)]
     (str "#!/bin/sh\n"
@@ -52,7 +56,16 @@
          "  printf '%s' \"$4\" > " (pr-str anchor) "\n"
          "  exec /bin/ps \"$@\"\n"
          "fi\n"
-         (case mode
+         (when fail-at
+           (str "count=0\n"
+                "if [ -f " (pr-str counter) " ]; then "
+                "read -r count < " (pr-str counter) "; fi\n"
+                "count=$((count + 1))\n"
+                "printf '%s' \"$count\" > " (pr-str counter) "\n"
+                "if [ \"$count\" -ne \"" fail-at "\" ]; then\n"
+                "  exec /bin/ps \"$@\"\n"
+                "fi\n"))
+         (case failure-mode
            :finite-flood
            (str "/usr/bin/awk 'BEGIN { for (i=0; i<" flood-count
                 "; i++) print \"scanner\" > \"/dev/stderr\" }'\n"
@@ -67,7 +80,9 @@
                 "exec /bin/ps \"$@\"\n")
            :stalled "while :; do :; done\n"
            :nonzero "printf 'scanner failed\\n' >&2; exit 7\n"
-           :malformed "printf 'not-a-process-row\\n'; exit 0\n"))))
+           :malformed "printf 'not-a-process-row\\n'; exit 0\n"
+           :invalid-utf8 "printf '\\377'; exit 0\n"
+           :duplicate "printf '1 1\\n1 1\\n'; exit 0\n"))))
 
 (defn- finalize-profile [profile]
   (assoc-in profile [:process-ownership :reviewed-closure-sha256]
@@ -150,6 +165,14 @@
                         (.orElse nil)
                         .isAlive))))
 
+(defn- start-sleep! []
+  (.start (ProcessBuilder. ^java.util.List ["/bin/sleep" "30"])))
+
+(defn- stop! [process]
+  (when (.isAlive process)
+    (.destroyForcibly process))
+  (.waitFor process 5 TimeUnit/SECONDS))
+
 (deftest scanner-drains-finite-flood-without-starving-helper-io
   (with-scanner-profile
     :finite-flood
@@ -164,13 +187,41 @@
         (is (= before-helper (thread-count "guidance-preflight-io")))
         (is (= before-scanner (thread-count "guidance-preflight-scan-io")))))))
 
+(deftest first-and-confirming-cleanup-scanner-failures-preserve-custody
+  (doseq [[mode message]
+          [[:stdout-overflow #"exceeded its byte limit"]
+           [:stderr-overflow #"exceeded its byte limit"]
+           [:stalled #"scan timed out"]
+           [:nonzero #"ownership scan failed"]
+           [:malformed #"scan output is malformed"]]
+          [phase fail-at] [[:first 3] [:confirming 4]]]
+    (testing (str (name phase) " " (name mode))
+      (with-scanner-profile
+        {:mode mode :fail-at fail-at}
+        (fn [{:keys [root profile]}]
+          (let [unrelated (start-sleep!)]
+            (try
+              (let [{:keys [error elapsed-millis]} (run-profile profile)
+                    anchor-pid (pid-from (io/file root "anchor.pid"))
+                    helper-pid (pid-from (io/file root "helper.pid"))]
+                (is (re-find message (ex-message error)))
+                (is (< elapsed-millis 3000.0))
+                (is (not (alive-pid? anchor-pid)))
+                (is (not (alive-pid? helper-pid)))
+                (is (.isAlive unrelated))
+                (is (false? (process-for-root? root))))
+              (finally
+                (stop! unrelated)))))))))
+
 (deftest scanner-failures-remain-bounded-and-clean-retained-identities
   (doseq [[mode message]
           [[:stdout-overflow #"exceeded its byte limit"]
            [:stderr-overflow #"exceeded its byte limit"]
            [:stalled #"scan timed out"]
            [:nonzero #"ownership scan failed"]
-           [:malformed #"scan output is malformed"]]]
+           [:malformed #"scan output is malformed"]
+           [:invalid-utf8 #"not valid UTF-8"]
+           [:duplicate #"duplicate PIDs"]]]
     (testing (name mode)
       (with-scanner-profile
         mode

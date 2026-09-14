@@ -153,42 +153,91 @@
             :started-at (some-> (:started-at identity) str)}))
   identity)
 
-(defn retain-members!
-  "Retain identities from one scan while the original anchor owns its PGID."
-  [anchor rows pgid]
-  (require-live! anchor "Guidance ownership anchor disappeared during scan")
-  (let [members (filterv #(= pgid (:pgid %)) rows)
-        row-pids (set (map :pid members))]
-    (when-not (contains? row-pids (:pid anchor))
-      (fail! "Guidance ownership scan omitted the original anchor"
-             {:anchor-pid (:pid anchor) :pgid pgid}))
-    (let [identities (mapv #(retain-pid (:pid %) "owned-group-member")
-                           (remove #(= (:pid anchor) (:pid %)) members))]
-      (require-live! anchor "Guidance ownership anchor disappeared during scan")
-      identities)))
+(defn- record-error! [errors operation]
+  (try
+    (operation)
+    (catch Throwable error
+      (swap! errors conj error)
+      nil)))
 
-(defn correlate!
-  "Correlate a confirming scan with retained identities and the anchor."
-  [anchor identities rows pgid]
-  (require-live! anchor "Guidance ownership anchor disappeared during scan")
-  (let [by-pid (into {(:pid anchor) anchor}
-                     (map (fn [retained]
-                            [(:pid retained) retained]))
-                     identities)
+(defn- throw-errors! [errors]
+  (when-let [error (first errors)]
+    (doseq [suppressed (rest errors)]
+      (.addSuppressed ^Throwable error ^Throwable suppressed))
+    (throw error)))
+
+(defn retain-members
+  "Retain each group discovery independently while the original anchor owns it.
+
+  Returned identities are unconfirmed and have no signaling authority."
+  [anchor rows pgid]
+  (let [errors (atom [])
+        retained (atom [])
         members (filterv #(= pgid (:pgid %)) rows)
         row-pids (set (map :pid members))]
-    (when-not (contains? row-pids (:pid anchor))
-      (fail! "Guidance ownership scan omitted the original anchor"
-             {:anchor-pid (:pid anchor) :pgid pgid}))
-    (doseq [pid row-pids]
-      (when-not (contains? by-pid pid)
-        (fail! "Guidance ownership scan has ambiguous process identity"
-               {:pid pid :pgid pgid})))
-    (->> members
-         (remove #(= (:pid anchor) (:pid %)))
-         (mapv #(require-live!
-                 (get by-pid (:pid %))
-                 "Guidance owned process identity disappeared")))))
+    (when (record-error!
+           errors
+           #(do
+              (require-live!
+               anchor "Guidance ownership anchor disappeared during scan")
+              (when-not (contains? row-pids (:pid anchor))
+                (fail! "Guidance ownership scan omitted the original anchor"
+                       {:anchor-pid (:pid anchor) :pgid pgid}))
+              true))
+      (doseq [row (remove #(= (:pid anchor) (:pid %)) members)]
+        (record-error!
+         errors
+         #(swap! retained conj
+                 (retain-pid (:pid row) "owned-group-member")))))
+    {:retained @retained :errors @errors}))
+
+(defn correlate-members!
+  "Validate retained members independently against one confirming scan.
+
+  Invoke `confirmed!` immediately for each original birth that remains live and
+  present. Failures do not discard earlier proof or stop later validation."
+  [anchor identities rows pgid confirmed!]
+  (let [errors (atom [])
+        confirmed (atom [])
+        by-pid (into {} (map (juxt :pid identity)) identities)
+        members (filterv #(= pgid (:pgid %)) rows)
+        rows-by-pid (group-by :pid members)]
+    (record-error!
+     errors
+     #(do
+        (require-live! anchor
+                       "Guidance ownership anchor disappeared during scan")
+        (when-not (= 1 (count (get rows-by-pid (:pid anchor))))
+          (fail! "Guidance ownership scan omitted the original anchor"
+                 {:anchor-pid (:pid anchor) :pgid pgid}))))
+    (doseq [retained identities]
+      (record-error!
+       errors
+       #(do
+          (interleave! :before-member-correlation retained)
+          (when-not (= 1 (count (get rows-by-pid (:pid retained))))
+            (fail! "Guidance owned process identity disappeared"
+                   {:pid (:pid retained) :pgid pgid}))
+          (require-live! retained
+                         "Guidance owned process identity disappeared")
+          (confirmed! retained)
+          (swap! confirmed conj retained))))
+    (doseq [row members
+            :when (and (not= (:pid anchor) (:pid row))
+                       (not (contains? by-pid (:pid row))))]
+      (record-error!
+       errors
+       #(fail! "Guidance ownership scan has ambiguous process identity"
+               {:pid (:pid row) :pgid pgid})))
+    {:confirmed @confirmed :errors @errors}))
+
+(defn correlate!
+  "Correlate every retained identity or throw all confirmation failures."
+  [anchor identities rows pgid]
+  (let [{:keys [confirmed errors]}
+        (correlate-members! anchor identities rows pgid (constantly nil))]
+    (throw-errors! errors)
+    confirmed))
 
 (defn signal!
   "Signal the same retained identity when its birth fence remains current."

@@ -1,7 +1,7 @@
 (ns ct.spools.harnesses.guidance-process-identity-test
   "Deterministic birth-identity reuse interleavings for preflight cleanup."
   (:require [clojure.test :refer [deftest is testing]]
-            [ct.spools.harnesses.internal.guidance-process]
+            [ct.spools.harnesses.internal.guidance-process-cleanup :as cleanup]
             [ct.spools.harnesses.internal.guidance-process-identity :as identity])
   (:import [java.time Instant]))
 
@@ -123,13 +123,11 @@
         (is (= [(select-keys original [:pid :started-at])]
                (mapv #(select-keys % [:pid :started-at])
                      (:proven-children @ownership))))
-        (let [executor (java.util.concurrent.Executors/newSingleThreadExecutor)
-              cleanup-owned!
-              (deref (ns-resolve 'ct.spools.harnesses.internal.guidance-process
-                                 'cleanup-owned!))]
+        (let [executor (java.util.concurrent.Executors/newSingleThreadExecutor)]
           (is (= #{40 41}
-                 (set (cleanup-owned! ownership executor [] nil nil nil nil
-                                      (+ (System/nanoTime) 1000000000))))))))
+                 (set (cleanup/cleanup-owned!
+                       ownership executor [] nil nil nil nil
+                       (+ (System/nanoTime) 1000000000) remaining)))))))
     (testing "a replacement with wrong parent provenance gains no authority"
       (swap! parent-state assoc :alive true)
       (let [ownership (atom {:supervisor parent})]

@@ -467,10 +467,13 @@ process group before their gates open. It signals and joins only those same
 birth-fenced identities. It never reacquires a PID for authority or adopts a
 replacement child or group after parent or anchor disappearance. Incomplete
 state can add only independently parent-proven handles to bounded cleanup.
-Input, execution, capture, cleanup, and worker joins share one monotonic
+Group members are confirmed independently and preserved as soon as their
+original birth is verified, so one sibling's exit cannot discard another's
+cleanup authority. Parent-proven descendants are retained before cleanup, all
+safe identities are signalled before joins, and correlation failures remain
+visible. Input, execution, capture, cleanup, and worker joins share one monotonic
 3,000 ms budget with 400 ms reserved for cleanup; unrelated processes are never
-selected by
-command pattern.
+selected by command pattern.
 Evidence must match one approved preflight source and the complete approved
 adapter/executable/package/profile/ownership closure. Missing, changed, untrusted,
 duplicate, malformed, oversized, nonzero, or mismatched evidence fails loudly;

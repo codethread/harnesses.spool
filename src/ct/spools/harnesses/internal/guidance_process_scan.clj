@@ -94,7 +94,11 @@
   (let [lines (remove str/blank? (str/split-lines stdout))]
     (when-not (seq lines)
       (fail! "Guidance process ownership scan output is empty" {}))
-    (mapv parse-row! lines)))
+    (let [rows (mapv parse-row! lines)
+          pids (mapv :pid rows)]
+      (when-not (= (count pids) (count (distinct pids)))
+        (fail! "Guidance process ownership scan contains duplicate PIDs" {}))
+      rows)))
 
 (defn- attempt-cleanup! [errors operation]
   (try

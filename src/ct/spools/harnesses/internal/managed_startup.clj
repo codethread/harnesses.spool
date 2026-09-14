@@ -6,6 +6,7 @@
             [ct.spools.harnesses.catalog :as catalog]
             [ct.spools.harnesses.internal.guidance :as guidance]
             [ct.spools.harnesses.internal.lifecycle :as life]
+            [ct.spools.harnesses.internal.managed-context :as managed-context]
             [ct.spools.harnesses.internal.managed-identity :as managed-identity]
             [ct.spools.harnesses.internal.managed-legacy :as legacy]
             [millhouse.spools.identity :as identity]
@@ -373,25 +374,6 @@
   "Validate identity and invocation before accepting positive legacy evidence."
   legacy/validate-outcome!)
 
-(defn- context-result [rt run attached]
-  (if (guidance/native? run)
-    (guidance/bundle rt run
-                     (attr-get run :harness/session-id)
-                     (:identity attached)
-                     (:strand-id attached))
-    {:schema managed-context-schema
-     :run-id (:id run)
-     :harness (attr-get run :harness/harness)
-     :native-session-id (attr-get run :harness/session-id)
-     :identity (:identity attached)
-     :strand-id (:strand-id attached)
-     :result (:result attached)
-     :instruction (:instruction attached)
-     :context {:schema managed-context-schema
-               :identity-instruction (:instruction attached)
-               :appended-system-prompts
-               (or (attr-get run :harness/appended-system-prompts) [])}}))
-
 (defn- attachment-result [identity-strand]
   (let [friendly-id (attr-get identity-strand :identity/id)]
     {:identity friendly-id
@@ -423,7 +405,8 @@
                   :reservation-id
                   (attr-get run :identity/reservation-id)}))
         (if attachment-recorded?
-          (context-result rt run (attachment-result identity-strand))
+          (managed-context/response rt run (attachment-result identity-strand)
+                                    managed-context-schema)
           (let [{:keys [identity-strand run]}
                 (managed-identity/persist-attachment!
                  rt
@@ -446,7 +429,9 @@
                     :harness/native-attachment-invocation
                     (attr-get run :harness/invocation)}
                    guidance-patch)})]
-            (context-result rt run (attachment-result identity-strand))))))))
+            (managed-context/response
+             rt run (attachment-result identity-strand)
+             managed-context-schema)))))))
 
 (defn startup!
   "Attach one managed run to its actual root native session.

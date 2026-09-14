@@ -158,9 +158,18 @@
               '[millstrand.api.weaver.alpha :as weaver])
      (def rt (current/runtime))
      (harnesses/register-harness! rt :codex (codex/harness rt))
-     (def fixture-dir (.toFile
-                       (java.nio.file.Files/createTempDirectory
-                        "guidance-profile" (make-array java.nio.file.attribute.FileAttribute 0))))
+     (def fixture-root
+       (java.nio.file.Files/createDirectories
+        (.resolve (java.nio.file.Path/of
+                   (get-in rt [:metadata :config-dir])
+                   (make-array String 0))
+                  "test-fixtures")
+        (make-array java.nio.file.attribute.FileAttribute 0)))
+     (def fixture-dir
+       (.toFile
+        (java.nio.file.Files/createTempDirectory
+         fixture-root "guidance-profile-"
+         (make-array java.nio.file.attribute.FileAttribute 0))))
      (def provider-link (java.io.File. fixture-dir "codex"))
      (java.nio.file.Files/createSymbolicLink
       (.toPath provider-link) (.toPath (java.io.File. "/usr/bin/true"))
