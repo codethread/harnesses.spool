@@ -50,7 +50,8 @@
   (require-valid! ::harness/harness-definition resolved-harness
                   "Pi prepare requires a resolved harness definition")
   (require-valid! ::harness/strand run "Pi prepare requires a full run strand")
-  (let [options {:mode (attribute run :harness/mode)
+  (let [run (guidance/validation-run _rt run)
+        options {:mode (attribute run :harness/mode)
                  :resumes (attribute run :harness/resumes)
                  :session-id (attribute run :harness/session-id)
                  :model (attribute run :harness/model)

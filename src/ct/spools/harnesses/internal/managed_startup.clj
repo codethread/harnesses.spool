@@ -66,7 +66,7 @@
                 (fail! "Managed startup run not found" {:run-id id}))]
     (when-not (= "true" (attr-get run :harness/run))
       (fail! "Managed startup target is not a harness run" {:run-id id}))
-    run))
+    (guidance/validation-run rt run)))
 
 (defn- require-caller [rt by-identity]
   (when by-identity

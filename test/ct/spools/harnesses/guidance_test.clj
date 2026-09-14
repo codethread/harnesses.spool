@@ -1,113 +1,8 @@
 (ns ct.spools.harnesses.guidance-test
   "Focused native managed-guidance protocol and lifecycle tests."
   (:require [clojure.string :as str]
-            [clojure.test :refer [deftest is testing]]
-            [ct.spools.harnesses.internal.guidance :as guidance]
-            [ct.spools.harnesses.internal.guidance-capability :as capability]
-            [ct.spools.harnesses.providers.claude :as claude]
-            [ct.spools.harnesses.providers.codex :as codex]
-            [ct.spools.harnesses.providers.cursor :as cursor]
-            [ct.spools.harnesses.providers.pi :as pi]
-            [millstrand.test.alpha :as test-alpha])
-  (:import [java.time Instant]))
-
-(def ^:private runtime {})
-
-(defn- provider-run [harness transport]
-  {:id "run"
-   :title (str harness " run")
-   :state "active"
-   :attributes
-   (merge
-    {:harness/mode "headless"
-     :harness/session-id "native-session"
-     :harness/prompt "Main task"
-     :identity/prompt "Identity first."
-     :harness/appended-system-prompts ["same" "same"]
-     :harness/model "model"
-     :harness/effort "high"
-     :harness/extra-argv ["--unrelated" "value"]}
-    (when (= "native-v1" transport)
-      {:harness/guidance-version 1
-       :harness/guidance-transport transport
-       :harness/guidance-capability {}
-       :harness/guidance-capability-sha256 "capability"
-       :harness/guidance-context-template {}
-       :harness/guidance-context {}
-       :harness/guidance-bundle-sha256 "bundle"
-       :harness/guidance-attempts []}))})
-
-(deftest guidance-deadlines-distinguish-pi-idle-after-fetch
-  (let [record {"attempt" 1 "invocation" "invocation"
-                "state" "pending" "deadline-at" "2026-09-14T00:00:00Z"}
-        run {:id "run" :attributes
-             (merge (:attributes (provider-run "codex" "native-v1"))
-                    {:harness/harness "codex"
-                     :harness/attempt 1
-                     :harness/invocation "invocation"
-                     :harness/guidance-attempts [record]})}
-        after (Instant/parse "2026-09-14T00:00:01Z")]
-    (is (true? (guidance/deadline-expired? run record after)))
-    (is (false? (guidance/deadline-expired?
-                 (-> run
-                     (assoc-in [:attributes :harness/harness] "pi")
-                     (assoc-in [:attributes :harness/mode] "interactive"))
-                 (assoc record "state" "fetched") after)))
-    (is (true? (guidance/deadline-expired?
-                (-> run
-                    (assoc-in [:attributes :harness/harness] "pi")
-                    (assoc-in [:attributes :harness/mode] "headless"))
-                (assoc record "state" "fetched") after)))))
-
-(deftest production-admission-is-disabled-and-hostile-argv-fails-first
-  (is (empty? (capability/production-allowlist)))
-  (is (thrown-with-msg?
-       clojure.lang.ExceptionInfo
-       #"no accepted production capability"
-       (guidance/select!
-        {:metadata {:config-dir "/tmp"}}
-        {:harness "codex" :requested "native-v1" :mode :headless
-         :cwd "/tmp" :env {} :effective {:harness/extra-argv []}})))
-  (doseq [[harness argv] [["codex" ["--config" "'developer_instructions'=\"x\""]]
-                          ["codex" ["-cdeveloper_instructions=\"x\""]]
-                          ["pi" ["--append-system-prompt=x"]]
-                          ["pi" ["--system-prompt" "x"]]]]
-    (is (thrown-with-msg?
-         clojure.lang.ExceptionInfo
-         #"wrapper-level --append-system-prompt"
-         (guidance/select!
-          {:metadata {:config-dir "/tmp"}}
-          {:harness harness :requested "native-v1" :mode :headless
-           :cwd "/tmp" :env {}
-           :effective {:harness/extra-argv argv}})))))
-
-(deftest provider-argv-removes-only-harnesses-guidance-in-native-mode
-  (let [legacy-codex (codex/prepare runtime (codex/harness runtime)
-                                    (provider-run "codex" "legacy"))
-        native-codex (codex/prepare runtime (codex/harness runtime)
-                                    (provider-run "codex" "native-v1"))
-        legacy-pi (pi/prepare runtime (pi/harness runtime)
-                              (provider-run "pi" "legacy"))
-        native-pi (pi/prepare runtime (pi/harness runtime)
-                              (provider-run "pi" "native-v1"))]
-    (is (some #(str/starts-with? % "developer_instructions=")
-              (:argv legacy-codex)))
-    (is (not-any? #(str/starts-with? % "developer_instructions=")
-                  (:argv native-codex)))
-    (is (= 3 (count (filter #{"--append-system-prompt"}
-                            (:argv legacy-pi)))))
-    (is (zero? (count (filter #{"--append-system-prompt"}
-                              (:argv native-pi)))))
-    (doseq [launch [native-codex native-pi]]
-      (is (= "Main task\n" (:stdin launch)))
-      (is (some #{"model"} (:argv launch)))
-      (is (some #{"--unrelated"} (:argv launch)))))
-  (testing "maintenance providers retain their exact launch preparation"
-    (let [run (provider-run "maintenance" "legacy")]
-      (is (= (claude/prepare runtime (claude/harness runtime) run)
-             (claude/prepare runtime (claude/harness runtime) run)))
-      (is (= (cursor/prepare runtime (cursor/harness runtime) run)
-             (cursor/prepare runtime (cursor/harness runtime) run))))))
+            [clojure.test :refer [deftest is]]
+            [millstrand.test.alpha :as test-alpha]))
 
 (defn- world-deps []
   (let [harnesses-root (test-alpha/spool-checkout-root
@@ -205,6 +100,20 @@
          "currentHash" "trusted-host-hash"
          "timeoutSec" 15
          "additionalContextLimit" 4096}})
+     (def pi-capability-document
+       (assoc capability-document
+              "harness" "pi"
+              "host-version" "0.84.4-test"
+              "max-context-bytes" 65536
+              "hook-fact"
+              {"host-package" "@mariozechner/pi-coding-agent"
+               "host-package-version" "0.84.4-test"
+               "host-package-sha256" (apply str (repeat 64 "c"))
+               "extensions"
+               [{"entrypoint" "/test/pi/managed-guidance.ts"
+                 "closure-sha256" (apply str (repeat 64 "d"))}]
+               "prompt-owner-entrypoint" "/test/pi/managed-guidance.ts"
+               "system-prompt-options-contract" "owned-v1"}))
      (def profile-environment
        (-> (into {} (System/getenv))
            (assoc "PATH" (.getCanonicalPath fixture-dir))

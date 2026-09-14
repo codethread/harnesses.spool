@@ -254,37 +254,40 @@
                                (strict-json/parse-object!
                                 request-json 65536 "captured preflight"))
                        (process-result accepted (result-json document)))
-              run {:id (str harness "-launch")
-                   :attributes
-                   (cond->
-                    {:harness/guidance-version 1
-                     :harness/guidance-transport "native-v1"
-                     :harness/guidance-attempts []
-                     :harness/guidance-capability document
-                     :harness/guidance-capability-sha256
-                     (strict-json/canonical-sha256 document)
-                     :harness/guidance-bundle-sha256
-                     (str/join (repeat 64 "f"))
-                     :harness/guidance-context-template {}
-                     :harness/guidance-context {}
-                     :harness/harness harness
-                     :harness/mode "headless"
-                     :harness/cwd (.getCanonicalPath root)
-                     :harness/env launch-environment
-                     :harness/extra-argv ["--unrelated"]
-                     :harness/model "fixture-model"
-                     :harness/effort "high"
-                     :harness/resumes true
-                     :harness/session-id "native-session-1"
-                     :harness/prompt "fixture task"
-                     :harness/published "true"
-                     :harness/attempt 1
-                     :harness/invocation "invocation-1"
-                     :identity/id "steady-fair-lynx"
-                     :identity/reservation-id "reservation-1"}
-                     (= "pi" harness)
-                     (assoc :harness/provisional-session-id "native-session-1"))}
-              rt {:metadata {:config-dir (.getCanonicalPath root)}}]
+              rt {:metadata {:config-dir (.getCanonicalPath root)}}
+              run-id (str harness "-launch")
+              guidance-attributes
+              (guidance/publication-patch
+               rt run-id "steady-fair-lynx" "Use the retained identity." []
+               {:transport "native-v1"
+                :capability document
+                :capability-sha256 (strict-json/canonical-sha256 document)}
+               nil [])
+              run (guidance/validation-run
+                   rt
+                   {:id run-id
+                    :attributes
+                    (merge
+                     guidance-attributes
+                     (cond->
+                      {:harness/harness harness
+                       :harness/mode "headless"
+                       :harness/cwd (.getCanonicalPath root)
+                       :harness/env launch-environment
+                       :harness/extra-argv ["--unrelated"]
+                       :harness/model "fixture-model"
+                       :harness/effort "high"
+                       :harness/resumes true
+                       :harness/session-id "native-session-1"
+                       :harness/prompt "fixture task"
+                       :harness/published "true"
+                       :harness/attempt 1
+                       :harness/invocation "invocation-1"
+                       :identity/id "steady-fair-lynx"
+                       :identity/reservation-id "reservation-1"}
+                       (= "pi" harness)
+                       (assoc :harness/provisional-session-id
+                              "native-session-1")))})]
           (binding [capability/*test-capability-profiles* [profile]
                     capability/*test-preflight-runner* runner]
             (let [patch (guidance/begin-attempt-patch

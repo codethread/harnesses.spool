@@ -55,7 +55,8 @@
   (require-valid! ::harness/harness-definition resolved-harness
                   "Codex prepare requires a resolved harness definition")
   (require-valid! ::harness/strand run "Codex prepare requires a full run strand")
-  (let [options (prepare-options run)
+  (let [run (guidance/validation-run _rt run)
+        options (prepare-options run)
         launch-spec {:argv (codex-command options)
                      :stdin (when (= "headless" (:mode options))
                               (str (:prompt options) "\n"))}]

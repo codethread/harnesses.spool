@@ -45,8 +45,24 @@
   (fail! "Guidance preflight timed out"
          {:timeout-millis timeout-millis :phase phase}))
 
+(defn await-future!
+  "Await an owned future until an absolute monotonic deadline."
+  [^Future future monotonic-deadline phase]
+  (let [remaining (remaining-nanos monotonic-deadline)]
+    (when-not (pos? remaining)
+      (timed-out! phase))
+    (try
+      (.get future remaining TimeUnit/NANOSECONDS)
+      (catch TimeoutException _
+        (timed-out! phase))
+      (catch ExecutionException error
+        (throw (.getCause error)))
+      (catch InterruptedException _
+        (.interrupt (Thread/currentThread))
+        (fail! "Guidance preflight was interrupted" {:phase phase})))))
+
 (defn check!
-  "Fail when work has reached the cleanup reserve."
+  "Fail when work has reached the selected worker deadline."
   [budget phase]
   (when-not (pos? (remaining-nanos (work-deadline budget)))
     (timed-out! phase)))
@@ -68,25 +84,39 @@
         (.interrupt (Thread/currentThread))
         (fail! "Guidance preflight was interrupted" {:phase phase})))))
 
-(defn bounded!
-  "Run potentially blocking read-only work in one cancellable owned worker.
+(defn- retire! [executor budget]
+  (.shutdownNow executor)
+  (let [remaining (remaining-nanos (deadline budget))]
+    (when-not (and (pos? remaining)
+                   (.awaitTermination executor remaining
+                                      TimeUnit/NANOSECONDS))
+      (timed-out! "verification-worker-retirement"))))
 
-  Work must finish before the cleanup reserve. Timeout cancels the worker and
-  uses that reserve to join it before control can proceed to a launch or
-  admission phase."
+(defn bounded!
+  "Run potentially blocking work in one cancellable owned worker.
+
+  Timeout cancels and joins the worker before returning control. An initiating
+  failure remains primary; a retirement failure is attached as suppressed."
   [budget phase operation]
   (check! budget phase)
   (let [executor (Executors/newSingleThreadExecutor (daemon-thread-factory))
-        future (.submit executor ^Callable operation)]
+        future (.submit executor ^Callable operation)
+        result (atom nil)
+        failure (atom nil)]
     (try
-      (let [result (await! future budget phase)]
+      (try
+        (reset! result (await! future budget phase))
         (check! budget phase)
-        result)
+        (catch Throwable error
+          (reset! failure error)))
       (finally
         (.cancel future true)
-        (.shutdownNow executor)
-        (let [remaining (remaining-nanos (deadline budget))]
-          (when-not (and (pos? remaining)
-                         (.awaitTermination executor remaining
-                                            TimeUnit/NANOSECONDS))
-            (timed-out! "verification-worker-retirement")))))))
+        (try
+          (retire! executor budget)
+          (catch Throwable cleanup-error
+            (if-let [error @failure]
+              (.addSuppressed ^Throwable error cleanup-error)
+              (reset! failure cleanup-error))))))
+    (if-let [error @failure]
+      (throw error)
+      @result)))

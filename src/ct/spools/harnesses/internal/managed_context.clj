@@ -6,20 +6,21 @@
 (defn response
   "Return the native guidance bundle or legacy managed context response."
   [rt run attached managed-context-schema]
-  (if (guidance/native? run)
-    (guidance/bundle rt run
-                     (attr-get run :harness/session-id)
-                     (:identity attached)
-                     (:strand-id attached))
-    {:schema managed-context-schema
-     :run-id (:id run)
-     :harness (attr-get run :harness/harness)
-     :native-session-id (attr-get run :harness/session-id)
-     :identity (:identity attached)
-     :strand-id (:strand-id attached)
-     :result (:result attached)
-     :instruction (:instruction attached)
-     :context {:schema managed-context-schema
-               :identity-instruction (:instruction attached)
-               :appended-system-prompts
-               (or (attr-get run :harness/appended-system-prompts) [])}}))
+  (let [run (guidance/validation-run rt run)]
+    (if (guidance/native? run)
+      (guidance/bundle rt run
+                       (attr-get run :harness/session-id)
+                       (:identity attached)
+                       (:strand-id attached))
+      {:schema managed-context-schema
+       :run-id (:id run)
+       :harness (attr-get run :harness/harness)
+       :native-session-id (attr-get run :harness/session-id)
+       :identity (:identity attached)
+       :strand-id (:strand-id attached)
+       :result (:result attached)
+       :instruction (:instruction attached)
+       :context {:schema managed-context-schema
+                 :identity-instruction (:instruction attached)
+                 :appended-system-prompts
+                 (or (attr-get run :harness/appended-system-prompts) [])}})))

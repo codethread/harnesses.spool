@@ -3,6 +3,7 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [ct.spools.harnesses.internal.guidance-capability :as capability]
+            [ct.spools.harnesses.internal.guidance-context :as guidance-context]
             [ct.spools.harnesses.internal.guidance-prompt-controls :as prompt-controls]
             [ct.spools.harnesses.internal.guidance-representation :as representation]
             [ct.spools.harnesses.internal.lifecycle :as life]
@@ -24,7 +25,7 @@
 
 (def guidance-context-schema
   "Version identifying the structured managed context in a bundle."
-  "millstrand.agent-managed-context/v1")
+  guidance-context/schema)
 
 (def transports
   "Public managed-guidance transport names."
@@ -62,6 +63,13 @@
    (or (get-in rt [:metadata :config-dir])
        (spool/fail! "Native guidance requires a selected workspace" {}))
    "workspace"))
+
+(defn validation-run
+  "Attach the runtime's canonical workspace to one process-local run value."
+  [rt run]
+  (if (get-in rt [:metadata :config-dir])
+    (representation/attach-context run (workspace rt))
+    run))
 
 (defn- preflight-request [rt {:keys [harness mode cwd env effective session-id
                                      resumes]}]
@@ -126,63 +134,12 @@
                            ["extra-argv" "model" "effort" "resumes"
                             "native-session-id"])}}))))))
 
-(defn- normalize-context [context]
-  (when (map? context)
-    (reduce-kv
-     (fn [result key value]
-       (let [key (name key)]
-         (when (contains? result key)
-           (spool/fail! "Frozen guidance context has colliding keys" {:key key}))
-         (assoc result key value)))
-     {}
-     context)))
-
-(defn- valid-context! [context]
-  (let [context (normalize-context context)]
-    (when-not (= #{"schema" "identity-instruction" "appended-system-prompts"}
-                 (set (keys context)))
-      (spool/fail! "Frozen guidance context has invalid keys" {}))
-    (when-not (= guidance-context-schema (get context "schema"))
-      (spool/fail! "Frozen guidance context has an unsupported schema" {}))
-    (when-not (and (string? (get context "identity-instruction"))
-                   (not (str/blank? (get context "identity-instruction"))))
-      (spool/fail! "Frozen guidance identity instruction is invalid" {}))
-    (let [appends (get context "appended-system-prompts")]
-      (when-not (and (vector? appends)
-                     (every? #(and (string? %) (not (str/blank? %))) appends))
-        (spool/fail! "Frozen guidance appends must be a vector of non-blank strings"
-                     {:appended-system-prompts appends})))
-    context))
-
-(defn- bind-markers [value run-id identity-id]
-  (cond
-    (string? value) (-> value
-                        (str/replace "{{RUN_ID}}" run-id)
-                        (str/replace "{{AGENT_ID}}" identity-id))
-    (map? value) (into {} (map (fn [[key item]]
-                                 [key (bind-markers item run-id identity-id)]))
-                       value)
-    (vector? value) (mapv #(bind-markers % run-id identity-id) value)
-    :else value))
-
-(defn- footer [run-id workspace]
-  (str "Current Millstrand run: " run-id
-       ". Pass --workspace " (strict-json/canonical-json workspace)
-       " on Strand commands. This is the current managed guidance; earlier "
-       "run guidance is historical."))
-
-(defn- rendered-context [run-id workspace context]
-  (str/join "\n\n"
-            (concat [(get context "identity-instruction")]
-                    (get context "appended-system-prompts")
-                    [(footer run-id workspace)])))
-
 (defn publication-patch
   "Freeze and digest one selected guidance bundle before final publication."
   [rt run-id identity-id identity-instruction appends selection frozen-template
    prior-attempts]
   (when selection
-    (let [template (valid-context!
+    (let [template (guidance-context/validate!
                     (or frozen-template
                         {"schema" guidance-context-schema
                          "identity-instruction" identity-instruction
@@ -191,10 +148,12 @@
                          (get template "identity-instruction"))
               (spool/fail! "Frozen guidance identity does not match the reserved identity"
                            {:run-id run-id}))
-          context (valid-context! (bind-markers template run-id identity-id))
+          context (guidance-context/validate!
+                   (guidance-context/bind-markers
+                    template run-id identity-id))
           workspace (workspace rt)
-          digest (strict-json/canonical-sha256 [run-id workspace context])
-          rendered (rendered-context run-id workspace context)
+          digest (guidance-context/bundle-sha256 run-id workspace context)
+          rendered (guidance-context/rendered run-id workspace context)
           transport (:transport selection)]
       (when (= "native-v1" transport)
         (let [maximum (get-in selection [:capability "max-context-bytes"])

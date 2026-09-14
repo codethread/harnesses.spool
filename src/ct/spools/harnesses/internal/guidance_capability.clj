@@ -186,9 +186,7 @@
   [profile]
   (closure/reviewed-sha256 profile))
 
-(defn- validate-capability! [capability harness]
-  (when-not (map? capability)
-    (fail! "Guidance preflight capability must be an object" {}))
+(defn- validate-capability-shape! [capability harness]
   (closed-keys! capability capability-keys "Guidance capability")
   (doseq [key ["schema" "harness" "adapter-contract" "host-version"]]
     (nonblank! (get capability key) (str "Guidance capability " key)))
@@ -208,6 +206,13 @@
     "pi" (validate-pi-hook! (get capability "hook-fact"))
     (fail! "Native guidance supports only Codex and Pi" {:harness harness}))
   capability)
+
+(defn validate-document!
+  "Return one normalized closed provider capability document or fail."
+  [capability harness]
+  (when-not (map? capability)
+    (fail! "Guidance preflight capability must be an object" {}))
+  (validate-capability-shape! (strict-json/canonical-data capability) harness))
 
 (defn- validate-source! [profile source]
   (let [{expected-path :path expected-sha :sha256} (:preflight profile)]
@@ -249,7 +254,7 @@
     (when-not (and (= preflight-schema (get result "schema"))
                    (= "capable" (get result "result")))
       (fail! "Guidance preflight returned an unsupported result" {:result result}))
-    (let [capability (validate-capability! (get result "capability") harness)]
+    (let [capability (validate-document! (get result "capability") harness)]
       (when-not (= (:capability profile) capability)
         (fail! "Guidance capability does not match the accepted host profile" {}))
       (when-not (= (file-sha256 executable)
@@ -300,7 +305,7 @@
            #(validate-request! (assoc request "schema" preflight-schema)))
           _ (deadline/bounded!
              budget "profile-validation"
-             #(validate-capability! (:capability profile) harness))
+             #(validate-document! (:capability profile) harness))
           _ (deadline/check! budget "executable-hashing")
           executable-sha
           (deadline/bounded! budget "executable-hashing"

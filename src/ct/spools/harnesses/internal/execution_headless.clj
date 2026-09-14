@@ -26,7 +26,8 @@
                  (= "ready" (life/status %))
                  (= "headless" (attr-get % :harness/mode))
                  (assignment/launch-ready? rt %))
-           (weaver/ready rt)))
+           (mapv #(guidance/validation-run rt %)
+                 (weaver/ready rt))))
 
 (defn claim!
   "Claim one run ID in an opened generation; return whether this call won."
@@ -42,7 +43,8 @@
 (defn full-run
   "Return one run by ID, or fail when it is absent."
   [rt id]
-  (or (weaver/show rt id) (fail! "Harness run not found" {:id id})))
+  (guidance/validation-run
+   rt (or (weaver/show rt id) (fail! "Harness run not found" {:id id}))))
 
 (defn resolved-definition
   "Return the concrete provider definition frozen on one run."

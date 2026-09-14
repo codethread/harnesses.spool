@@ -87,7 +87,9 @@
                         :old-callback-result old-callback-result
                         :while-closed
                         [(attr while-closed :harness/status)
-                         (get (guidance/current-attempt while-closed) "state")]
+                         (get (guidance/current-attempt
+                               (guidance/validation-run rt while-closed))
+                              "state")]
                         :after-reopen
                         [(attr after-reopen :harness/status)
                          (attr after-reopen :harness/substatus)]}))))))]
@@ -231,7 +233,8 @@
                              _ (execution/close-execution! {:runtime rt})]
                          {:acknowledged
                           [(attr acknowledged-after :harness/status)
-                           (get (guidance/current-attempt acknowledged-after)
+                           (get (guidance/current-attempt
+                                 (guidance/validation-run rt acknowledged-after))
                                 "state")]
                           :completed-no-write
                           (= completed-before completed-after)
@@ -402,7 +405,8 @@
                          :substatus
                          (attr (:run expiry-result) :harness/substatus)
                          :deadline
-                         (get (guidance/current-attempt (:run expiry-result))
+                         (get (guidance/current-attempt
+                               (guidance/validation-run rt (:run expiry-result)))
                               "deadline-at")
                          :expected-deadline (:deadline expiry)
                          :events @expiry-events}
@@ -413,7 +417,9 @@
                          (attr (:run retirement-result) :harness/substatus)
                          :deadline
                          (get (guidance/current-attempt
-                               (:run retirement-result)) "deadline-at")
+                               (guidance/validation-run
+                                rt (:run retirement-result)))
+                              "deadline-at")
                          :expected-deadline (:deadline retirement)
                          :old-generation (:old-generation retirement-result)
                          :new-generation (:new-generation retirement-result)

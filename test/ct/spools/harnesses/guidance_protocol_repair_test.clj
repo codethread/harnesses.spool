@@ -1,6 +1,7 @@
 (ns ct.spools.harnesses.guidance-protocol-repair-test
   "Protocol grammar failures remain side-effect free in disposable worlds."
   (:require [clojure.test :refer [deftest is]]
+            [ct.spools.harnesses.guidance-representation-fixture :as representation-fixture]
             [ct.spools.harnesses.guidance-test :as guidance-test]
             [ct.spools.harnesses.internal.cli :as cli]
             [ct.spools.harnesses.internal.guidance :as guidance]
@@ -113,25 +114,10 @@
   (let [extra ["--name" "--system-prompt"
                "--unknown" "value"
                "--" "--append-system-prompt" "literal"]
-        run {:id "run"
-             :title "Pi run"
-             :state "active"
-             :attributes
-             {:harness/mode "headless"
-              :harness/session-id "native-session"
-              :harness/prompt "Main task"
-              :harness/model "model"
-              :harness/effort "high"
-              :harness/extra-argv extra
-              :harness/guidance-version 1
-              :harness/guidance-transport "native-v1"
-              :harness/guidance-capability {}
-              :harness/guidance-capability-sha256 "capability"
-              :harness/guidance-context-template {}
-              :harness/guidance-context {}
-              :harness/guidance-bundle-sha256 "bundle"
-              :harness/guidance-attempts []}}
-        argv (:argv (pi/prepare {} (pi/harness {}) run))]
+        run (assoc-in (representation-fixture/run "pi" "native-v1")
+                      [:attributes :harness/extra-argv] extra)
+        runtime {:metadata {:config-dir "/tmp"}}
+        argv (:argv (pi/prepare runtime (pi/harness runtime) run))]
     (is (= extra (vec (take-last (count extra) argv))))))
 
 (deftest invalid-capability-unicode-precedes-publication-and-reservation

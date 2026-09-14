@@ -97,7 +97,8 @@
        (identical? opened @(:active (state-holder rt)))))
 
 (defn- full-run [rt id]
-  (or (weaver/show rt id) (fail! "Harness run not found" {:id id})))
+  (guidance/validation-run
+   rt (or (weaver/show rt id) (fail! "Harness run not found" {:id id}))))
 
 (defn- same-attempt? [originating-run current]
   (and (= (:id originating-run) (:id current))
@@ -170,6 +171,7 @@
   "Rearm eligible durable deadlines for one newly opened generation."
   [rt opened]
   (->> (weaver/list rt)
+       (map #(guidance/validation-run rt %))
        (keep #(schedule-guidance-deadline! rt opened %))
        count))
 

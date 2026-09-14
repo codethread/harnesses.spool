@@ -188,13 +188,17 @@
                   (let [past "2026-09-14T00:00:00Z"
                         set-deadline
                         (fn [run deadline]
-                          (let [record (guidance/current-attempt run)]
+                          (let [run (guidance/validation-run rt run)
+                                record (guidance/current-attempt run)]
                             (weaver/update!
                              rt (:id run)
                              {:attributes
                               {:harness/guidance-attempts
                                (mapv #(if (= record %)
-                                        (assoc % "deadline-at" deadline)
+                                        (assoc %
+                                               "started-at"
+                                               "2026-09-13T23:59:59Z"
+                                               "deadline-at" deadline)
                                         %)
                                      (guidance/attempt-records run))}})))
                         acknowledged-run
@@ -386,14 +390,16 @@
                                (guidance/bootstrap
                                 (:strand fetched-codex-start))})
                         fetched-codex
-                        (let [current (weaver/show rt (:id fetched-codex))
+                        (let [current (guidance/validation-run
+                                       rt (weaver/show rt (:id fetched-codex)))
                               record (guidance/current-attempt current)]
                           (weaver/update!
                            rt (:id current)
                            {:attributes
                             {:harness/guidance-attempts
-                             [(assoc record "deadline-at"
-                                     "2026-09-14T00:00:00Z")]}}))
+                             [(assoc record
+                                     "started-at" "2026-09-13T23:59:59Z"
+                                     "deadline-at" "2026-09-14T00:00:00Z")]}}))
                         fetched-pi
                         (create-native-interactive-fixture!
                          rt {:harness :native-codex :mode :interactive
@@ -409,15 +415,29 @@
                                :guidance
                                (guidance/bootstrap (:strand fetched-pi-start))})
                         fetched-pi
-                        (let [current (weaver/show rt (:id fetched-pi))
-                              record (guidance/current-attempt current)]
+                        (let [current (guidance/validation-run
+                                       rt (weaver/show rt (:id fetched-pi)))
+                              record (guidance/current-attempt current)
+                              persisted
+                              (weaver/update!
+                               rt (:id current)
+                               {:attributes
+                                {:harness/harness "pi"
+                                 :harness/guidance-capability
+                                 pi-capability-document}})
+                              pi-capability-sha
+                              (strict-json/canonical-sha256
+                               (attr persisted :harness/guidance-capability))]
                           (weaver/update!
                            rt (:id current)
                            {:attributes
-                            {:harness/harness "pi"
+                            {:harness/guidance-capability-sha256
+                             pi-capability-sha
                              :harness/guidance-attempts
-                             [(assoc record "deadline-at"
-                                     "2026-09-14T00:00:00Z")]}}))
+                             [(assoc record
+                                     "started-at" "2026-09-13T23:59:59Z"
+                                     "deadline-at" "2026-09-14T00:00:00Z"
+                                     "capability-sha256" pi-capability-sha)]}}))
                         _ (Thread/sleep 1100)
                         _ (execution/open-execution! {:runtime rt})
                         recovered (weaver/show rt (:id recoverable))
@@ -430,7 +450,8 @@
                       (attr prelaunch-failed :harness/settled)
                       (attr prelaunch-failed :harness/settlement)
                       (attr prelaunch-failed :harness/native-attached)
-                      (guidance/attempt-records prelaunch-failed)]
+                      (guidance/attempt-records
+                       (guidance/validation-run rt prelaunch-failed))]
                      :positive-error positive-error
                      :positive-no-write (= positive-before positive-after)
                      :unknown
@@ -445,10 +466,12 @@
                       (attr recovered :harness/stop-reason)]
                      :fetched-codex
                      [(attr codex-after :harness/status)
-                      (get (guidance/current-attempt codex-after) "state")]
+                      (get (guidance/current-attempt
+                            (guidance/validation-run rt codex-after)) "state")]
                      :fetched-pi
                      [(attr pi-after :harness/status)
-                      (get (guidance/current-attempt pi-after) "state")]}))))]
+                      (get (guidance/current-attempt
+                            (guidance/validation-run rt pi-after)) "state")]}))))]
         (is (re-find #"verified preparation failure"
                      (:preparation-error result)))
         (is (= ["failed" "true" "launch-not-started" "false" []]

@@ -30,6 +30,21 @@
 ;; start time and supplies it to the native destroy operation. Keeping that same
 ;; handle therefore makes signaling birth-fenced; `started-at` is the separately
 ;; observed correlation identity.
+(defn retain-direct
+  "Retain authority over one directly created original process handle.
+
+  This custody does not depend on supplementary start-time observation. The
+  retained JDK handle itself remains bound to the process instance it created."
+  [^ProcessHandle handle role]
+  (when-not handle
+    (fail! "Guidance directly created process handle is missing" {:role role}))
+  {:role role
+   :pid (.pid handle)
+   :direct? true
+   :handle handle
+   :alive? #(.isAlive handle)
+   :destroy! #(.destroyForcibly handle)})
+
 (defn retain
   "Retain one actual process handle and its immutable start identity."
   [^ProcessHandle handle role]
@@ -206,11 +221,12 @@
           (throw error))))))
 
 (defn live?
-  "Return whether the retained birth-fenced identity is still live."
+  "Return whether the retained original or birth-fenced identity is still live."
   [identity]
   (and identity
        ((:alive? identity))
-       (= (:started-at identity) ((:current-start identity)))))
+       (or (:direct? identity)
+           (= (:started-at identity) ((:current-start identity))))))
 
 (defn require-live!
   "Return a live retained identity or fail without PID reacquisition."

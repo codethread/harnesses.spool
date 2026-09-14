@@ -50,7 +50,9 @@
                          transition-errors (atom [])
                          failures (:reconciliation-failures opened)]
                      (doseq [originating-run owned]
-                       (when-let [current (weaver/show rt (:id originating-run))]
+                       (when-let [current (some->> (weaver/show
+                                                    rt (:id originating-run))
+                                                   (guidance/validation-run rt))]
                          (when (and (same-attempt? originating-run current)
                                     (= "headless"
                                        (attr-get current :harness/mode))

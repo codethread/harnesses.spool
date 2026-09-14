@@ -47,9 +47,15 @@
                                  (harnesses/begin-attempt! rt (:id created))
                                  record
                                  (guidance/current-attempt (:strand started))
-                                 deadline
-                                 (str (.plusMillis
-                                       (java.time.Instant/now) millis))
+                                 deadline-instant
+                                 (.plusMillis (java.time.Instant/now) millis)
+                                 deadline (str deadline-instant)
+                                 record
+                                 (cond-> record
+                                   (neg? millis)
+                                   (assoc "started-at"
+                                          (str (.minusSeconds
+                                                deadline-instant 1))))
                                  process-key
                                  (str (:id created) "/attempt-"
                                       (:attempt started))]
@@ -200,7 +206,9 @@
                              :same-after-old-resumed
                              (= before-close after-old-resumed)
                              :deadline
-                             (get (guidance/current-attempt after-old-resumed)
+                             (get (guidance/current-attempt
+                                   (guidance/validation-run
+                                    rt after-old-resumed))
                                   "deadline-at")
                              :expected-deadline (:deadline retirement)
                              :status (attr recovered :harness/status)

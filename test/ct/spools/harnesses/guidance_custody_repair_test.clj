@@ -97,7 +97,7 @@
                            :failure-class "bootstrap"})
                          projection
                          (fn [entry]
-                           (let [run (:run entry)
+                           (let [run (guidance/validation-run rt (:run entry))
                                  record (guidance/current-attempt run)]
                              {:status [(attr run :harness/status)
                                        (attr run :harness/substatus)

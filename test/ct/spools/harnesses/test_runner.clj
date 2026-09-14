@@ -15,8 +15,10 @@
             [ct.spools.harnesses.guidance-fixture-hygiene-test]
             [ct.spools.harnesses.guidance-headless-deadline-test]
             [ct.spools.harnesses.guidance-process-cleanup-test]
+            [ct.spools.harnesses.guidance-process-deadline-test]
             [ct.spools.harnesses.guidance-process-identity-test]
             [ct.spools.harnesses.guidance-process-scan-test]
+            [ct.spools.harnesses.guidance-provider-transport-test]
             [ct.spools.harnesses.guidance-protocol-repair-test]
             [ct.spools.harnesses.guidance-repair-test]
             [ct.spools.harnesses.guidance-representation-test]
@@ -55,8 +57,10 @@
     ct.spools.harnesses.guidance-fixture-hygiene-test
     ct.spools.harnesses.guidance-headless-deadline-test
     ct.spools.harnesses.guidance-process-cleanup-test
+    ct.spools.harnesses.guidance-process-deadline-test
     ct.spools.harnesses.guidance-process-identity-test
     ct.spools.harnesses.guidance-process-scan-test
+    ct.spools.harnesses.guidance-provider-transport-test
     ct.spools.harnesses.guidance-protocol-repair-test
     ct.spools.harnesses.guidance-repair-test
     ct.spools.harnesses.guidance-representation-test

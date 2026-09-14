@@ -121,6 +121,17 @@
                          (-> (:attributes valid)
                              (assoc :harness/session-id "legacy-valid")
                              (dissoc :harness/continued))})
+                    unproven
+                    (weaver/update!
+                     rt (:id unproven)
+                     {:attributes
+                      {:harness/guidance-bundle-sha256
+                       ((requiring-resolve
+                         'ct.spools.harnesses.internal.strict-json/canonical-sha256)
+                        [(:id unproven)
+                         (.getCanonicalPath
+                          (java.io.File. (get-in rt [:metadata :config-dir])))
+                         (attr unproven :harness/guidance-context)])}})
                     unproven-before
                     [(weaver/show rt (:id unproven))
                      (identity/current rt (attr unproven :identity/id))

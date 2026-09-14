@@ -48,7 +48,7 @@
                 (spool/fail! "Guidance receipt run was not found" {:run-id id}))]
     (when-not (= "true" (spool/attr-get run :harness/run))
       (spool/fail! "Guidance receipt target is not a harness run" {:run-id id}))
-    run))
+    (guidance/validation-run rt run)))
 
 (defn- receipt! [value expected-outcome]
   (let [receipt (normalize-document value "Guidance receipt")

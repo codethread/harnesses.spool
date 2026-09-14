@@ -215,6 +215,25 @@
       (fail! (str label " must be a JSON object") {:value value}))
     value))
 
+(defn- valid-unicode? [^String value]
+  (loop [index 0]
+    (if (= index (.length value))
+      true
+      (let [character (.charAt value index)]
+        (cond
+          (Character/isHighSurrogate character)
+          (and (< (inc index) (.length value))
+               (Character/isLowSurrogate (.charAt value (inc index)))
+               (recur (+ index 2)))
+
+          (Character/isLowSurrogate character) false
+          :else (recur (inc index)))))))
+
+(defn- normalize-string [value]
+  (when-not (valid-unicode? value)
+    (fail! "Canonical protocol JSON contains malformed Unicode text" {}))
+  value)
+
 (defn- normalize-map [value]
   (reduce-kv
    (fn [result key item]
@@ -235,8 +254,8 @@
   (cond
     (map? value) (normalize-map value)
     (sequential? value) (mapv canonical-data value)
+    (string? value) (normalize-string value)
     (or (nil? value)
-        (string? value)
         (boolean? value)
         (and (integer? value)
              (<= (- maximum-safe-integer) value maximum-safe-integer))) value

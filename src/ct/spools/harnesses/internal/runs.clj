@@ -29,12 +29,15 @@
   (let [run (or (weaver/show rt id) (fail! "Harness run not found" {:id id}))]
     (when-not (= "true" (attr-get run :harness/run))
       (fail! "Strand is not a harness run" {:id id}))
-    run))
+    (guidance/validation-run rt run)))
 
 (defn runs-where
   "List harness runs matching additional query `clauses`."
   [rt clauses]
-  (weaver/list rt (into [:and [:= [:attr "harness/run"] "true"]] clauses) {}))
+  (mapv #(guidance/validation-run rt %)
+        (weaver/list rt (into [:and [:= [:attr "harness/run"] "true"]]
+                              clauses)
+                     {})))
 
 (defn reserving-session-writers
   "Return published runs that still reserve `session-id`."
@@ -77,7 +80,8 @@
                              (graph/incoming-edges rt [run-id] "resumes"))
                         (map :from_strand_id
                              (graph/incoming-edges rt [run-id] "continues"))))]
-    (some #(let [child (weaver/show rt %)]
+    (some #(let [child (some->> (weaver/show rt %)
+                                (guidance/validation-run rt))]
              (when (and child (life/published? child)) child))
           child-ids)))
 
@@ -191,31 +195,33 @@
                     (assoc :harness/extra-argv literal-extra-argv))
         prompt (bind-invocation-markers prompt run-id identity-id)
         context (bind-invocation-markers context run-id identity-id)
-        published (require-valid!
-                   :ct.spools.harnesses/strand
-                   (weaver/update!
-                    rt (:id run)
-                    {:attributes (merge effective
-                                        guidance-patch
-                                        (when (some? prompt) {:harness/prompt prompt})
-                                        (when context {:harness/context context})
-                                        {:identity/id identity-id
-                                         :identity/prompt (:prompt identity-binding)
-                                         :harness/logical-id (or logical-id (:id run))
+        published (guidance/validation-run
+                   rt
+                   (require-valid!
+                    :ct.spools.harnesses/strand
+                    (weaver/update!
+                     rt (:id run)
+                     {:attributes (merge effective
+                                         guidance-patch
+                                         (when (some? prompt) {:harness/prompt prompt})
+                                         (when context {:harness/context context})
+                                         {:identity/id identity-id
+                                          :identity/prompt (:prompt identity-binding)
+                                          :harness/logical-id (or logical-id (:id run))
                                          ;; Last write of the create: everything a scheduler needs
                                          ;; to act on this run is durable before it becomes visible
                                          ;; as published.
-                                         :harness/published "true"}
-                                        (when-let [reservation-id
-                                                   (:reservation-id
-                                                    identity-binding)]
-                                          {:identity/reservation-id reservation-id
-                                           :harness/provisional-session-id session-id
-                                           :harness/native-attached
-                                           (if (:native-attached identity-binding)
-                                             "true"
-                                             "false")}))})
-                   "create! produced an invalid published run")]
+                                          :harness/published "true"}
+                                         (when-let [reservation-id
+                                                    (:reservation-id
+                                                     identity-binding)]
+                                           {:identity/reservation-id reservation-id
+                                            :harness/provisional-session-id session-id
+                                            :harness/native-attached
+                                            (if (:native-attached identity-binding)
+                                              "true"
+                                              "false")}))})
+                    "create! produced an invalid published run"))]
     (when-let [predecessor-id (or resumes after)]
       (weaver/update! rt predecessor-id
                       {:attributes {:harness/continued "true"}}))
@@ -232,16 +238,17 @@
                 (life/reserving? %)
                 (not= "ready" (life/status %))
                 (not (in-flight? %)))
-          (weaver/list rt
-                       [:and
-                        [:= [:attr "harness/run"] "true"]
-                        [:= [:attr "harness/published"] "true"]
-                        [:or
-                         [:= [:attr "harness/status"] "running"]
-                         [:and
-                          [:in [:attr "harness/status"] ["stopped" "failed"]]
-                          [:not [:= [:attr "harness/settled"] "true"]]]]]
-                       {})))
+          (mapv #(guidance/validation-run rt %)
+                (weaver/list rt
+                             [:and
+                              [:= [:attr "harness/run"] "true"]
+                              [:= [:attr "harness/published"] "true"]
+                              [:or
+                               [:= [:attr "harness/status"] "running"]
+                               [:and
+                                [:in [:attr "harness/status"] ["stopped" "failed"]]
+                                [:not [:= [:attr "harness/settled"] "true"]]]]]
+                             {}))))
 
 (defn accepted-lineage
   "Return every published run matching `attribute` = `value`."

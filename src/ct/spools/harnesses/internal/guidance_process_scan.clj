@@ -126,19 +126,38 @@
                  {:pid (.pid process)}))))
     (doseq [stream streams]
       (try (.close stream) (catch Exception _ nil)))
-    (.shutdownNow executor)
-    (attempt-cleanup!
-     errors
-     #(let [remaining (remaining-nanos deadline)]
-        (when-not (and (pos? remaining)
-                       (.awaitTermination executor remaining
-                                          TimeUnit/NANOSECONDS))
-          (fail! "Guidance process ownership scanner workers did not terminate"
-                 {}))))
+    (when executor
+      (.shutdownNow executor)
+      (attempt-cleanup!
+       errors
+       #(let [remaining (remaining-nanos deadline)]
+          (when-not (and (pos? remaining)
+                         (.awaitTermination executor remaining
+                                            TimeUnit/NANOSECONDS))
+            (fail! "Guidance process ownership scanner workers did not terminate"
+                   {})))))
     (when-let [error (first @errors)]
       (doseq [suppressed (rest @errors)]
         (.addSuppressed ^Throwable error ^Throwable suppressed))
       (throw error))))
+
+(defn- complete-scan! [operation cleanup]
+  (let [result (atom nil)
+        failure (atom nil)]
+    (try
+      (reset! result (operation))
+      (catch Throwable error
+        (reset! failure error))
+      (finally
+        (try
+          (cleanup)
+          (catch Throwable cleanup-error
+            (if-let [error @failure]
+              (.addSuppressed ^Throwable error cleanup-error)
+              (reset! failure cleanup-error))))))
+    (if-let [error @failure]
+      (throw error)
+      @result)))
 
 (defn- scanner-deadline [deadline]
   (let [now (System/nanoTime)
@@ -155,43 +174,64 @@
   (let [scan-deadline (scanner-deadline deadline)
         budget {:work-deadline scan-deadline :deadline deadline}
         budget! #(when-not (pos? (remaining-nanos scan-deadline))
-                   (timed-out! "closure-verification"))]
+                   (timed-out! "closure-verification"))
+        process (atom nil)
+        scanner-identity (atom nil)
+        executor (atom nil)
+        streams (atom [])]
     (admission-deadline/bounded!
      budget "cleanup-closure-verification"
      #(closure/verify! profile process-environment budget!))
-    (let [builder (doto (ProcessBuilder. ^java.util.List
-                         [scanner "-axo" "pid=,pgid="])
-                    (.directory root))
-          _ (doto (.environment builder)
-              (.clear)
-              (.putAll process-environment))
-          process (.start builder)
-          scanner-identity (atom nil)
-          executor (Executors/newFixedThreadPool 2 (thread-factory))
-          stdout (.getInputStream process)
-          stderr (.getErrorStream process)
-          drains (atom [])]
-      (try
-        (reset! scanner-identity
-                (identity/retain (.toHandle process) "ownership-scanner"))
-        (reset! drains
-                [["stdout"
-                  (.submit executor ^Callable #(capture! stdout "stdout"))]
-                 ["stderr"
-                  (.submit executor ^Callable #(capture! stderr "stderr"))]])
-        (await-process! process @drains scan-deadline remaining-nanos)
-        (let [stdout-bytes
-              (await-future! (second (first @drains)) scan-deadline
-                             remaining-nanos "stdout")
-              stderr-bytes
-              (await-future! (second (second @drains)) scan-deadline
-                             remaining-nanos "stderr")
-              stderr-text (decode-utf8 stderr-bytes "stderr")]
-          (when-not (zero? (.exitValue process))
-            (fail! "Guidance preflight process ownership scan failed"
-                   {:exit-code (.exitValue process)
-                    :diagnostic stderr-text}))
-          (parse-output! (decode-utf8 stdout-bytes "stdout")))
-        (finally
-          (cleanup-scanner! process scanner-identity executor [stdout stderr]
-                            deadline remaining-nanos))))))
+    (complete-scan!
+     (fn []
+       (let [builder (doto (ProcessBuilder. ^java.util.List
+                            [scanner "-axo" "pid=,pgid="])
+                       (.directory root))
+             _ (doto (.environment builder)
+                 (.clear)
+                 (.putAll process-environment))
+             scanner-process
+             (admission-deadline/bounded!
+              budget "ownership-scanner-start"
+              #(let [started (.start builder)
+                     _ (reset! process started)
+                     direct (identity/retain-direct
+                             (.toHandle started)
+                             "direct-ownership-scanner")]
+                 (reset! scanner-identity direct)
+                 started))
+             handle (.toHandle scanner-process)
+             retained
+             (admission-deadline/bounded!
+              budget "ownership-scanner-identity"
+              #(identity/retain handle "ownership-scanner"))
+             _ (reset! scanner-identity retained)
+             io-executor (Executors/newFixedThreadPool 2 (thread-factory))
+             _ (reset! executor io-executor)
+             stdout (.getInputStream scanner-process)
+             _ (swap! streams conj stdout)
+             stderr (.getErrorStream scanner-process)
+             _ (swap! streams conj stderr)
+             stdout-future
+             (.submit io-executor ^Callable #(capture! stdout "stdout"))
+             stderr-future
+             (.submit io-executor ^Callable #(capture! stderr "stderr"))
+             drains [["stdout" stdout-future]
+                     ["stderr" stderr-future]]]
+         (await-process! scanner-process drains scan-deadline remaining-nanos)
+         (let [stdout-bytes
+               (await-future! stdout-future scan-deadline
+                              remaining-nanos "stdout")
+               stderr-bytes
+               (await-future! stderr-future scan-deadline
+                              remaining-nanos "stderr")
+               stderr-text (decode-utf8 stderr-bytes "stderr")]
+           (when-not (zero? (.exitValue scanner-process))
+             (fail! "Guidance preflight process ownership scan failed"
+                    {:exit-code (.exitValue scanner-process)
+                     :diagnostic stderr-text}))
+           (parse-output! (decode-utf8 stdout-bytes "stdout")))))
+     (fn []
+       (when @process
+         (cleanup-scanner! @process scanner-identity @executor @streams
+                           deadline remaining-nanos))))))
