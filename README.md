@@ -434,10 +434,21 @@ selectors, and resume settings before publication and again before each attempt.
 The canonical executable and effective environment are carried only in a
 process-local launch plan into custody; delayed launches recheck the provider
 command and configuration selectors, use the validated path as `argv[0]`, and
-never persist the inherited environment. Before helper execution, an accepted
-profile must contain exact reviewed evidence that its closure keeps every child
-in the inherited private process group. A private supervisor then establishes
-and verifies that group identity across root and intermediate exits. Verified
+never persist the inherited environment. The accepted capability wire document
+remains the frozen `millstrand.agent-guidance-capability/v1` schema: process
+ownership and executable-closure fields are rejected on that wire. Harnesses
+instead keeps this evidence in a closed local profile whose digest binds the wire
+capability to a finite canonical manifest. The manifest hashes and sizes the
+reviewed interpreter, preflight entrypoint, direct and transitive imports,
+package or module selectors, helper subprocesses, and ownership scanner that the
+profile needs; it also binds cwd plus exact PATH, NODE_OPTIONS, and NODE_PATH
+resolution inputs. Dynamic NODE_OPTIONS loaders/preloads and NODE_PATH lookup are
+rejected by this profile version. Missing, incomplete, duplicate, noncanonical,
+or changed artifacts fail before helper execution.
+
+The local profile must also contain exact reviewed evidence that its closure
+keeps every child in the inherited private process group. A private supervisor
+then establishes and verifies that group identity across root and intermediate exits. Verified
 helper completion retires the supervisor's stream handles independently from
 the retained cleanup identity. Input, execution, bounded output capture, exact
 owned-PID cleanup, and worker joins share one monotonic budget; unrelated
@@ -489,8 +500,10 @@ Pi `--append-system-prompt` arguments. Token-aware, case-sensitive filtering
 rejects only Codex `developer_instructions`, `instructions`, and
 `model_instructions_file` assignments at the root, plus the profile-supported
 `profiles.<name>.model_instructions_file` path, and Pi's exact system-prompt
-options; quoted Codex key segments and CLI
-literal tails retain their provider grammar. Competing controls fail before
+options. Pi scanning mirrors the pinned 0.84.4 parser's unconditional and
+conditional value consumption, equals forms, unknown long options, repeated
+options, list-models, print, positional arguments, aliases, and literal tail.
+Quoted Codex key segments and CLI literal tails retain their provider grammar. Competing controls fail before
 publication, while wrapper-level `--append-system-prompt`, main task prompts,
 model/effort, native session/resume, aliases, and unrelated provider argv remain
 byte-for-byte intact. Verified failures before launch may

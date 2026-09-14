@@ -3,6 +3,7 @@
   (:refer-clojure :exclude [run!])
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
+            [ct.spools.harnesses.internal.guidance-closure :as closure]
             [ct.spools.harnesses.internal.strict-json :as strict-json]
             [millstrand.api.spool.alpha :refer [fail!]])
   (:import [java.io ByteArrayOutputStream]
@@ -11,7 +12,6 @@
             StandardCharsets]
            [java.nio.file Files Path StandardCopyOption]
            [java.nio.file.attribute PosixFilePermissions]
-           [java.security MessageDigest]
            [java.util UUID]
            [java.util.concurrent Callable ExecutionException Executors Future
             ThreadFactory TimeUnit TimeoutException]))
@@ -26,13 +26,13 @@
    "\n"
    ["import fs from 'node:fs';"
     "import { spawn } from 'node:child_process';"
-    "const [anchor, root, state, bootReady, go, token] = process.argv.slice(2);"
+    "const [anchor, root, scanner, entrypoint, state, bootReady, go, token] = process.argv.slice(2);"
     "const writeState = value => {"
     "  const temporary = `${state}.tmp-${process.pid}`;"
     "  fs.writeFileSync(temporary, JSON.stringify(value), { mode: 0o600 });"
     "  fs.renameSync(temporary, state);"
     "};"
-    "const child = spawn(process.execPath, [anchor, root, state, bootReady, go, token], {"
+    "const child = spawn(process.execPath, [anchor, root, scanner, entrypoint, state, bootReady, go, token], {"
     "  detached: true,"
     "  stdio: ['inherit', 'inherit', 'inherit']"
     "});"
@@ -51,7 +51,7 @@
    "\n"
    ["import fs from 'node:fs';"
     "import { spawn, spawnSync } from 'node:child_process';"
-    "const [root, state, bootReady, go, token] = process.argv.slice(2);"
+    "const [root, scanner, entrypoint, state, bootReady, go, token] = process.argv.slice(2);"
     "const writeState = value => {"
     "  const temporary = `${state}.tmp-${process.pid}`;"
     "  fs.writeFileSync(temporary, JSON.stringify(value), { mode: 0o600 });"
@@ -60,7 +60,7 @@
     "const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));"
     "while (!fs.existsSync(bootReady)) await delay(1);"
     "if (fs.readFileSync(bootReady, 'utf8') !== token) process.exit(70);"
-    "const inspected = spawnSync('/bin/ps', ['-o', 'pgid=', '-p', String(process.pid)], {"
+    "const inspected = spawnSync(scanner, ['-o', 'pgid=', '-p', String(process.pid)], {"
     "  encoding: 'utf8',"
     "  timeout: 250"
     "});"
@@ -72,7 +72,7 @@
     "  writeState({ token, phase: 'owned', anchorPid: process.pid, pgid });"
     "  while (!fs.existsSync(go)) await delay(1);"
     "  if (fs.readFileSync(go, 'utf8') !== token) process.exit(71);"
-    "  const child = spawn(process.execPath, ['scripts/managed-guidance-preflight.mjs'], {"
+    "  const child = spawn(process.execPath, [entrypoint], {"
     "    cwd: root,"
     "    stdio: ['inherit', 'inherit', 'inherit']"
     "  });"
@@ -140,17 +140,6 @@
     (newThread [_ runnable]
       (doto (Thread. runnable "guidance-preflight-io")
         (.setDaemon true)))))
-
-(defn- file-sha256 [path]
-  (let [digest (MessageDigest/getInstance "SHA-256")]
-    (with-open [input (io/input-stream path)]
-      (let [buffer (byte-array 8192)]
-        (loop []
-          (let [count (.read input buffer)]
-            (when (pos? count)
-              (.update digest buffer 0 count)
-              (recur))))))
-    (str/join (map #(format "%02x" (bit-and 0xff %)) (.digest digest)))))
 
 (defn- private-directory! []
   (let [path (Files/createTempDirectory "harness-guidance-preflight-"
@@ -256,9 +245,9 @@
   (when pid
     (.orElse (ProcessHandle/of (long pid)) nil)))
 
-(defn- run-ps! [deadline]
+(defn- run-ps! [scanner deadline]
   (let [process (.start (ProcessBuilder. ^java.util.List
-                         ["/bin/ps" "-axo" "pid=,pgid="]))
+                         [scanner "-axo" "pid=,pgid="]))
         remaining (remaining-nanos deadline)]
     (when-not (and (pos? remaining)
                    (.waitFor process remaining TimeUnit/NANOSECONDS))
@@ -268,8 +257,8 @@
       (fail! "Guidance preflight process ownership scan failed" {}))
     (slurp (.getInputStream process))))
 
-(defn- group-pids [pgid deadline]
-  (->> (str/split-lines (run-ps! deadline))
+(defn- group-pids [scanner pgid deadline]
+  (->> (str/split-lines (run-ps! scanner deadline))
        (keep (fn [line]
                (let [[pid group] (str/split (str/trim line) #"\s+")]
                  (when (and pid group (= (str pgid) group))
@@ -282,14 +271,14 @@
       (swap! signalled conj pid)
       (.destroyForcibly handle))))
 
-(defn- cleanup-owned! [process ownership executor streams deadline]
+(defn- cleanup-owned! [process ownership executor streams scanner deadline]
   (let [{:keys [anchor-pid pgid]} @ownership
         signalled (atom #{})]
     (if pgid
       (loop []
         (when-not (pos? (remaining-nanos deadline))
           (timed-out! "owned-process-cleanup"))
-        (let [members (group-pids pgid deadline)
+        (let [members (group-pids scanner pgid deadline)
               live-members (filter #(some-> (process-handle %) .isAlive)
                                    members)
               descendants (remove #{anchor-pid} live-members)
@@ -328,6 +317,8 @@
   "Run the exact preflight helper inside a private, identity-fenced process group."
   [profile request-json]
   (let [{:keys [path]} (:preflight profile)
+        process-environment (:effective-environment profile)
+        reviewed-profile (dissoc profile :effective-environment)
         script (io/file path)
         scripts-dir (.getParentFile script)
         root (.getParentFile scripts-dir)]
@@ -347,18 +338,28 @@
           go-path (.resolve directory "go.ready")
           token (str (UUID/randomUUID))
           ownership (atom {})
-          executor (Executors/newFixedThreadPool 3 (daemon-thread-factory))]
+          executor (Executors/newFixedThreadPool 3 (daemon-thread-factory))
+          budget! #(when-not (pos? (remaining-nanos execution-deadline))
+                     (timed-out! "closure-verification"))
+          interpreter (closure/artifact-path reviewed-profile "interpreter")
+          scanner (closure/artifact-path reviewed-profile "ownership-scanner")
+          entrypoint (closure/artifact-path reviewed-profile "entrypoint")]
       (try
+        (closure/verify! reviewed-profile process-environment budget!)
         (write-file! supervisor-path supervisor-source)
         (write-file! anchor-path anchor-source)
-        (let [process (.start
-                       (doto
-                        (ProcessBuilder.
-                         ^java.util.List
-                         ["node" (str supervisor-path) (str anchor-path)
-                          (.getCanonicalPath root) (str state-path)
-                          (str boot-path) (str go-path) token])
-                         (.directory root)))
+        (let [builder
+              (doto
+               (ProcessBuilder.
+                ^java.util.List
+                [interpreter (str supervisor-path) (str anchor-path)
+                 (.getCanonicalPath root) scanner entrypoint (str state-path)
+                 (str boot-path) (str go-path) token])
+                (.directory root))
+              _ (doto (.environment builder)
+                  (.clear)
+                  (.putAll process-environment))
+              process (.start builder)
               input (.submit
                      executor
                      ^Callable
@@ -383,6 +384,7 @@
                      {:exit-code (.exitValue process)}))
             (when-not (some-> (process-handle (:anchor-pid @ownership)) .isAlive)
               (fail! "Guidance preflight ownership anchor is not live" @ownership))
+            (closure/verify! reviewed-profile process-environment budget!)
             (write-signal! go-path token)
             (let [finished (await-helper! state-path token futures
                                           execution-deadline ownership)]
@@ -392,11 +394,15 @@
                                                 "stdout-drain")
                     stderr-bytes (await-future! stderr execution-deadline
                                                 "stderr-drain")
-                    source-hash
-                    (.submit executor ^Callable #(file-sha256 path))]
-                {:source {:path (.getCanonicalPath script)
-                          :sha256 (await-future! source-hash execution-deadline
-                                                 "source-recheck")}
+                    closure-check
+                    (.submit executor
+                             ^Callable
+                             #(closure/verify! reviewed-profile
+                                               process-environment budget!))]
+                {:source (:preflight reviewed-profile)
+                 :reviewed-closure-sha256
+                 (await-future! closure-check execution-deadline
+                                "closure-recheck")
                  :exit-code (or (get finished "exitCode") 1)
                  :stdout (decode-utf8 stdout-bytes
                                       "Guidance preflight stdout")
@@ -407,7 +413,8 @@
                               :helper-pid (:helper-pid @ownership)}}))
             (finally
               (try
-                (cleanup-owned! process ownership executor streams deadline)
+                (cleanup-owned! process ownership executor streams scanner
+                                deadline)
                 (finally
                   (when (.isAlive process)
                     (.destroyForcibly process))

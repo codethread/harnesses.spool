@@ -2,10 +2,10 @@
   "Admission and no-model preflight for native managed guidance."
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
+            [ct.spools.harnesses.internal.guidance-closure :as closure]
             [ct.spools.harnesses.internal.guidance-process :as guidance-process]
             [ct.spools.harnesses.internal.strict-json :as strict-json]
-            [millstrand.api.spool.alpha :refer [fail!]])
-  (:import [java.security MessageDigest]))
+            [millstrand.api.spool.alpha :refer [fail!]]))
 
 (def preflight-schema
   "Version identifying the no-model preflight request and result."
@@ -18,10 +18,6 @@
 (def adapter-contract
   "Native adapter contract selected by this Harnesses implementation."
   "native-v1")
-
-(def process-ownership-contract
-  "Reviewed helper behavior retained inside the private POSIX session."
-  "private-posix-session/inherited-process-group-v1")
 
 (def ^:private metadata-limit (* 64 1024))
 (def ^:private sha-pattern #"[0-9a-f]{64}")
@@ -55,18 +51,7 @@
 (defn file-sha256
   "Return the SHA-256 digest of one regular file."
   [path]
-  (let [file (io/file path)]
-    (when-not (.isFile file)
-      (fail! "Guidance capability source is missing" {:path (str path)}))
-    (let [digest (MessageDigest/getInstance "SHA-256")]
-      (with-open [input (io/input-stream file)]
-        (let [buffer (byte-array 8192)]
-          (loop []
-            (let [count (.read input buffer)]
-              (when (pos? count)
-                (.update digest buffer 0 count)
-                (recur))))))
-      (str/join (map #(format "%02x" (bit-and 0xff %)) (.digest digest))))))
+  (closure/file-sha256 path))
 
 (defn resolve-executable
   "Resolve `command` against `env` and return its canonical executable path."
@@ -149,10 +134,7 @@
 (def ^:private capability-keys
   #{"schema" "harness" "adapter-contract" "adapter-sha256"
     "executable-sha256" "host-version" "launch-profile-sha256"
-    "max-context-bytes" "process-ownership" "hook-fact"})
-
-(def ^:private process-ownership-keys
-  #{"contract" "reviewed-closure-sha256" "child-process-behavior"})
+    "max-context-bytes" "hook-fact"})
 
 (def ^:private codex-hook-keys
   #{"eventName" "key" "source" "sourcePath" "pluginId" "command"
@@ -201,47 +183,10 @@
                                   extensions)))
       (fail! "Pi guidance evidence does not name exactly one prompt owner" {}))))
 
-(defn- validate-process-ownership! [ownership]
-  (when-not (map? ownership)
-    (fail! "Guidance capability has no reviewed process ownership evidence" {}))
-  (closed-keys! ownership process-ownership-keys
-                "Guidance process ownership evidence")
-  (when-not (= process-ownership-contract (get ownership "contract"))
-    (fail! "Guidance capability process ownership is unsupported"
-           {:contract (get ownership "contract")}))
-  (when-not (= "inherited-process-group-only"
-               (get ownership "child-process-behavior"))
-    (fail! "Guidance capability permits children to escape private ownership"
-           {:child-process-behavior
-            (get ownership "child-process-behavior")}))
-  (sha! (get ownership "reviewed-closure-sha256")
-        "Guidance process ownership closure hash")
-  ownership)
-
 (defn process-ownership-sha256
-  "Hash the exact helper, adapter, executable, host, and launch ownership closure."
+  "Hash the local executable closure, ownership policy, and wire capability."
   [profile]
-  (let [capability (:capability profile)
-        ownership (get capability "process-ownership")]
-    (strict-json/canonical-sha256
-     {"preflight-sha256" (get-in profile [:preflight :sha256])
-      "adapter-sha256" (get capability "adapter-sha256")
-      "executable-sha256" (get capability "executable-sha256")
-      "host-version" (get capability "host-version")
-      "launch-profile-sha256" (get capability "launch-profile-sha256")
-      "hook-fact" (get capability "hook-fact")
-      "contract" (get ownership "contract")
-      "child-process-behavior" (get ownership
-                                    "child-process-behavior")})))
-
-(defn- validate-profile-process-ownership! [profile]
-  (let [ownership (validate-process-ownership!
-                   (get-in profile [:capability "process-ownership"]))
-        expected (process-ownership-sha256 profile)]
-    (when-not (= expected (get ownership "reviewed-closure-sha256"))
-      (fail! "Guidance process ownership does not match its exact reviewed closure"
-             {:expected expected}))
-    ownership))
+  (closure/reviewed-sha256 profile))
 
 (defn- validate-capability! [capability harness]
   (when-not (map? capability)
@@ -260,7 +205,6 @@
     (fail! "Guidance adapter contract is unsupported" {}))
   (when-not (pos-int? (get capability "max-context-bytes"))
     (fail! "Guidance capability context limit must be a positive integer" {}))
-  (validate-process-ownership! (get capability "process-ownership"))
   (case harness
     "codex" (validate-codex-hook! (get capability "hook-fact"))
     "pi" (validate-pi-hook! (get capability "hook-fact"))
@@ -285,6 +229,10 @@
 
 (defn- validate-result! [profile harness executable process-result]
   (validate-source! profile (:source process-result))
+  (when-not (= (get-in profile
+                       [:process-ownership :reviewed-closure-sha256])
+               (:reviewed-closure-sha256 process-result))
+    (fail! "Guidance executable closure changed during preflight" {}))
   (when-not (zero? (:exit-code process-result))
     (fail! "Guidance preflight command failed"
            {:exit-code (:exit-code process-result)
@@ -326,16 +274,19 @@
       (fail! "Native guidance has duplicate accepted preflight sources"
              {:harness harness :profiles (count matching)}))
     (let [profile (first matching)
-          _ (validate-profile-process-ownership! profile)
           wire-request (validate-request!
                         (assoc request "schema" preflight-schema))
-          source-path (get-in profile [:preflight :path])
-          _ (validate-source!
-             profile
-             {:path (.getCanonicalPath (io/file source-path))
-              :sha256 (file-sha256 source-path)})
+          _ (validate-capability! (:capability profile) harness)
+          _ (when-not (= (file-sha256 executable)
+                         (get-in profile [:capability "executable-sha256"]))
+              (fail! "Provider executable does not match guidance capability evidence"
+                     {:executable executable}))
+          _ (closure/verify! profile (get wire-request "env"))
           request-json (strict-json/canonical-json wire-request)
           _ (when (> (strict-json/utf8-bytes request-json) metadata-limit)
               (fail! "Guidance preflight request exceeds 64 KiB" {}))
-          process-result ((preflight-runner) profile request-json)]
+          process-result ((preflight-runner)
+                          (assoc profile
+                                 :effective-environment (get wire-request "env"))
+                          request-json)]
       (validate-result! profile harness executable process-result))))

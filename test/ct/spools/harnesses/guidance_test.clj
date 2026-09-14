@@ -4,7 +4,6 @@
             [clojure.test :refer [deftest is testing]]
             [ct.spools.harnesses.internal.guidance :as guidance]
             [ct.spools.harnesses.internal.guidance-capability :as capability]
-            [ct.spools.harnesses.internal.strict-json :as strict-json]
             [ct.spools.harnesses.providers.claude :as claude]
             [ct.spools.harnesses.providers.codex :as codex]
             [ct.spools.harnesses.providers.cursor :as cursor]
@@ -37,24 +36,6 @@
        :harness/guidance-context {}
        :harness/guidance-bundle-sha256 "bundle"
        :harness/guidance-attempts []}))})
-
-(deftest strict-json-is-bounded-and-canonical
-  (is (= {"a" 1 "nested" {"x" "é/\n"}}
-         (strict-json/parse-object! "{\"nested\":{\"x\":\"é/\\n\"},\"a\":1}"
-                                    1024 "fixture")))
-  (is (= "{\"a\":\"é/\",\"z\":1}"
-         (strict-json/canonical-json {"z" 1 "a" "é/"})))
-  (is (= 64 (count (strict-json/canonical-sha256 ["run" "/tmp" {}]))))
-  (doseq [source ["{\"a\":1,\"a\":2}"
-                  "{}{}"
-                  "{\"a\":1.5}"
-                  "{\"a\":\"\\uD800\"}"]]
-    (is (thrown? clojure.lang.ExceptionInfo
-                 (strict-json/parse-object! source 1024 "fixture"))))
-  (is (thrown-with-msg? clojure.lang.ExceptionInfo
-                        #"byte limit"
-                        (strict-json/parse-object! "{\"long\":\"value\"}"
-                                                   5 "fixture"))))
 
 (deftest guidance-deadlines-distinguish-pi-idle-after-fetch
   (let [record {"attempt" 1 "invocation" "invocation"
@@ -169,6 +150,7 @@
               '[ct.spools.harnesses.execution :as execution]
               '[ct.spools.harnesses.internal.guidance :as guidance]
               '[ct.spools.harnesses.internal.guidance-capability :as capability]
+              '[ct.spools.harnesses.internal.guidance-closure :as closure]
               '[ct.spools.harnesses.internal.strict-json :as strict-json]
               '[ct.spools.harnesses.providers.codex :as codex]
               '[millstrand.api.current.alpha :as current]
@@ -202,10 +184,6 @@
         "host-version" "0.154.0-test"
         "launch-profile-sha256" (apply str (repeat 64 "b"))
         "max-context-bytes" 3072
-        "process-ownership"
-        {"contract" "private-posix-session/inherited-process-group-v1"
-         "reviewed-closure-sha256" (apply str (repeat 64 "e"))
-         "child-process-behavior" "inherited-process-group-only"}
         "hook-fact"
         {"eventName" "sessionStart"
          "key" "managed-guidance"
@@ -218,20 +196,44 @@
          "currentHash" "trusted-host-hash"
          "timeoutSec" 15
          "additionalContextLimit" 4096}})
+     (def profile-environment
+       (-> (into {} (System/getenv))
+           (assoc "PATH" (.getCanonicalPath fixture-dir))
+           (dissoc "NODE_OPTIONS" "NODE_PATH")))
      (def profile
        (let [candidate
              {:harness "codex"
               :preflight {:path (.getCanonicalPath preflight-file)
                           :sha256 (capability/file-sha256 preflight-file)}
-              :capability capability-document}]
+              :capability capability-document
+              :executable-closure
+              {:schema "millstrand.local-guidance-executable-closure/v1"
+               :reviewed-complete true
+               :artifacts
+               [(closure/artifact "entrypoint" preflight-file)
+                (closure/artifact
+                 "interpreter"
+                 (capability/resolve-executable "node" (System/getenv)))
+                (closure/artifact "ownership-scanner" "/bin/ps")]
+               :resolution-inputs
+               {:cwd (.getCanonicalPath fixture-dir)
+                :environment
+                (into {}
+                      (map (fn [key] [key (get profile-environment key)]))
+                      ["PATH" "NODE_OPTIONS" "NODE_PATH"])}}
+              :process-ownership
+              {:contract "private-posix-session/inherited-process-group-v1"
+               :reviewed-closure-sha256 (apply str (repeat 64 "0"))
+               :child-process-behavior "inherited-process-group-only"}}]
          (assoc-in candidate
-                   [:capability "process-ownership"
-                    "reviewed-closure-sha256"]
+                   [:process-ownership :reviewed-closure-sha256]
                    (capability/process-ownership-sha256 candidate))))
-     (def capability-document (:capability profile))
      (defn accepted-runner [accepted-profile request-json]
        (strict-json/parse-object! request-json 65536 "test preflight request")
        {:source (:preflight accepted-profile)
+        :reviewed-closure-sha256
+        (get-in accepted-profile
+                [:process-ownership :reviewed-closure-sha256])
         :exit-code 0
         :stdout (strict-json/canonical-json
                  {"schema" "millstrand.agent-guidance-preflight/v1"

@@ -236,17 +236,61 @@
             (recur (next remaining)))
           (recur (next remaining)))))))
 
-(defn- pi-prompt-option? [argument]
-  (or (contains? #{"--system-prompt" "--append-system-prompt"} argument)
-      (str/starts-with? argument "--system-prompt=")
+;; Keep this consumption order aligned with Pi v0.84.4 `parseArgs`:
+;; packages/coding-agent/src/cli/args.ts.
+(def ^:private pi-prompt-options
+  #{"--system-prompt" "--append-system-prompt"})
+
+(def ^:private pi-unconditional-value-options
+  #{"--mode" "--provider" "--model" "--api-key" "--name" "-n"
+    "--session" "--session-id" "--fork" "--session-dir" "--models"
+    "--tools" "-t" "--exclude-tools" "-xt" "--thinking" "--export"
+    "--extension" "-e" "--skill" "--prompt-template" "--theme"})
+
+(def ^:private pi-conditional-value-options #{"--use-theme" "--tui-mode"})
+
+(defn- pi-prompt-equal-option? [argument]
+  (or (str/starts-with? argument "--system-prompt=")
       (str/starts-with? argument "--append-system-prompt=")))
+
+(defn- starts-with-token? [prefix value]
+  (and (string? value) (str/starts-with? value prefix)))
+
+(defn- pi-consumes-next? [argument next-argument]
+  (cond
+    (nil? next-argument) false
+
+    (contains? pi-unconditional-value-options argument) true
+
+    (contains? pi-conditional-value-options argument)
+    (not (starts-with-token? "-" next-argument))
+
+    (= "--list-models" argument)
+    (and (not (starts-with-token? "-" next-argument))
+         (not (starts-with-token? "@" next-argument)))
+
+    (contains? #{"--print" "-p"} argument)
+    (and (not (starts-with-token? "@" next-argument))
+         (or (not (starts-with-token? "-" next-argument))
+             (starts-with-token? "---" next-argument)))
+
+    (and (str/starts-with? argument "--")
+         (not (str/includes? argument "=")))
+    (and (not (starts-with-token? "-" next-argument))
+         (not (starts-with-token? "@" next-argument)))
+
+    :else false))
 
 (defn- pi-prompt-control [argv]
   (loop [remaining argv]
     (when-let [argument (first remaining)]
       (cond
         (= "--" argument) nil
-        (pi-prompt-option? argument) argument
+        (or (contains? pi-prompt-options argument)
+            (pi-prompt-equal-option? argument)) argument
+        (str/includes? argument "=") (recur (next remaining))
+        (pi-consumes-next? argument (second remaining))
+        (recur (nnext remaining))
         :else (recur (next remaining))))))
 
 (defn reject!

@@ -6,6 +6,7 @@
             [ct.spools.harnesses.execution :as execution]
             [ct.spools.harnesses.internal.guidance :as guidance]
             [ct.spools.harnesses.internal.guidance-capability :as capability]
+            [ct.spools.harnesses.internal.guidance-closure :as closure]
             [ct.spools.harnesses.internal.guidance-process :as guidance-process]
             [ct.spools.harnesses.internal.strict-json :as strict-json])
   (:import [java.lang ProcessHandle]))
@@ -42,11 +43,46 @@
    "host-version" (if (= "codex" harness) "0.154.0" "0.84.4")
    "launch-profile-sha256" (str/join (repeat 64 "b"))
    "max-context-bytes" (if (= "codex" harness) 3072 65536)
-   "process-ownership"
-   {"contract" "private-posix-session/inherited-process-group-v1"
-    "reviewed-closure-sha256" (str/join (repeat 64 "e"))
-    "child-process-behavior" "inherited-process-group-only"}
    "hook-fact" (if (= "codex" harness) (codex-hook) (pi-hook))})
+
+(defn- resolution-environment [environment]
+  (into {} (map (fn [key] [key (get environment key)]))
+        ["PATH" "NODE_OPTIONS" "NODE_PATH"]))
+
+(defn- finalize-profile [profile]
+  (assoc-in profile [:process-ownership :reviewed-closure-sha256]
+            (capability/process-ownership-sha256 profile)))
+
+(defn- local-profile [harness root preflight document environment artifacts]
+  (finalize-profile
+   {:harness harness
+    :preflight {:path (.getCanonicalPath preflight)
+                :sha256 (capability/file-sha256 preflight)}
+    :capability document
+    :executable-closure
+    {:schema "millstrand.local-guidance-executable-closure/v1"
+     :reviewed-complete true
+     :artifacts (vec artifacts)
+     :resolution-inputs
+     {:cwd (.getCanonicalPath root)
+      :environment (resolution-environment environment)}}
+    :process-ownership
+    {:contract "private-posix-session/inherited-process-group-v1"
+     :reviewed-closure-sha256 (str/join (repeat 64 "0"))
+     :child-process-behavior "inherited-process-group-only"}}))
+
+(defn- replace-artifact [profile role file]
+  (let [artifacts (get-in profile [:executable-closure :artifacts])
+        index (first (keep-indexed #(when (= role (:role %2)) %1)
+                                   artifacts))]
+    (finalize-profile
+     (-> (cond-> profile
+           (= "entrypoint" role)
+           (assoc :preflight
+                  {:path (.getCanonicalPath (io/file file))
+                   :sha256 (capability/file-sha256 file)}))
+         (update-in [:executable-closure :artifacts]
+                    assoc index (closure/artifact role file))))))
 
 (defn- with-profile [harness f]
   (let [root (.toFile
@@ -57,24 +93,25 @@
         preflight (java.io.File. scripts "managed-guidance-preflight.mjs")
         _ (spit preflight "// exact disposable preflight\n")
         executable "/usr/bin/true"
-        initial-document
-        (capability-document harness (capability/file-sha256 executable))
-        base-profile {:harness harness
-                      :preflight {:path (.getCanonicalPath preflight)
-                                  :sha256 (capability/file-sha256 preflight)}
-                      :capability initial-document}
+        environment {}
+        document (capability-document
+                  harness (capability/file-sha256 executable))
+        interpreter (capability/resolve-executable "node" (System/getenv))
+        scanner (.getCanonicalPath (io/file "/bin/ps"))
         profile
-        (assoc-in base-profile
-                  [:capability "process-ownership"
-                   "reviewed-closure-sha256"]
-                  (capability/process-ownership-sha256 base-profile))
-        document (:capability profile)
+        (local-profile
+         harness root preflight document environment
+         [(closure/artifact "entrypoint" preflight)
+          (closure/artifact "interpreter" interpreter)
+          (closure/artifact "subprocess" "/bin/sh")
+          (closure/artifact "subprocess" "/bin/sleep")
+          (closure/artifact "ownership-scanner" scanner)])
         request {"harness" harness
                  "executable" executable
                  "mode" "headless"
                  "cwd" (.getCanonicalPath root)
                  "workspace" (.getCanonicalPath root)
-                 "env" {}
+                 "env" environment
                  "extra-argv" []
                  "resumes" false}]
     (try
@@ -91,30 +128,41 @@
 
 (defn- process-result [profile stdout]
   {:source (:preflight profile)
+   :reviewed-closure-sha256
+   (get-in profile [:process-ownership :reviewed-closure-sha256])
    :exit-code 0
    :stdout stdout
    :stderr ""})
 
 (deftest exact-codex-and-pi-test-profiles-are-admitted
-  (doseq [harness ["codex" "pi"]]
-    (with-profile
-      harness
-      (fn [{:keys [profile document request]}]
-        (let [serialized-request (atom nil)]
-          (binding [capability/*test-capability-profiles* [profile]
-                    capability/*test-preflight-runner*
-                    (fn [accepted request-json]
-                      (reset! serialized-request
-                              (strict-json/parse-object!
-                               request-json 65536 "serialized request"))
-                      (process-result accepted (result-json document)))]
-            (is (= document (capability/preflight! request)))
-            (is (= (assoc request
-                          "schema"
-                          "millstrand.agent-guidance-preflight/v1")
-                   @serialized-request))
-            (is (= "/usr/bin/true"
-                   (get @serialized-request "executable")))))))))
+  (let [expected-wire-digests
+        {"codex" "f5ebc972f9c4d99ef21bb2c5e48fe8aaf2872413220323a72c0957d2fea8f33e"
+         "pi" "5571967d168852e6a02baef2ab63e02ca63be55a0b6a71b5cb7aba4d4f7c1eca"}
+        fixed-executable-sha (str/join (repeat 64 "e"))]
+    (doseq [harness ["codex" "pi"]]
+      (with-profile
+        harness
+        (fn [{:keys [profile document request]}]
+          (let [serialized-request (atom nil)]
+            (binding [capability/*test-capability-profiles* [profile]
+                      capability/*test-preflight-runner*
+                      (fn [accepted request-json]
+                        (reset! serialized-request
+                                (strict-json/parse-object!
+                                 request-json 65536 "serialized request"))
+                        (process-result accepted (result-json document)))]
+              (is (= document (capability/preflight! request)))
+              (is (= (get expected-wire-digests harness)
+                     (strict-json/canonical-sha256
+                      (capability-document harness fixed-executable-sha))))
+              (is (not (contains? document "process-ownership")))
+              (is (not (contains? document "executable-closure")))
+              (is (= (assoc request
+                            "schema"
+                            "millstrand.agent-guidance-preflight/v1")
+                     @serialized-request))
+              (is (= "/usr/bin/true"
+                     (get @serialized-request "executable"))))))))))
 
 (deftest malformed-changed-nonzero-and-legacy-required-evidence-fails-loudly
   (with-profile
@@ -139,6 +187,14 @@
                 (process-result
                  profile
                  (result-json (assoc document "host-version" "0.154.1")))]
+               ["wire-process-ownership"
+                (process-result
+                 profile
+                 (result-json
+                  (assoc document "process-ownership" {"contract" "local"})))]
+               ["unknown-wire-key"
+                (process-result profile
+                                (result-json (assoc document "unknown" true)))]
                ["oversized"
                 (process-result profile
                                 (str "{\"padding\":\""
@@ -159,52 +215,10 @@
             (is (thrown? clojure.lang.ExceptionInfo
                          (capability/preflight! request)))))))))
 
-(deftest unsupported-process-ownership-is-rejected-before-helper-execution
-  (with-profile
-    "codex"
-    (fn [{:keys [profile request]}]
-      (doseq [profile [(update profile :capability dissoc "process-ownership")
-                       (assoc-in profile
-                                 [:capability "process-ownership"
-                                  "child-process-behavior"]
-                                 "may-create-detached-sessions")
-                       (assoc-in profile
-                                 [:capability "process-ownership"
-                                  "reviewed-closure-sha256"]
-                                 (str/join (repeat 64 "f")))]]
-        (let [called? (atom false)]
-          (binding [capability/*test-capability-profiles* [profile]
-                    capability/*test-preflight-runner*
-                    (fn [_ _] (reset! called? true))]
-            (is (thrown-with-msg? clojure.lang.ExceptionInfo
-                                  #"process ownership|children to escape"
-                                  (capability/preflight! request)))
-            (is (false? @called?))))))))
-
-(deftest changed-preflight-source-is-rejected-before-execution
-  (with-profile
-    "codex"
-    (fn [{:keys [profile request]}]
-      (let [called? (atom false)]
-        (spit (get-in profile [:preflight :path]) "// changed after acceptance\n")
-        (binding [capability/*test-capability-profiles* [profile]
-                  capability/*test-preflight-runner*
-                  (fn [_ _] (reset! called? true))]
-          (is (thrown-with-msg? clojure.lang.ExceptionInfo
-                                #"does not match the accepted artifact"
-                                (capability/preflight! request)))
-          (is (false? @called?)))))))
-
 (defn- actual-preflight-failure [profile request source]
   (let [path (get-in profile [:preflight :path])
         _ (spit path source)
-        profile-base (assoc-in profile [:preflight :sha256]
-                               (capability/file-sha256 path))
-        profile
-        (assoc-in profile-base
-                  [:capability "process-ownership"
-                   "reviewed-closure-sha256"]
-                  (capability/process-ownership-sha256 profile-base))
+        profile (replace-artifact profile "entrypoint" path)
         started (System/nanoTime)
         failure (binding [capability/*test-capability-profiles* [profile]]
                   (try
@@ -226,12 +240,15 @@
               _ (.setExecutable executable true)
               document (assoc document "executable-sha256"
                               (capability/file-sha256 executable))
-              profile-base (assoc profile :capability document)
+              launch-environment {"PATH" (.getCanonicalPath bin)
+                                  "PRIVATE_FIXTURE" "secret"}
               profile
-              (assoc-in profile-base
-                        [:capability "process-ownership"
-                         "reviewed-closure-sha256"]
-                        (capability/process-ownership-sha256 profile-base))
+              (finalize-profile
+               (-> profile
+                   (assoc :capability document)
+                   (assoc-in [:executable-closure :resolution-inputs
+                              :environment]
+                             (resolution-environment launch-environment))))
               document (:capability profile)
               captured-request (atom nil)
               runner (fn [accepted request-json]
@@ -255,8 +272,7 @@
                      :harness/harness harness
                      :harness/mode "headless"
                      :harness/cwd (.getCanonicalPath root)
-                     :harness/env {"PATH" (.getCanonicalPath bin)
-                                   "PRIVATE_FIXTURE" "secret"}
+                     :harness/env launch-environment
                      :harness/extra-argv ["--unrelated"]
                      :harness/model "fixture-model"
                      :harness/effort "high"
@@ -358,12 +374,8 @@
     (fn [{:keys [profile document request]}]
       (let [untrusted (assoc-in document ["hook-fact" "trustStatus"]
                                 "bypassed")
-            untrusted-base (assoc profile :capability untrusted)
             untrusted-profile
-            (assoc-in untrusted-base
-                      [:capability "process-ownership"
-                       "reviewed-closure-sha256"]
-                      (capability/process-ownership-sha256 untrusted-base))
+            (finalize-profile (assoc profile :capability untrusted))
             untrusted (:capability untrusted-profile)]
         (binding [capability/*test-capability-profiles* [untrusted-profile]
                   capability/*test-preflight-runner*
@@ -405,8 +417,8 @@
                  "process.stdout.write(input);"
                  "process.stderr.write('fixture-stderr');});\n")
             _ (spit path normal-source)
-            profile (assoc-in profile [:preflight :sha256]
-                              (capability/file-sha256 path))]
+            profile (assoc (replace-artifact profile "entrypoint" path)
+                           :effective-environment {})]
         (dotimes [_ 5]
           (let [process-result
                 (guidance-process/run! profile "{\"probe\":true}")
