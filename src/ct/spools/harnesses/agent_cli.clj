@@ -9,6 +9,7 @@
             [ct.spools.harnesses.internal.agent-docs :as agent-docs]
             [ct.spools.harnesses.internal.cli :as cli]
             [ct.spools.harnesses.internal.lifecycle :as life]
+            [ct.spools.harnesses.reconciliation :as reconciliation]
             [ct.spools.harnesses.reviewers :as reviewers]
             [millhouse.spools.identity :as identity]
             [millstrand.api.graph.alpha :as graph]
@@ -50,20 +51,30 @@
 (s/def ::resumable boolean?)
 (s/def ::resume-reason string?)
 (s/def ::stop-reason string?)
+(s/def ::abandon-reason string?)
+(s/def ::abandoned-at string?)
+(s/def ::abandoned-by string?)
+(s/def ::reconciled-at string?)
+(s/def ::reconciliation-source string?)
+(s/def ::reconciliation-evidence map?)
 (s/def ::logical-id string?)
 (s/def ::target string?)
 (s/def ::request-id string?)
 (s/def ::attempt int?)
+(s/def ::invocation string?)
 (s/def ::run-summary
   (s/keys :req-un [::harness/id ::harness/title ::harness/state
                    ::alias ::harness ::mode ::status ::substatus ::session-id
                    ::settled]
           :opt-un [::launcher ::exit-code ::result ::error ::resumes
                    ::identity ::updated-at ::settlement ::settlement-gap
-                   ::resumable ::resume-reason ::stop-reason ::logical-id
-                   ::target ::request-id ::attempt]))
+                   ::resumable ::resume-reason ::stop-reason ::abandon-reason
+                   ::abandoned-at ::abandoned-by ::reconciled-at
+                   ::reconciliation-source ::reconciliation-evidence
+                   ::logical-id ::target ::request-id ::attempt ::invocation]))
 (s/def ::runs (s/coll-of ::run-summary :kind vector?))
 (s/def ::config-result map?)
+(s/def ::reconciliation-result map?)
 (s/def ::resolution string?)
 (s/def ::provider string?)
 (s/def ::model string?)
@@ -79,7 +90,8 @@
         :runs ::runs
         :registry ::harness/registry-list
         :agent-list ::agent-list
-        :config ::config-result))
+        :config ::config-result
+        :reconciliation ::reconciliation-result))
 
 (millstrand/defop agent
   "Create and manage tracked coding-agent runs.
@@ -121,17 +133,30 @@
                    :bootstrap (:bootstrap args)})
      ["stop"] (summary (execution/stop! runtime (:run-id args)
                                         (select-keys args [:reason])))
+     ["reconcile"]
+     (reconciliation/reconcile!
+      runtime
+      (cond-> (select-keys args [:run-id :reason :offset])
+        (:dry-run args) (assoc :dry-run? true)
+        (:abandon args) (assoc :abandon? true)
+        (:by-identity args) (assoc :by (:by-identity args))))
      ["retry"] (op-retry runtime args)
      ["resumable"] (resumable-runs runtime)
      ["resume"] (op-resume runtime args)
      ["self-complete"] (summary (harness/self-complete! runtime
                                                         (:run-id args)
                                                         (:result args)))
-     ["_started"] (summary (execution/mark-interactive-running! runtime
-                                                                (:run-id args)))
-     ["_finished"] (summary (execution/finish-interactive! runtime
-                                                           (:run-id args)
-                                                           (:exit-code args)))
+     ["_callback-contract"] {:version 2}
+     ["_started"]
+     (summary (execution/mark-interactive-running!
+               runtime (:run-id args) (:completion-owner-pid args)))
+     ["_provider_started"]
+     (summary (execution/mark-interactive-provider!
+               runtime (:run-id args) (:invocation args)
+               (:provider-pid args)))
+     ["_finished"] (summary (execution/finish-interactive!
+                             runtime (:run-id args) (:invocation args)
+                             (:exit-code args)))
      ["list"] (let [requesting-alias
                     (when-let [friendly-id (:by-identity args)]
                       (identity-alias runtime friendly-id))
@@ -264,12 +289,28 @@
     (assoc :settlement-gap (attr-get run :harness/settlement-gap))
     (attr-get run :harness/stop-reason)
     (assoc :stop-reason (attr-get run :harness/stop-reason))
+    (attr-get run :harness/abandon-reason)
+    (assoc :abandon-reason (attr-get run :harness/abandon-reason))
+    (attr-get run :harness/abandoned-at)
+    (assoc :abandoned-at (attr-get run :harness/abandoned-at))
+    (attr-get run :harness/abandoned-by)
+    (assoc :abandoned-by (attr-get run :harness/abandoned-by))
+    (attr-get run :harness/reconciled-at)
+    (assoc :reconciled-at (attr-get run :harness/reconciled-at))
+    (attr-get run :harness/reconciliation-source)
+    (assoc :reconciliation-source
+           (attr-get run :harness/reconciliation-source))
+    (attr-get run :harness/reconciliation-evidence)
+    (assoc :reconciliation-evidence
+           (attr-get run :harness/reconciliation-evidence))
     (attr-get run :harness/logical-id)
     (assoc :logical-id (attr-get run :harness/logical-id))
     (attr-get run :harness/target) (assoc :target (attr-get run :harness/target))
     (attr-get run :harness/request-id)
     (assoc :request-id (attr-get run :harness/request-id))
     (attr-get run :harness/attempt) (assoc :attempt (attr-get run :harness/attempt))
+    (attr-get run :harness/invocation)
+    (assoc :invocation (attr-get run :harness/invocation))
     (some? (attr-get run :harness/exit-code))
     (assoc :exit-code (attr-get run :harness/exit-code))
     (attr-get run :harness/result) (assoc :result (attr-get run :harness/result))

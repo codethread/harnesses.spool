@@ -13,8 +13,9 @@
 (millstrand/defquery agent-run-terminal
   "Select run `run-id` once it has reached a terminal status.
 
-  Terminal means the run will not do more work. It does not prove that the
-  provider process is gone; await `agent-run-settled` for that.
+  Terminal means the managed projection will not schedule more work. An
+  abandoned projection does not prove that its provider or backend stopped;
+  await `agent-run-settled` only when positive settlement can still arrive.
   "
   {}
   {:params [:run-id]
@@ -85,21 +86,25 @@
    [:or [:= [:attr "harness/continued"] "false"]
     [:missing [:attr "harness/continued"]]]])
 
-(def ^:private failed-serving-run
+(def ^:private intervention-serving-run
   [:edge/in "serves"
    [:and
     current-accepted-run
-    [:= [:attr "harness/status"] "failed"]]])
+    [:or
+     [:= [:attr "harness/status"] "failed"]
+     [:= [:attr "harness/substatus"] "abandoned"]]]])
 
 (def ^:private target-intervention
-  [:or abandoned-target failed-serving-run])
+  [:or abandoned-target intervention-serving-run])
 
 (def ^:private root-descendant-intervention
   [:edge/in "serves-root"
    [:or
     [:and
      current-accepted-run
-     [:= [:attr "harness/status"] "failed"]]
+     [:or
+      [:= [:attr "harness/status"] "failed"]
+      [:= [:attr "harness/substatus"] "abandoned"]]]
     [:and
      abandoned-target
      [:missing [:attr "harness/run"]]]]])
@@ -117,8 +122,9 @@
 (millstrand/defquery agent-work-complete-or-intervention
   "Select a target after done completion or explicit intervention evidence.
 
-  An abandoned card or the current failed serving head requires intervention.
-  A stopped run and a failed predecessor with an accepted child do not qualify.
+  An abandoned card, failed serving head, or explicitly abandoned interactive
+  serving head requires intervention. Other stopped runs and superseded failed
+  predecessors do not qualify.
   "
   {}
   {:params [:target]

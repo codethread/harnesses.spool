@@ -177,8 +177,26 @@ fi
 run_id="$(printf '%s' "$created" | jq -r '.id')"
 launcher="$(printf '%s' "$created" | jq -r '.launcher')"
 
+callback_version=1
+callback_contract="$(strand_call agent _callback-contract 2>/dev/null)" || :
+if [ -n "$callback_contract" ]; then
+  callback_version="$(printf '%s' "$callback_contract" | jq -er '.version')" || {
+    printf '%s\n' "agent backend returned an invalid callback contract" >&2
+    exit 1
+  }
+  if [ "$callback_version" != 2 ]; then
+    printf '%s\n' "agent backend returned an unsupported callback contract" >&2
+    exit 1
+  fi
+fi
+
 record_finish() {
-  strand_call agent _finished "$run_id" --exit-code "$1" >/dev/null
+  if [ "$callback_version" = 2 ]; then
+    strand_call agent _finished "$run_id" \
+      --invocation "$invocation" --exit-code "$1" >/dev/null
+  else
+    strand_call agent _finished "$run_id" --exit-code "$1" >/dev/null
+  fi
 }
 
 interrupted() {
@@ -187,12 +205,24 @@ interrupted() {
   exit "$1"
 }
 
+if [ "$callback_version" = 2 ]; then
+  started="$(strand_call agent _started "$run_id" \
+    --completion-owner-pid "$$")" || exit $?
+  invocation="$(printf '%s' "$started" | jq -r '.invocation')"
+  if [ -z "$invocation" ] || [ "$invocation" = null ]; then
+    printf '%s\n' "agent _started returned no invocation" >&2
+    exit 1
+  fi
+else
+  strand_call agent _started "$run_id" >/dev/null || exit $?
+  invocation=
+fi
+
 trap 'interrupted 129' HUP
 trap 'interrupted 130' INT
 trap 'interrupted 143' TERM
 
-strand_call agent _started "$run_id" >/dev/null || exit $?
-"$launcher"
+MILLSTRAND_INVOCATION="$invocation" "$launcher"
 exit_code=$?
 record_finish "$exit_code" || exit $?
 exit "$exit_code"

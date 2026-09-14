@@ -17,9 +17,12 @@
   "Supported public harness execution substatuses.
 
   `pending` is only for a ready run that has not launched. A running run has
-  no substatus unless a stop is in flight (`requested`). Failed runs use an
-  actionable class: `launch`, `execution`, or `reconciliation`."
-  #{"pending" "completed" "requested" "launch" "execution" "reconciliation"})
+  no substatus unless a stop is in flight (`requested`). `abandoned` records
+  explicit loss of interactive launcher custody without claiming process exit.
+  Failed runs use an actionable class: `launch`, `execution`, or
+  `reconciliation`."
+  #{"pending" "completed" "requested" "abandoned"
+    "launch" "execution" "reconciliation"})
 
 (defn now
   "Return an ISO-8601 timestamp for durable lifecycle evidence."
@@ -60,6 +63,12 @@
   Terminal failure is distinct from positive process settlement."
   [run]
   (contains? #{"stopped" "failed"} (status run)))
+
+(defn abandoned?
+  "Return true for an explicit launcher-abandonment outcome."
+  [run]
+  (and (= "stopped" (status run))
+       (= "abandoned" (substatus run))))
 
 (defn reserving?
   "Return true when a run still holds its session or target reservation.

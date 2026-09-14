@@ -8,6 +8,7 @@
             [ct.spools.harnesses.internal.cli :as cli]
             [ct.spools.harnesses.internal.process-custody :as custody]
             [ct.spools.harnesses.process-custody :as process-custody]
+            [ct.spools.harnesses.reconciliation :as reconciliation]
             [ct.spools.harnesses.providers.claude :as claude]
             [ct.spools.harnesses.providers.codex :as codex]
             [ct.spools.harnesses.providers.cursor :as cursor]
@@ -23,7 +24,9 @@
                          pi/pi-harness-runtime
                          execution/harness-execution-runtime]]
       (is (= :resource (:kind declaration))))
-    (is (= :reconcile (:kind process-custody/harness-process-custody))))
+    (doseq [declaration [process-custody/harness-process-custody
+                         reconciliation/interactive-reconciliation-sweep]]
+      (is (= :reconcile (:kind declaration)))))
   (testing "core registry forms carry reusable authoring descriptors"
     (doseq [declaration-var [#'agent-cli/agent
                              #'execution/on-event
@@ -33,8 +36,8 @@
 
 (deftest every-agent-command-accepts-caller-identity
   (is (not (contains? (:subcommands cli/agent-arg-spec) "await")))
-  (doseq [path [["run"] ["show"] ["runs"] ["stop"] ["retry"] ["resumable"]
-                ["resume"] ["self-complete"] ["list"]]]
+  (doseq [path [["run"] ["show"] ["runs"] ["stop"] ["reconcile"]
+                ["retry"] ["resumable"] ["resume"] ["self-complete"] ["list"]]]
     (is (contains? (get-in cli/agent-arg-spec
                            (into [:subcommands]
                                  (mapcat #(vector % :subcommands) (butlast path))))
@@ -45,7 +48,8 @@
                                   (mapcat #(vector % :subcommands) (butlast path))
                                   [(last path) :flags])))
                    :by-identity)))
-  (doseq [path [["startup"] ["repair-startup"] ["_started"] ["_finished"]
+  (doseq [path [["startup"] ["repair-startup"] ["_callback-contract"]
+                ["_started"] ["_provider_started"] ["_finished"]
                 ["config" "list"] ["config" "set"] ["config" "unset"]]]
     (is (not (contains? (or (get-in cli/agent-arg-spec
                                     (into [:subcommands]
@@ -139,7 +143,8 @@
                         :cursor-harness-runtime
                         :pi-harness-runtime
                         :harness-execution-runtime
-                        :harness-process-custody]]
+                        :harness-process-custody
+                        :interactive-reconciliation-sweep]]
           (is (= :applied (get-in lifecycles [effect :status]))))
         (testing "run flags override effort and append a system prompt"
           (is (= [["adaptive" ["Review without editing."]]
@@ -280,7 +285,59 @@
                           "':stdin' ':payload/example'")
                          (clojure.string/includes?
                           script
-                          "'Keep {{RUN_ID}} and {{AGENT_ID}} literal'")))})))))
+                          "'Keep {{RUN_ID}} and {{AGENT_ID}} literal'")
+                         (clojure.string/includes?
+                          script "agent _provider_started")
+                         (clojure.string/includes?
+                          script "--provider-pid \"$$\"")))})))))
+        (testing "legacy callbacks remain completable by the current backend"
+          (is (= {:contract 2
+                  :owner-recorded false
+                  :provider-fenced true
+                  :status "failed"
+                  :settled true
+                  :legacy-launcher-path true}
+                 (test-alpha/repl!
+                  ctx
+                  '(let [rt (millstrand.api.current.alpha/runtime)
+                         created
+                         (millstrand.api.weaver.alpha/op!
+                          rt 'agent
+                          ["run" "pi" "--interactive" "--cwd" "/tmp"])
+                         started
+                         (millstrand.api.weaver.alpha/op!
+                          rt 'agent ["_started" (:id created)])
+                         _
+                         (millstrand.api.weaver.alpha/op!
+                          rt 'agent
+                          ["_provider_started" (:id created)
+                           "--provider-pid"
+                           (str (.pid (java.lang.ProcessHandle/current)))])
+                         finished
+                         (millstrand.api.weaver.alpha/op!
+                          rt 'agent
+                          ["_finished" (:id created) "--exit-code" "1"])
+                         stored
+                         (millstrand.api.weaver.alpha/show rt (:id created))
+                         script (slurp (:launcher created))]
+                     {:contract
+                      (:version
+                       (millstrand.api.weaver.alpha/op!
+                        rt 'agent ["_callback-contract"]))
+                      :owner-recorded
+                      (some? (millstrand.api.spool.alpha/attr-get
+                              stored :harness/completion-owner-pid))
+                      :provider-fenced
+                      (= (:invocation started)
+                         (millstrand.api.spool.alpha/attr-get
+                          stored :harness/provider-invocation))
+                      :status (:status finished)
+                      :settled (:settled finished)
+                      :legacy-launcher-path
+                      (and
+                       (clojure.string/includes?
+                        script "${_MILLSTRAND_HARNESS_INVOCATION:-}")
+                       (clojure.string/includes? script "else\n  strand"))})))))
         (testing "configured provider argv keeps invocation templating"
           (is (true?
                (test-alpha/repl!

@@ -93,7 +93,21 @@
      request is durable and idempotent, and the run stays `running` until
      settlement is observed. Stopping a run does not close the work it serves.
 
-     After stopping, await `agent-run-settled`, then update the feature and
+     Inspect orphaned interactive projections without changing them:
+
+     ```text
+     strand agent reconcile <run-id> --dry-run
+     ```
+
+     Ordinary reconciliation changes only runs whose exact completion-owner
+     and provider-exec PID/start fences both prove custody loss. Unknown legacy
+     evidence requires `--abandon --reason <reason> --by-identity <actor>`. The
+     explicit `stopped/abandoned` outcome is not settlement, records no exit
+     code, retains reservations, and never permits native resume. It satisfies
+     `agent-run-terminal`, not `agent-run-settled`, and requires coordinator
+     intervention before any separate target-release policy.
+
+     After an ordinary stop, await `agent-run-settled`, then update the feature and
      task notes with a primer explicitly superseding old instructions. Continue
      from the latest accepted lineage head, choosing one path:
 
@@ -176,10 +190,11 @@
 
      Runs are headless by default, require a prompt, and execute asynchronously.
      A run carries a `status` of `ready`, `running`, `stopped`, or `failed`, and
-     a `substatus` saying why: `pending` for a ready run, `completed` or
-     `requested` once stopped, and `launch`, `execution`, or `reconciliation`
-     once failed. A running run has no substatus unless a stop is in flight.
-     `settled` is separate and stronger: it means a terminal
+     a `substatus` saying why: `pending` for a ready run, `completed`,
+     `requested`, or explicit `abandoned` once stopped, and `launch`,
+     `execution`, or `reconciliation` once failed. A running run has no
+     substatus unless a stop is in flight. `settled` is separate and stronger:
+     it means a terminal
      process fact was observed, so the provider session is provably free. A
      failed run is not automatically settled.
 

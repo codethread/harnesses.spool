@@ -2,6 +2,7 @@
   "Asynchronous and interactive execution for provider-neutral harness runs."
   (:require [clojure.data.json :as json]
             [clojure.spec.alpha :as s]
+            [clojure.string :as str]
             [ct.spools.harnesses :as harness]
             [ct.spools.harnesses.assignment :as assignment]
             [ct.spools.harnesses.internal.launcher :as launcher]
@@ -9,6 +10,7 @@
             [ct.spools.harnesses.internal.managed-startup :as managed]
             [ct.spools.harnesses.internal.process-custody :as custody]
             [ct.spools.harnesses.internal.runs :as runs]
+            [ct.spools.harnesses.reconciliation :as reconciliation]
             [millstrand.api.current.alpha :as current]
             [millstrand.api.lifecycle.alpha :as lifecycle]
             [millstrand.api.millstrand.alpha :as millstrand]
@@ -119,53 +121,112 @@
       (throw e))))
 
 (defn mark-interactive-running!
-  "Mark an interactive run as started and arm its managed bootstrap."
-  [rt id]
+  "Start an interactive run and arm its managed bootstrap.
+
+  When supplied, `completion-owner-pid` records the callback owner's exact
+  process identity in the same fenced attempt transition."
+  ([rt id]
+   (mark-interactive-running! rt id nil))
+  ([rt id completion-owner-pid]
+   (let [run (full-run rt id)]
+     (when-not (= "interactive" (attr-get run :harness/mode))
+       (fail! "_started applies only to interactive harness runs" {:id id}))
+     (let [owner-attributes
+           (if completion-owner-pid
+             (reconciliation/completion-owner-attributes completion-owner-pid)
+             {})
+           {:keys [strand invocation]}
+           (harness/begin-attempt! rt id owner-attributes)]
+       (try
+         (when-let [bootstrap (managed/bootstrap rt strand)]
+           (launcher/arm! rt strand bootstrap))
+         strand
+         (catch Throwable error
+           (harness/finish!
+            rt id
+            {:status :failed
+             :invocation invocation
+             :evidence {:settled true
+                        :settlement "launch-not-started"
+                        :failure-class "launch"}
+             :error (str "Unable to arm managed launcher: "
+                         (ex-message error))})
+           (throw error)))))))
+
+(defn- legacy-interactive-callback-attempt? [run]
+  (let [contract (attr-get run :harness/interactive-callback-contract)
+        current (life/invocation run)]
+    (and (pos-int? (attr-get run :harness/attempt))
+         (not (str/blank? current))
+         (or (= "legacy" contract)
+             (and (nil? contract)
+                  (str/blank?
+                   (attr-get run :harness/completion-owner-invocation)))))))
+
+(defn- originating-interactive-invocation [run invocation callback]
+  (if (some? invocation)
+    invocation
+    (if (legacy-interactive-callback-attempt? run)
+      (life/invocation run)
+      (fail! "Invocation-less interactive callback requires a legacy attempt"
+             {:id (:id run)
+              :callback callback
+              :attempt (attr-get run :harness/attempt)
+              :callback-contract
+              (attr-get run :harness/interactive-callback-contract)}))))
+
+(defn mark-interactive-provider!
+  "Bind the actual provider exec to its interactive attempt.
+
+  Legacy launchers may omit `invocation` only when the durable attempt records
+  the legacy callback contract. Current v2 launchers must supply the exact
+  invocation."
+  [rt id invocation provider-pid]
   (let [run (full-run rt id)]
     (when-not (= "interactive" (attr-get run :harness/mode))
-      (fail! "_started applies only to interactive harness runs" {:id id}))
-    (let [{:keys [strand invocation]} (harness/begin-attempt! rt id)]
-      (try
-        (when-let [bootstrap (managed/bootstrap rt strand)]
-          (launcher/arm! rt strand bootstrap))
-        strand
-        (catch Throwable error
-          (harness/finish!
-           rt id
-           {:status :failed
-            :invocation invocation
-            :evidence {:settled true
-                       :settlement "launch-not-started"
-                       :failure-class "launch"}
-            :error (str "Unable to arm managed launcher: "
-                        (ex-message error))})
-          (throw error))))))
+      (fail! "_provider_started applies only to interactive harness runs"
+             {:id id}))
+    (reconciliation/register-provider!
+     rt id
+     (originating-interactive-invocation run invocation "_provider_started")
+     provider-pid)))
 
 (defn finish-interactive!
-  "Finish an interactive run through its provider callback."
-  [rt id exit-code]
+  "Finish an interactive run through its fenced provider callback.
+
+  Legacy bins may omit `invocation` only for a durable legacy callback attempt.
+  Current v2 attempts require their exact invocation before provider outcome
+  processing begins. The serialized core transition checks the token again
+  after provider outcome processing."
+  [rt id invocation exit-code]
   (let [run (full-run rt id)]
     (when-not (= "interactive" (attr-get run :harness/mode))
       (fail! "_finished applies only to interactive harness runs" {:id id}))
-    (try
-      (let [definition (resolved-definition rt run)
-            outcome ((callback (:finish definition))
-                     rt definition run
-                     {:exit-code exit-code :stdout nil :stderr nil})]
-        (harness/finish! rt id (assoc outcome
-                                      :invocation (life/invocation run)
-                                      :evidence (life/settlement-evidence
-                                                 {:exit-code exit-code}))))
-      (catch Exception e
-        (harness/finish! rt id {:status :failed
-                                :exit-code exit-code
-                                :invocation (life/invocation run)
-                                :evidence (assoc (life/settlement-evidence
-                                                  {:exit-code exit-code})
-                                                 :failure-class "execution")
-                                :error (str (ex-message e)
-                                            (when-let [data (ex-data e)]
-                                              (str " " (pr-str data))))})))))
+    (let [invocation
+          (originating-interactive-invocation run invocation "_finished")]
+      (if (not= invocation (life/invocation run))
+        run
+        (let [definition (resolved-definition rt run)
+              {:keys [outcome provider-error?]}
+              (try
+                {:outcome
+                 ((callback (:finish definition))
+                  rt definition run
+                  {:exit-code exit-code :stdout nil :stderr nil})}
+                (catch Exception e
+                  {:provider-error? true
+                   :outcome
+                   {:status :failed
+                    :exit-code exit-code
+                    :error (str (ex-message e)
+                                (when-let [data (ex-data e)]
+                                  (str " " (pr-str data))))}}))
+              evidence (cond-> (life/settlement-evidence
+                                {:exit-code exit-code})
+                         provider-error? (assoc :failure-class "execution"))]
+          (harness/finish! rt id (assoc outcome
+                                        :invocation invocation
+                                        :evidence evidence)))))))
 
 (defn launch-in-flight?
   "Return whether this worker still owns an unfinished launch for `run`.

@@ -11,6 +11,7 @@
             [ct.spools.harnesses.execution :as execution]
             [ct.spools.harnesses.process-custody :as process-custody]
             [ct.spools.harnesses.queries :as queries]
+            [ct.spools.harnesses.reconciliation :as reconciliation]
             [ct.spools.harnesses.reviewers :as reviewers]
             [ct.spools.harnesses.providers.claude :as claude]
             [ct.spools.harnesses.providers.codex :as codex]
@@ -44,4 +45,6 @@
  pi/pi-harness-runtime
  execution/harness-execution-runtime)
 
-(lifecycle/use-reconcile! process-custody/harness-process-custody)
+(lifecycle/use-reconcile!
+ process-custody/harness-process-custody
+ reconciliation/interactive-reconciliation-sweep)

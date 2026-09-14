@@ -135,45 +135,46 @@
       'millhouse.spools/identity
       {:local/root (.getCanonicalPath identity-root)}}}))
 
+(defn- core-world-options [storage]
+  {:storage storage
+   :deps-edn (pr-str (world-deps))
+   :init-clj
+   "(require '[millstrand.api.current.alpha :as current]
+             '[millstrand.api.runtime.alpha :as runtime])
+    (def rt (current/runtime))
+    (runtime/module! rt :identity
+      {:ns 'millhouse.spools.identity
+       :required? true})
+    (runtime/module! rt :harnesses-core
+      {:file \"modules/lifecycle_core.clj\"
+       :after [:identity]
+       :required? true})"
+   :files
+   {"modules/lifecycle_core.clj"
+    "(ns modules.lifecycle-core
+       (:require [ct.spools.harnesses :as harnesses]
+                 [ct.spools.harnesses.agent-cli :as agent-cli]
+                 [ct.spools.harnesses.assignment :as assignment]
+                 [ct.spools.harnesses.queries :as queries]
+                 [millstrand.api.lifecycle.alpha :as lifecycle]
+                 [millstrand.api.millstrand.alpha :as millstrand]))
+     (lifecycle/use-resource!
+      harnesses/harness-core-runtime
+      assignment/assignment-runtime)
+     (millstrand/use-op! agent-cli/agent)
+     (millstrand/use-query!
+      queries/agent-run-terminal
+      queries/agent-run-settled
+      queries/agent-run-active
+      queries/agent-runs-active
+      queries/agent-runs-for-target
+      queries/agent-work-complete
+      queries/agent-work-complete-or-intervention
+      queries/agent-work-root-complete
+      queries/agent-work-root-complete-or-intervention)"}})
+
 (defn- with-core-world [f]
-  (test-alpha/with-weaver-world
-    [ctx {:storage :sqlite-memory
-          :deps-edn (pr-str (world-deps))
-          :init-clj
-          "(require '[millstrand.api.current.alpha :as current]
-                     '[millstrand.api.runtime.alpha :as runtime])
-           (def rt (current/runtime))
-           (runtime/module! rt :identity
-             {:ns 'millhouse.spools.identity
-              :required? true})
-           (runtime/module! rt :harnesses-core
-             {:file \"modules/lifecycle_core.clj\"
-              :after [:identity]
-              :required? true})"
-          :files
-          {"modules/lifecycle_core.clj"
-           "(ns modules.lifecycle-core
-              (:require [ct.spools.harnesses :as harnesses]
-                        [ct.spools.harnesses.agent-cli :as agent-cli]
-                        [ct.spools.harnesses.assignment :as assignment]
-                        [ct.spools.harnesses.queries :as queries]
-                        [millstrand.api.lifecycle.alpha :as lifecycle]
-                        [millstrand.api.millstrand.alpha :as millstrand]))
-            (lifecycle/use-resource!
-             harnesses/harness-core-runtime
-             assignment/assignment-runtime)
-            (millstrand/use-op! agent-cli/agent)
-            (millstrand/use-query!
-             queries/agent-run-terminal
-             queries/agent-run-settled
-             queries/agent-run-active
-             queries/agent-runs-active
-             queries/agent-runs-for-target
-             queries/agent-work-complete
-             queries/agent-work-complete-or-intervention
-             queries/agent-work-root-complete
-             queries/agent-work-root-complete-or-intervention)"}}]
-    (f ctx)))
+  (test-alpha/run-with-weaver-world (core-world-options :sqlite-memory) f))
 
 (deftest work-scope-queries-use-positive-evidence
   (with-core-world

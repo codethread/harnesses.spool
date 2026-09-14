@@ -139,56 +139,112 @@
 
 (s/fdef create! :args (s/cat :runtime ::runtime :request ::create-request) :ret ::strand)
 
+(def ^:private interactive-start-attribute-keys
+  #{:harness/completion-owner-pid
+    :harness/completion-owner-started-at
+    :harness/completion-owner-host})
+
+(def ^:private interactive-custody-attribute-keys
+  #{:harness/completion-owner-pid
+    :harness/completion-owner-started-at
+    :harness/completion-owner-host
+    :harness/completion-owner-invocation
+    :harness/provider-pid
+    :harness/provider-started-at
+    :harness/provider-host
+    :harness/provider-invocation})
+
+(defn- retired-interactive-custody []
+  (zipmap interactive-custody-attribute-keys (repeat nil)))
+
 (defn begin-attempt!
   "Move a published ready run to running and mint its fencing token.
 
   Returns `{:strand … :invocation … :attempt …}`. The invocation is the only
   token that may later finish this execution, so a callback from a superseded
   attempt cannot terminate the current one. A run stopped before it launched is
-  no longer ready and is therefore refused here."
-  [rt id]
-  (require-valid! ::runtime rt "begin-attempt! requires a Weaver runtime")
-  (require-valid! ::id id "begin-attempt! requires a run id")
-  #_{:clj-kondo/ignore [:locking-suspicious-lock]}
-  #_{:splint/disable [lint/locking-object]}
-  (locking (catalog/publication-lock rt)
-    (let [run (runs/require-run rt id)
-          attempt (inc (or (attr-get run :harness/attempt) 0))
-          invocation (str (UUID/randomUUID))]
-      (when-not (life/published? run)
-        (fail! "Harness run is not published and cannot start" {:id id}))
-      (when-not (= "ready" (life/status run))
-        (fail! "Harness run is not ready to start"
-               {:id id :status (life/status run)
-                :substatus (life/substatus run)}))
-      (require-valid!
-       ::started
-       {:strand (require-valid!
-                 ::strand
-                 (weaver/update!
-                  rt id
-                  {:attributes {:harness/status "running"
-                                :harness/substatus nil
-                                :harness/settled "false"
-                                :harness/settlement nil
-                                :harness/attempt attempt
-                                :harness/invocation invocation
-                                :harness/started-at (life/now)}})
-                 "begin-attempt! produced an invalid run strand")
-        :invocation invocation
-        :attempt attempt}
-       "begin-attempt! produced an invalid start record"))))
+  no longer ready and is therefore refused here.
 
-(s/fdef begin-attempt! :args (s/cat :runtime ::runtime :id ::id) :ret ::started)
+  The optional third argument is the closed completion-owner identity captured
+  for an interactive start. It commits with the attempt and is fenced by the
+  same invocation. Starting an interactive retry retires every prior attempt's
+  process evidence before recording the new callback contract and custody."
+  ([rt id] (begin-attempt! rt id {}))
+  ([rt id start-attributes]
+   (require-valid! ::runtime rt "begin-attempt! requires a Weaver runtime")
+   (require-valid! ::id id "begin-attempt! requires a run id")
+   (require-valid! map? start-attributes
+                   "begin-attempt! start attributes must be a map")
+   (when-not (or (empty? start-attributes)
+                 (and (= interactive-start-attribute-keys
+                         (set (keys start-attributes)))
+                      (pos-int? (:harness/completion-owner-pid start-attributes))
+                      (not (str/blank?
+                            (:harness/completion-owner-started-at
+                             start-attributes)))
+                      (not (str/blank?
+                            (:harness/completion-owner-host start-attributes)))))
+     (fail! "begin-attempt! received invalid interactive start attributes"
+            {:attributes start-attributes}))
+   #_{:clj-kondo/ignore [:locking-suspicious-lock]}
+   #_{:splint/disable [lint/locking-object]}
+   (locking (catalog/publication-lock rt)
+     (let [run (runs/require-run rt id)
+           interactive? (= "interactive" (attr-get run :harness/mode))
+           attempt (inc (or (attr-get run :harness/attempt) 0))
+           invocation (str (UUID/randomUUID))]
+       (when-not (life/published? run)
+         (fail! "Harness run is not published and cannot start" {:id id}))
+       (when (and (seq start-attributes)
+                  (not= "interactive" (attr-get run :harness/mode)))
+         (fail! "Completion-owner evidence applies only to interactive runs"
+                {:id id :mode (attr-get run :harness/mode)}))
+       (when-not (= "ready" (life/status run))
+         (fail! "Harness run is not ready to start"
+                {:id id :status (life/status run)
+                 :substatus (life/substatus run)}))
+       (require-valid!
+        ::started
+        {:strand (require-valid!
+                  ::strand
+                  (weaver/update!
+                   rt id
+                   {:attributes
+                    (merge
+                     (when interactive? (retired-interactive-custody))
+                     {:harness/status "running"
+                      :harness/substatus nil
+                      :harness/settled "false"
+                      :harness/settlement nil
+                      :harness/attempt attempt
+                      :harness/invocation invocation
+                      :harness/started-at (life/now)}
+                     start-attributes
+                     (when interactive?
+                       {:harness/interactive-callback-contract
+                        (if (seq start-attributes) "v2" "legacy")})
+                     (when (seq start-attributes)
+                       {:harness/completion-owner-invocation invocation}))})
+                  "begin-attempt! produced an invalid run strand")
+         :invocation invocation
+         :attempt attempt}
+        "begin-attempt! produced an invalid start record")))))
+
+(s/fdef begin-attempt!
+  :args (s/or :plain (s/cat :runtime ::runtime :id ::id)
+              :interactive
+              (s/cat :runtime ::runtime :id ::id :start-attributes map?))
+  :ret ::started)
 
 (defn finish!
   "Record and return a terminal provider-neutral outcome, fenced by invocation.
 
   `:invocation` names the execution the outcome belongs to. A callback naming a
-  superseded attempt, or arriving after the run is already terminal, changes
-  nothing and returns the run as it stands: a stale callback can neither attach
-  native identity, finish newer work, nor rewrite a settled result. Settlement
-  evidence remains separate from identity attachment.
+  superseded active attempt, or arriving after the run is already terminal,
+  changes nothing and returns the run as it stands. A supplied invocation after
+  retry has retired the current token fails loudly. Neither stale case can
+  attach native identity, finish newer work, or rewrite a settled result.
+  Settlement evidence remains separate from identity attachment.
 
   Positive Codex/Pi session evidence first attaches the reserved identity. A
   hook-confirmed session survives an interactive finish that cannot observe
@@ -209,6 +265,11 @@
     (let [run (runs/require-run rt id)
           current (life/invocation run)
           status (if (keyword? status) status (keyword (str status)))
+          _ (when (and invocation
+                       (nil? current)
+                       (not (life/terminal? run)))
+              (fail! "Harness finish has a retired invocation token"
+                     {:id id :actual invocation}))
           stale? (or (and invocation current (not= invocation current))
                      (life/terminal? run))]
       (if stale?
