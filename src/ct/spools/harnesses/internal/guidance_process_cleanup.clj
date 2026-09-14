@@ -38,15 +38,15 @@
            (ex-info "Guidance descendant cleanup exhausted its deadline" {}))
           retained)
         (if (identity/live? parent)
-          (let [children
-                (try
-                  (identity/retain-children
-                   parent "proven-descendant-for-cleanup")
-                  (catch Throwable error
-                    (record-error! errors error)
-                    []))
+          (let [children (atom [])
+                {child-errors :errors}
+                (identity/retain-children!
+                 parent "proven-descendant-for-cleanup"
+                 #(swap! children conj %))
+                _ (doseq [error child-errors]
+                    (record-error! errors error))
                 unseen (remove #(contains? seen [(:pid %) (:started-at %)])
-                               children)]
+                               @children)]
             (recur (into (subvec pending 1) unseen)
                    (into retained unseen)
                    (into seen (map (juxt :pid :started-at)) unseen)))
@@ -76,10 +76,12 @@
     (when-not pgid
       (doseq [parent [anchor supervisor]
               :when (identity/live? parent)]
-        (attempt!
-         errors #(swap! proven into
-                        (identity/retain-children
-                         parent "proven-child-for-cleanup")))))
+        (let [{child-errors :errors}
+              (identity/retain-children!
+               parent "proven-child-for-cleanup"
+               #(swap! proven conj %))]
+          (doseq [error child-errors]
+            (record-error! errors error)))))
     (when pgid
       (if (identity/live? anchor)
         (try

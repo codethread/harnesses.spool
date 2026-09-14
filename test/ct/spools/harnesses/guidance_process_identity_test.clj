@@ -20,7 +20,10 @@
                  :handle nil
                  :alive? #(true? (:alive @state))
                  :current-start #(:current-start @state)
-                 :children #(:children @state)
+                 :visit-children!
+                 (fn [visit!]
+                   (doseq [child (:children @state)]
+                     (visit! child)))
                  :parent-birth #(:parent-birth @state)
                  :destroy! #(do (swap! state update :signals inc)
                                 (swap! state assoc :alive false)
@@ -193,6 +196,27 @@
     (is (= 1 (:signals @retained-state)))
     (is (zero? (:signals @replacement-state)))
     (is (identity/live? replacement))))
+
+(deftest anchor-loss-immediately-before-promotion-blocks-all-group-authority
+  (let [start (Instant/parse "2026-09-14T00:00:00Z")
+        replacement-start (.plusSeconds start 1)
+        {anchor :identity anchor-state :state}
+        (fake-identity "anchor" 40 start)
+        {member :identity member-state :state}
+        (fake-identity "member" 41 start)
+        rows [{:pid 40 :pgid 40} {:pid 41 :pgid 40}]
+        confirmed (atom [])]
+    (with-interleave
+      (fn [phase _]
+        (when (= :before-member-promotion phase)
+          (swap! anchor-state assoc :current-start replacement-start)))
+      #(let [{:keys [errors]} (identity/correlate-members!
+                               anchor [member] rows 40
+                               (fn [retained]
+                                 (swap! confirmed conj retained)))]
+         (is (re-find #"anchor changed" (ex-message (first errors))))))
+    (is (empty? @confirmed))
+    (is (zero? (:signals @member-state)))))
 
 (deftest anchor-and-pgid-reuse-cannot-authorize-a-replacement-group
   (let [start (Instant/parse "2026-09-14T00:00:00Z")

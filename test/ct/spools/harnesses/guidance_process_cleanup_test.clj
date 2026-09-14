@@ -178,6 +178,128 @@
                          sentinel]]
           (stop! process))))))
 
+(deftest anchor-loss-before-promotion-never-adopts-a-group-replacement
+  (let [{anchor-process :anchor output :output
+         member-processes :children pgid :pgid}
+        (start-process-group!)
+        [proven-process replacement-process] member-processes
+        sentinel (start-sleep!)
+        executor (Executors/newSingleThreadExecutor)
+        anchor (identity/retain (.toHandle anchor-process) "anchor")
+        proven (identity/retain proven-process "independently-proven")
+        rows [{:pid pgid :pgid pgid}
+              {:pid (.pid replacement-process) :pgid pgid}]
+        promoted (atom [])
+        error
+        (try
+          (with-redefs [scan/scan! (fn [& _] rows)]
+            (with-interleave
+              (fn [phase retained]
+                (when (= :before-member-promotion phase)
+                  (.destroyForcibly anchor-process)
+                  (.get (.onExit anchor-process) 1 TimeUnit/SECONDS))
+                (when (= :before-signal phase)
+                  (swap! promoted conj (:pid retained))))
+              #(failure
+                (fn []
+                  (cleanup/cleanup-owned!
+                   (atom {:anchor anchor :pgid pgid
+                          :proven-children [proven]})
+                   executor [output] nil nil nil nil
+                   (+ (System/nanoTime) 1000000000) remaining)))))
+          (finally
+            (.shutdownNow executor)))]
+    (try
+      (is (re-find #"anchor changed" (ex-message error)))
+      (is (not (.isAlive proven-process)))
+      (is (.isAlive replacement-process))
+      (is (.isAlive sentinel))
+      (is (not-any? #{(.pid replacement-process)} @promoted))
+      (finally
+        (stop! anchor-process)
+        (doseq [process member-processes]
+          (stop-handle! process))
+        (stop! sentinel)))))
+
+(deftest unavailable-sibling-birth-preserves-other-child-in-both-orders
+  (doseq [unavailable-index [0 1]]
+    (testing (str "unavailable child at index " unavailable-index)
+      (let [{parent-process :anchor output :output
+             child-processes :children}
+            (start-process-group!)
+            unavailable (nth child-processes unavailable-index)
+            proven (nth child-processes (- 1 unavailable-index))
+            sentinel (start-sleep!)
+            executor (Executors/newSingleThreadExecutor)
+            parent (identity/retain (.toHandle parent-process) "parent")
+            original-retain identity/retain
+            error
+            (try
+              (with-redefs
+               [identity/retain
+                (fn [handle role]
+                  (if (= (.pid ^ProcessHandle handle) (.pid unavailable))
+                    (throw (ex-info
+                            "Guidance process start identity is unavailable"
+                            {:pid (.pid unavailable)}))
+                    (original-retain handle role)))]
+                (failure
+                 #(cleanup/cleanup-owned!
+                   (atom {:supervisor parent}) executor [output]
+                   nil nil nil nil
+                   (+ (System/nanoTime) 1000000000) remaining)))
+              (finally
+                (.shutdownNow executor)))]
+        (try
+          (is (re-find #"start identity is unavailable" (ex-message error)))
+          (is (not (.isAlive parent-process)))
+          (is (not (.isAlive proven)))
+          (is (.isAlive unavailable))
+          (is (.isAlive sentinel))
+          (finally
+            (stop! parent-process)
+            (doseq [process child-processes]
+              (stop-handle! process))
+            (stop! sentinel)))))))
+
+(deftest parent-loss-after-one-child-proof-preserves-that-child
+  (let [{parent-process :anchor output :output
+         child-processes :children}
+        (start-process-group!)
+        sentinel (start-sleep!)
+        executor (Executors/newSingleThreadExecutor)
+        parent (identity/retain (.toHandle parent-process) "parent")
+        promoted-pid (atom nil)
+        error
+        (try
+          (with-interleave
+            (fn [phase retained]
+              (when (and (= :after-child-promotion phase)
+                         (compare-and-set! promoted-pid nil (:pid retained)))
+                (.destroyForcibly parent-process)
+                (.get (.onExit parent-process) 1 TimeUnit/SECONDS)))
+            #(failure
+              (fn []
+                (cleanup/cleanup-owned!
+                 (atom {:supervisor parent}) executor [output]
+                 nil nil nil nil
+                 (+ (System/nanoTime) 1000000000) remaining))))
+          (finally
+            (.shutdownNow executor)))
+        promoted (some #(when (= @promoted-pid (.pid %)) %) child-processes)
+        unproven (remove #(= @promoted-pid (.pid %)) child-processes)]
+    (try
+      (is (re-find #"parent changed" (ex-message error)))
+      (is (some? promoted))
+      (is (not (.isAlive promoted)))
+      (is (every? #(.isAlive %) unproven))
+      (is (.isAlive sentinel))
+      (finally
+        (stop! parent-process)
+        (doseq [process child-processes]
+          (stop-handle! process))
+        (stop! sentinel)))))
+
 (deftest parent-proven-descendants-are-signalled-before-shared-deadline-joins
   (let [node (capability/resolve-executable "node" (System/getenv))
         parent
