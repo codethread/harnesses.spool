@@ -209,6 +209,7 @@
               :executable-closure
               {:schema "millstrand.local-guidance-executable-closure/v1"
                :reviewed-complete true
+               :resolver-policy (closure/resolver-policy)
                :artifacts
                [(closure/artifact "entrypoint" preflight-file)
                 (closure/artifact
@@ -218,9 +219,7 @@
                :resolution-inputs
                {:cwd (.getCanonicalPath fixture-dir)
                 :environment
-                (into {}
-                      (map (fn [key] [key (get profile-environment key)]))
-                      ["PATH" "NODE_OPTIONS" "NODE_PATH"])}}
+                (closure/resolution-environment profile-environment)}}
               :process-ownership
               {:contract "private-posix-session/inherited-process-group-v1"
                :reviewed-closure-sha256 (apply str (repeat 64 "0"))

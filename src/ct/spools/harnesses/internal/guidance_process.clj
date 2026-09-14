@@ -4,10 +4,11 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [ct.spools.harnesses.internal.guidance-closure :as closure]
+            [ct.spools.harnesses.internal.guidance-process-identity :as identity]
+            [ct.spools.harnesses.internal.guidance-process-scan :as scan]
             [ct.spools.harnesses.internal.strict-json :as strict-json]
             [millstrand.api.spool.alpha :refer [fail!]])
   (:import [java.io ByteArrayOutputStream]
-           [java.lang ProcessHandle]
            [java.nio.charset CharacterCodingException CodingErrorAction
             StandardCharsets]
            [java.nio.file Files Path StandardCopyOption]
@@ -26,13 +27,13 @@
    "\n"
    ["import fs from 'node:fs';"
     "import { spawn } from 'node:child_process';"
-    "const [anchor, root, scanner, entrypoint, state, bootReady, go, token] = process.argv.slice(2);"
+    "const [anchor, gate, root, scanner, entrypoint, state, bootReady, go, helperReady, token] = process.argv.slice(2);"
     "const writeState = value => {"
     "  const temporary = `${state}.tmp-${process.pid}`;"
     "  fs.writeFileSync(temporary, JSON.stringify(value), { mode: 0o600 });"
     "  fs.renameSync(temporary, state);"
     "};"
-    "const child = spawn(process.execPath, [anchor, root, scanner, entrypoint, state, bootReady, go, token], {"
+    "const child = spawn(process.execPath, [anchor, gate, root, scanner, entrypoint, state, bootReady, go, helperReady, token], {"
     "  detached: true,"
     "  stdio: ['inherit', 'inherit', 'inherit']"
     "});"
@@ -51,7 +52,7 @@
    "\n"
    ["import fs from 'node:fs';"
     "import { spawn, spawnSync } from 'node:child_process';"
-    "const [root, scanner, entrypoint, state, bootReady, go, token] = process.argv.slice(2);"
+    "const [gate, root, scanner, entrypoint, state, bootReady, go, helperReady, token] = process.argv.slice(2);"
     "const writeState = value => {"
     "  const temporary = `${state}.tmp-${process.pid}`;"
     "  fs.writeFileSync(temporary, JSON.stringify(value), { mode: 0o600 });"
@@ -62,7 +63,7 @@
     "if (fs.readFileSync(bootReady, 'utf8') !== token) process.exit(70);"
     "const inspected = spawnSync(scanner, ['-o', 'pgid=', '-p', String(process.pid)], {"
     "  encoding: 'utf8',"
-    "  timeout: 250"
+    "  timeout: 500"
     "});"
     "const pgid = Number((inspected.stdout || '').trim());"
     "if (inspected.status !== 0 || pgid !== process.pid) {"
@@ -72,7 +73,7 @@
     "  writeState({ token, phase: 'owned', anchorPid: process.pid, pgid });"
     "  while (!fs.existsSync(go)) await delay(1);"
     "  if (fs.readFileSync(go, 'utf8') !== token) process.exit(71);"
-    "  const child = spawn(process.execPath, [entrypoint], {"
+    "  const child = spawn(process.execPath, [gate, entrypoint, helperReady, token], {"
     "    cwd: root,"
     "    stdio: ['inherit', 'inherit', 'inherit']"
     "  });"
@@ -90,6 +91,18 @@
     "  }));"
     "  setInterval(() => {}, 60000);"
     "}"]))
+
+(def ^:private helper-gate-source
+  (str/join
+   "\n"
+   ["import fs from 'node:fs';"
+    "import { pathToFileURL } from 'node:url';"
+    "const [entrypoint, helperReady, token] = process.argv.slice(2);"
+    "const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));"
+    "while (!fs.existsSync(helperReady)) await delay(1);"
+    "if (fs.readFileSync(helperReady, 'utf8') !== token) process.exit(73);"
+    "process.argv[1] = entrypoint;"
+    "await import(pathToFileURL(entrypoint).href);"]))
 
 (defn- remaining-nanos [deadline]
   (- deadline (System/nanoTime)))
@@ -190,6 +203,13 @@
           :when (.isDone future)]
     (await-future! future deadline phase)))
 
+(defn- remember-identity! [ownership key pid role]
+  (if-let [retained (get @ownership key)]
+    (when-not (= pid (:pid retained))
+      (fail! "Guidance preflight process identity changed"
+             {:role role :expected (:pid retained) :actual pid}))
+    (swap! ownership assoc key (identity/retain-pid pid role))))
+
 (defn- await-owned! [state-path token futures deadline ownership]
   (loop []
     (inspect-futures! futures deadline)
@@ -199,7 +219,7 @@
                            (validate-state! token))]
       (let [phase (get state "phase")
             anchor-pid (get state "anchorPid")]
-        (reset! ownership {:anchor-pid anchor-pid})
+        (remember-identity! ownership :anchor anchor-pid "ownership-anchor")
         (case phase
           "ownership-failed"
           (fail! "Guidance preflight could not establish private process ownership"
@@ -207,6 +227,9 @@
           "owned"
           (if (= anchor-pid (get state "pgid"))
             (do
+              (identity/require-live!
+               (:anchor @ownership)
+               "Guidance preflight ownership anchor is not live")
               (swap! ownership assoc :pgid anchor-pid)
               state)
             (fail! "Guidance preflight process group identity is invalid" state))
@@ -221,6 +244,31 @@
                    (.waitFor process remaining TimeUnit/NANOSECONDS))
       (timed-out! "supervisor-retirement"))))
 
+(defn- await-helper-started! [state-path token futures deadline ownership]
+  (loop []
+    (inspect-futures! futures deadline)
+    (when-not (pos? (remaining-nanos deadline))
+      (timed-out! "helper-start"))
+    (if-let [state (some-> (state-document state-path)
+                           (validate-state! token))]
+      (case (get state "phase")
+        "launch-failed"
+        (fail! "Guidance preflight helper could not be executed"
+               {:diagnostic (get state "diagnostic")})
+        "running"
+        (let [helper-pid (get state "helperPid")]
+          (when-not (valid-pid? helper-pid)
+            (fail! "Guidance preflight helper recorded an invalid PID" state))
+          (remember-identity! ownership :helper helper-pid "preflight-helper")
+          (identity/require-live!
+           (:helper @ownership)
+           "Guidance preflight helper identity is not live")
+          state)
+        "finished"
+        (fail! "Guidance preflight helper ran before identity retention" {})
+        (do (Thread/sleep 1) (recur)))
+      (do (Thread/sleep 1) (recur)))))
+
 (defn- await-helper! [state-path token futures deadline ownership]
   (loop []
     (inspect-futures! futures deadline)
@@ -228,11 +276,11 @@
       (timed-out! "process-completion"))
     (if-let [state (some-> (state-document state-path)
                            (validate-state! token))]
-      (let [phase (get state "phase")]
-        (when-let [helper-pid (get state "helperPid")]
-          (when-not (valid-pid? helper-pid)
-            (fail! "Guidance preflight helper recorded an invalid PID" state))
-          (swap! ownership assoc :helper-pid helper-pid))
+      (let [phase (get state "phase")
+            helper-pid (get state "helperPid")]
+        (when (and helper-pid
+                   (not= helper-pid (:pid (:helper @ownership))))
+          (fail! "Guidance preflight helper identity changed" state))
         (case phase
           "launch-failed"
           (fail! "Guidance preflight helper could not be executed"
@@ -241,73 +289,68 @@
           (do (Thread/sleep 1) (recur))))
       (do (Thread/sleep 1) (recur)))))
 
-(defn- process-handle [pid]
-  (when pid
-    (.orElse (ProcessHandle/of (long pid)) nil)))
+(defn- record-cleanup-error! [errors error]
+  (swap! errors conj error)
+  nil)
 
-(defn- run-ps! [scanner deadline]
-  (let [process (.start (ProcessBuilder. ^java.util.List
-                         [scanner "-axo" "pid=,pgid="]))
-        remaining (remaining-nanos deadline)]
-    (when-not (and (pos? remaining)
-                   (.waitFor process remaining TimeUnit/NANOSECONDS))
-      (.destroyForcibly process)
-      (timed-out! "cleanup-process-scan"))
-    (when-not (zero? (.exitValue process))
-      (fail! "Guidance preflight process ownership scan failed" {}))
-    (slurp (.getInputStream process))))
+(defn- attempt-cleanup! [errors operation]
+  (try
+    (operation)
+    (catch Throwable error
+      (record-cleanup-error! errors error))))
 
-(defn- group-pids [scanner pgid deadline]
-  (->> (str/split-lines (run-ps! scanner deadline))
-       (keep (fn [line]
-               (let [[pid group] (str/split (str/trim line) #"\s+")]
-                 (when (and pid group (= (str pgid) group))
-                   (parse-long pid)))))
-       set))
+(defn- distinct-identities [identities]
+  (vals (into {} (map (fn [retained]
+                        [[(:pid retained) (:started-at retained)] retained]))
+              (remove nil? identities))))
 
-(defn- signal-exact! [pid signalled]
-  (when-let [^ProcessHandle handle (process-handle pid)]
-    (when (.isAlive handle)
-      (swap! signalled conj pid)
-      (.destroyForcibly handle))))
-
-(defn- cleanup-owned! [process ownership executor streams scanner deadline]
-  (let [{:keys [anchor-pid pgid]} @ownership
-        signalled (atom #{})]
-    (if pgid
-      (loop []
-        (when-not (pos? (remaining-nanos deadline))
-          (timed-out! "owned-process-cleanup"))
-        (let [members (group-pids scanner pgid deadline)
-              live-members (filter #(some-> (process-handle %) .isAlive)
-                                   members)
-              descendants (remove #{anchor-pid} live-members)
-              anchor-live? (some #{anchor-pid} live-members)]
-          (cond
-            (seq descendants)
-            (do
-              (doseq [pid descendants]
-                (signal-exact! pid signalled))
-              (Thread/sleep 1)
-              (recur))
-
-            anchor-live?
-            (signal-exact! anchor-pid signalled))))
-      (signal-exact! anchor-pid signalled))
-    (signal-exact! (.pid process) signalled)
-    (while (some #(some-> (process-handle %) .isAlive) @signalled)
-      (when-not (pos? (remaining-nanos deadline))
-        (timed-out! "owned-process-join"))
-      (Thread/sleep 1))
-    (doseq [stream streams]
-      (try (.close stream) (catch Exception _ nil)))
-    (.shutdownNow executor)
-    (let [remaining (remaining-nanos deadline)]
-      (when-not (pos? remaining)
-        (timed-out! "io-worker-cleanup"))
-      (when-not (.awaitTermination executor remaining TimeUnit/NANOSECONDS)
-        (timed-out! "io-worker-cleanup")))
-    @signalled))
+(defn- cleanup-owned!
+  [ownership executor streams profile process-environment root scanner deadline]
+  (let [{:keys [anchor helper supervisor pgid]} @ownership
+        errors (atom [])
+        discovered (atom [])]
+    (when pgid
+      (if (identity/live? anchor)
+        (try
+          (let [first-rows
+                (scan/scan! profile process-environment root scanner
+                            deadline remaining-nanos)
+                retained
+                (identity/retain-members! anchor first-rows pgid)
+                confirming-rows
+                (scan/scan! profile process-environment root scanner
+                            deadline remaining-nanos)
+                confirmed
+                (identity/correlate! anchor retained confirming-rows pgid)]
+            (reset! discovered confirmed))
+          (catch Throwable error
+            (record-cleanup-error! errors error)))
+        (record-cleanup-error!
+         errors
+         (ex-info "Guidance ownership anchor identity disappeared before cleanup"
+                  {:anchor-pid (:pid anchor) :pgid pgid}))))
+    (let [identities (distinct-identities
+                      (concat @discovered [helper anchor supervisor]))]
+      (doseq [retained identities]
+        (attempt-cleanup! errors #(identity/signal! retained)))
+      (doseq [stream streams]
+        (try (.close stream) (catch Exception _ nil)))
+      (.shutdownNow executor)
+      (doseq [retained identities]
+        (attempt-cleanup!
+         errors #(identity/join! retained deadline remaining-nanos)))
+      (let [remaining (remaining-nanos deadline)]
+        (when-not (and (pos? remaining)
+                       (.awaitTermination executor remaining
+                                          TimeUnit/NANOSECONDS))
+          (record-cleanup-error!
+           errors (ex-info "Guidance preflight I/O workers did not terminate"
+                           {}))))
+      (when-let [error (first @errors)]
+        (doseq [suppressed (rest @errors)]
+          (.addSuppressed ^Throwable error ^Throwable suppressed))
+        (throw error))
+      (mapv :pid identities))))
 
 (defn- delete-directory! [^Path directory]
   (doseq [file (reverse (file-seq (.toFile directory)))]
@@ -333,9 +376,11 @@
           directory (private-directory!)
           supervisor-path (.resolve directory "supervisor.mjs")
           anchor-path (.resolve directory "anchor.mjs")
+          gate-path (.resolve directory "helper-gate.mjs")
           state-path (.resolve directory "state.json")
           boot-path (.resolve directory "boot.ready")
           go-path (.resolve directory "go.ready")
+          helper-path (.resolve directory "helper.ready")
           token (str (UUID/randomUUID))
           ownership (atom {})
           executor (Executors/newFixedThreadPool 3 (daemon-thread-factory))
@@ -348,18 +393,23 @@
         (closure/verify! reviewed-profile process-environment budget!)
         (write-file! supervisor-path supervisor-source)
         (write-file! anchor-path anchor-source)
+        (write-file! gate-path helper-gate-source)
         (let [builder
               (doto
                (ProcessBuilder.
                 ^java.util.List
                 [interpreter (str supervisor-path) (str anchor-path)
-                 (.getCanonicalPath root) scanner entrypoint (str state-path)
-                 (str boot-path) (str go-path) token])
+                 (str gate-path) (.getCanonicalPath root) scanner entrypoint
+                 (str state-path) (str boot-path) (str go-path)
+                 (str helper-path) token])
                 (.directory root))
               _ (doto (.environment builder)
                   (.clear)
                   (.putAll process-environment))
               process (.start builder)
+              _ (swap! ownership assoc
+                       :supervisor
+                       (identity/retain (.toHandle process) "supervisor"))
               input (.submit
                      executor
                      ^Callable
@@ -382,10 +432,14 @@
             (when-not (.isAlive process)
               (fail! "Guidance preflight supervisor failed"
                      {:exit-code (.exitValue process)}))
-            (when-not (some-> (process-handle (:anchor-pid @ownership)) .isAlive)
-              (fail! "Guidance preflight ownership anchor is not live" @ownership))
-            (closure/verify! reviewed-profile process-environment budget!)
+            (identity/require-live!
+             (:anchor @ownership)
+             "Guidance preflight ownership anchor is not live")
             (write-signal! go-path token)
+            (await-helper-started! state-path token futures
+                                   execution-deadline ownership)
+            (closure/verify! reviewed-profile process-environment budget!)
+            (write-signal! helper-path token)
             (let [finished (await-helper! state-path token futures
                                           execution-deadline ownership)]
               (release-supervisor! process execution-deadline)
@@ -408,13 +462,14 @@
                                       "Guidance preflight stdout")
                  :stderr (decode-utf8 stderr-bytes
                                       "Guidance preflight stderr")
-                 :owned-pids {:supervisor-pid (.pid process)
-                              :anchor-pid (:anchor-pid @ownership)
-                              :helper-pid (:helper-pid @ownership)}}))
+                 :owned-pids {:supervisor-pid
+                              (:pid (:supervisor @ownership))
+                              :anchor-pid (:pid (:anchor @ownership))
+                              :helper-pid (:pid (:helper @ownership))}}))
             (finally
               (try
-                (cleanup-owned! process ownership executor streams scanner
-                                deadline)
+                (cleanup-owned! ownership executor streams reviewed-profile
+                                process-environment root scanner deadline)
                 (finally
                   (when (.isAlive process)
                     (.destroyForcibly process))

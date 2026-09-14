@@ -148,6 +148,29 @@
                                           [:= [:attr "harness/run"] "true"]
                                           {}))
                      before (count-runs)
+                     _
+                     (harnesses/register-alias!
+                      rt :injected-codex
+                      {:doc "Disposable loader-injection profile."
+                       :parent :codex
+                       :env {"PATH" (.getCanonicalPath fixture-dir)
+                             "DYLD_INSERT_LIBRARIES"
+                             "/tmp/unreviewed-constructor.dylib"}
+                       :attributes {}})
+                     injection-error
+                     (binding
+                      [capability/*test-capability-profiles* [profile]
+                       capability/*test-preflight-runner* accepted-runner]
+                       (try
+                         (harnesses/create!
+                          rt {:harness :injected-codex
+                              :mode :headless
+                              :cwd "/tmp"
+                              :prompt "Injected constructor fixture"
+                              :guidance-transport "native-v1"})
+                         nil
+                         (catch clojure.lang.ExceptionInfo failure
+                           (ex-message failure))))
                      malformed-runner
                      (fn [accepted _]
                        (swap! calls inc)
@@ -181,6 +204,7 @@
                             (catch clojure.lang.ExceptionInfo failure
                               (ex-message failure))))]
                  {:error error
+                  :injection-error injection-error
                   :closure-error closure-error
                   :calls @calls
                   :no-publication (= before (count-runs))
@@ -188,6 +212,8 @@
                   (empty? (weaver/list rt
                                        [:= [:attr "identity/reservation-state"] "reserved"]
                                        {}))})))]
+        (is (re-find #"unsupported dynamic resolution inputs"
+                     (:injection-error result)))
         (is (re-find #"invalid Unicode escape" (:error result)))
         (is (re-find #"artifact (size|bytes) changed"
                      (:closure-error result)))

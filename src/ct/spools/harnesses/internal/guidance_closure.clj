@@ -14,6 +14,9 @@
   "Harnesses-local finite executable-closure manifest version."
   "millstrand.local-guidance-executable-closure/v1")
 
+(def ^:private resolver-policy-schema
+  "millstrand.local-guidance-resolver-policy/v1")
+
 (def ^:private sha-pattern #"[0-9a-f]{64}")
 (def ^:private maximum-artifacts 64)
 (def ^:private maximum-closure-bytes (* 256 1024 1024))
@@ -23,16 +26,30 @@
 (def ^:private ownership-keys
   #{:contract :reviewed-closure-sha256 :child-process-behavior})
 (def ^:private closure-keys
-  #{:schema :reviewed-complete :artifacts :resolution-inputs})
+  #{:schema :reviewed-complete :artifacts :resolver-policy
+    :resolution-inputs})
 (def ^:private artifact-keys #{:role :path :sha256 :size})
 (def ^:private resolution-keys #{:cwd :environment})
+(def ^:private resolver-policy-keys #{:schema :platform :environment})
 (def ^:private supported-roles
   #{"entrypoint" "import" "helper" "interpreter" "selector"
     "subprocess" "ownership-scanner"})
 (def ^:private executable-roles
   #{"helper" "interpreter" "subprocess" "ownership-scanner"})
-(def ^:private required-resolution-environment
-  #{"PATH" "NODE_OPTIONS" "NODE_PATH"})
+(def ^:private resolver-environment-policy
+  {"PATH" "bound"
+   "NODE_OPTIONS" "absent"
+   "NODE_PATH" "absent"
+   "DYLD_INSERT_LIBRARIES" "absent"
+   "DYLD_LIBRARY_PATH" "absent"
+   "DYLD_FRAMEWORK_PATH" "absent"
+   "DYLD_FALLBACK_LIBRARY_PATH" "absent"
+   "DYLD_FALLBACK_FRAMEWORK_PATH" "absent"
+   "LD_PRELOAD" "absent"
+   "LD_LIBRARY_PATH" "absent"})
+
+(def ^:private unsafe-environment-pattern
+  #"^(?:DYLD_.+|LD_PRELOAD|LD_LIBRARY_PATH)$")
 
 (defn- closed-keys! [value required label]
   (when-not (and (map? value) (= required (set (keys value))))
@@ -95,7 +112,42 @@
                {:path path :role role})))
     artifact))
 
-(defn- validate-resolution! [profile resolution process-environment]
+(defn resolver-policy
+  "Return the mandatory reviewed resolver policy for native preflight."
+  []
+  {:schema resolver-policy-schema
+   :platform "darwin"
+   :environment resolver-environment-policy})
+
+(defn resolution-environment
+  "Select every mandatory resolver input, retaining absent values as nil."
+  [environment]
+  (into {}
+        (map (fn [key] [key (get environment key)]))
+        (keys resolver-environment-policy)))
+
+(defn- validate-resolver-policy! [policy]
+  (closed-keys! policy resolver-policy-keys
+                "Guidance closure resolver policy")
+  (when-not (= (resolver-policy) policy)
+    (fail! "Guidance closure resolver policy is unsupported"
+           {:policy policy}))
+  (when-not (= "Mac OS X" (System/getProperty "os.name"))
+    (fail! "Native guidance resolver platform is unsupported"
+           {:os-name (System/getProperty "os.name")}))
+  policy)
+
+(defn- selected-value-matches? [process-environment key expected mode]
+  (case mode
+    "absent" (and (nil? expected)
+                  (not (contains? process-environment key)))
+    "bound" (if (nil? expected)
+              (not (contains? process-environment key))
+              (and (contains? process-environment key)
+                   (= expected (get process-environment key))))
+    false))
+
+(defn- validate-resolution! [profile resolution policy process-environment]
   (closed-keys! resolution resolution-keys
                 "Guidance closure resolution inputs")
   (let [{:keys [cwd environment]} resolution
@@ -107,21 +159,32 @@
       (fail! "Guidance closure working directory does not match its entrypoint"
              {:cwd cwd :expected expected-root}))
     (when-not (and (map? environment)
-                   (every? string? (keys environment))
-                   (every? #(or (nil? %) (string? %)) (vals environment))
-                   (every? #(contains? environment %)
-                           required-resolution-environment))
+                   (= (set (keys resolver-environment-policy))
+                      (set (keys environment)))
+                   (every? #(or (nil? %) (string? %)) (vals environment)))
       (fail! "Guidance closure resolution environment is incomplete" {}))
+    (when-let [key (some (fn [[key mode]]
+                           (when (and (= "absent" mode)
+                                      (some? (get environment key)))
+                             key))
+                         (:environment policy))]
+      (fail! "Guidance closure has unsupported dynamic resolution inputs"
+             {:key key}))
     (when-not (and (map? process-environment)
                    (every? (fn [[key value]]
-                             (= value (get process-environment key)))
-                           environment))
+                             (and (string? key) (string? value)))
+                           process-environment))
+      (fail! "Guidance closure process environment is malformed" {}))
+    (when-let [key (some #(when (re-matches unsafe-environment-pattern %) %)
+                         (keys process-environment))]
+      (fail! "Guidance closure has unsupported dynamic resolution inputs"
+             {:key key}))
+    (when-not (every? (fn [[key mode]]
+                        (selected-value-matches?
+                         process-environment key (get environment key) mode))
+                      (:environment policy))
       (fail! "Guidance closure resolution inputs changed"
              {:keys (sort (keys environment))}))
-    (doseq [key ["NODE_OPTIONS" "NODE_PATH"]]
-      (when (some-> (get environment key) str/blank? not)
-        (fail! "Guidance closure has unsupported dynamic resolution inputs"
-               {:key key})))
     resolution))
 
 (defn- validate-manifest! [profile process-environment]
@@ -131,7 +194,8 @@
       (fail! "Guidance executable closure schema is unsupported" {}))
     (when-not (true? (:reviewed-complete manifest))
       (fail! "Guidance executable closure is not reviewed as complete" {}))
-    (let [artifacts (:artifacts manifest)]
+    (let [policy (validate-resolver-policy! (:resolver-policy manifest))
+          artifacts (:artifacts manifest)]
       (when-not (and (vector? artifacts)
                      (<= 3 (count artifacts) maximum-artifacts))
         (fail! "Guidance executable closure artifact set is incomplete"
@@ -151,9 +215,9 @@
                  {})))
       (when (> (reduce + (map :size artifacts)) maximum-closure-bytes)
         (fail! "Guidance executable closure exceeds its byte limit"
-               {:max-bytes maximum-closure-bytes})))
-    (validate-resolution! profile (:resolution-inputs manifest)
-                          process-environment)
+               {:max-bytes maximum-closure-bytes}))
+      (validate-resolution! profile (:resolution-inputs manifest) policy
+                            process-environment))
     manifest))
 
 (defn reviewed-sha256

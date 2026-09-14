@@ -29,10 +29,6 @@
     "timeoutSec" 15
     "additionalContextLimit" 4096}})
 
-(defn- selected-environment [environment]
-  (into {} (map (fn [key] [key (get environment key)]))
-        ["PATH" "NODE_OPTIONS" "NODE_PATH"]))
-
 (defn- finalize-profile [profile]
   (assoc-in profile [:process-ownership :reviewed-closure-sha256]
             (closure/reviewed-sha256 profile)))
@@ -88,6 +84,7 @@
           :executable-closure
           {:schema "millstrand.local-guidance-executable-closure/v1"
            :reviewed-complete true
+           :resolver-policy (closure/resolver-policy)
            :artifacts
            [(closure/artifact "entrypoint" entrypoint)
             (closure/artifact "import" direct)
@@ -97,7 +94,7 @@
             (closure/artifact "ownership-scanner" "/bin/ps")]
            :resolution-inputs
            {:cwd (.getCanonicalPath root)
-            :environment (selected-environment environment)}}
+            :environment (closure/resolution-environment environment)}}
           :process-ownership
           {:contract "private-posix-session/inherited-process-group-v1"
            :reviewed-closure-sha256 (str/join (repeat 64 "0"))
@@ -139,6 +136,44 @@
 (defn- marker-content [marker]
   (if (.isFile marker) (slurp marker) ""))
 
+(defn- compile-constructor! [root]
+  (let [source (io/file root "constructor.c")
+        library (io/file root "constructor.dylib")
+        _ (spit source
+                (str "#include <fcntl.h>\n"
+                     "#include <stdlib.h>\n"
+                     "#include <string.h>\n"
+                     "#include <unistd.h>\n"
+                     "__attribute__((constructor)) static void mark(void) {\n"
+                     "  const char *path = getenv(\"GUIDANCE_CONSTRUCTOR_MARKER\");\n"
+                     "  if (path) {\n"
+                     "    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0600);\n"
+                     "    if (fd >= 0) { write(fd, \"constructor\\n\", 12); close(fd); }\n"
+                     "  }\n"
+                     "}\n"))
+        process (.start (ProcessBuilder.
+                         ^java.util.List
+                         ["/usr/bin/clang" "-dynamiclib" "-o"
+                          (.getCanonicalPath library)
+                          (.getCanonicalPath source)]))]
+    (when-not (and (.waitFor process 30 java.util.concurrent.TimeUnit/SECONDS)
+                   (zero? (.exitValue process)))
+      (throw (ex-info "Unable to compile constructor fixture"
+                      {:exit-code (when-not (.isAlive process)
+                                    (.exitValue process))})))
+    library))
+
+(defn- run-constructor-control! [interpreter environment]
+  (let [builder (ProcessBuilder. ^java.util.List [interpreter "-e" ""])
+        _ (doto (.environment builder)
+            (.clear)
+            (.putAll environment))
+        process (.start builder)]
+    (when-not (and (.waitFor process 5 java.util.concurrent.TimeUnit/SECONDS)
+                   (zero? (.exitValue process)))
+      (when (.isAlive process) (.destroyForcibly process))
+      (throw (ex-info "Constructor positive control failed" {})))))
+
 (deftest direct-transitive-and-resolution-changes-precede-helper-execution
   (with-closure
     (fn [{:keys [profile request document direct direct-source transitive
@@ -175,6 +210,29 @@
                                          "--require=changed.cjs")))))
         (is (= "ran\n" (marker-content marker)))))))
 
+(deftest loader-injection-is-rejected-before-constructor-or-helper-execution
+  (with-closure
+    (fn [{:keys [profile request marker]}]
+      (let [root (io/file (get request "cwd"))
+            constructor-marker (io/file root "constructor-ran.log")
+            library (compile-constructor! root)
+            injected-environment
+            (assoc (get request "env")
+                   "DYLD_INSERT_LIBRARIES" (.getCanonicalPath library)
+                   "GUIDANCE_CONSTRUCTOR_MARKER"
+                   (.getCanonicalPath constructor-marker))]
+        (run-constructor-control!
+         (closure/artifact-path profile "interpreter")
+         injected-environment)
+        (is (= "constructor\n" (marker-content constructor-marker)))
+        (.delete constructor-marker)
+        (is (re-find #"unsupported dynamic resolution inputs"
+                     (ex-message
+                      (failure profile
+                               (assoc request "env" injected-environment)))))
+        (is (= "" (marker-content constructor-marker)))
+        (is (= "" (marker-content marker)))))))
+
 (deftest missing-incomplete-and-unsupported-closures-never-run-helper
   (with-closure
     (fn [{:keys [profile request direct direct-source marker]}]
@@ -184,6 +242,50 @@
                      (ex-message (failure profile request))))
         (is (= "" (marker-content marker)))
         (spit direct direct-source))
+
+      (testing "mandatory resolver policy and selected keys"
+        (doseq [incomplete
+                [(finalize-profile
+                  (update profile :executable-closure
+                          dissoc :resolver-policy))
+                 (finalize-profile
+                  (update-in profile
+                             [:executable-closure :resolver-policy
+                              :environment]
+                             dissoc "DYLD_INSERT_LIBRARIES"))
+                 (finalize-profile
+                  (update-in profile
+                             [:executable-closure :resolution-inputs
+                              :environment]
+                             dissoc "DYLD_INSERT_LIBRARIES"))]]
+          (is (re-find #"invalid keys|resolver policy is unsupported|environment is incomplete"
+                       (ex-message (failure incomplete request))))
+          (is (= "" (marker-content marker)))))
+
+      (testing "absent and empty resolver inputs remain distinct"
+        (let [absent-path-profile
+              (finalize-profile
+               (assoc-in profile
+                         [:executable-closure :resolution-inputs
+                          :environment "PATH"] nil))
+              absent-path-environment (dissoc (get request "env") "PATH")]
+          (is (string? (closure/verify! absent-path-profile
+                                        absent-path-environment)))
+          (is (thrown-with-msg?
+               clojure.lang.ExceptionInfo
+               #"resolution inputs changed"
+               (closure/verify! absent-path-profile
+                                (assoc absent-path-environment "PATH" "")))))
+        (doseq [[key value message]
+                [["DYLD_INSERT_LIBRARIES" ""
+                  #"unsupported dynamic resolution inputs"]
+                 ["NODE_PATH" ""
+                  #"resolution inputs changed"]]]
+          (is (re-find message
+                       (ex-message
+                        (failure profile
+                                 (assoc-in request ["env" key] value)))))
+          (is (= "" (marker-content marker)))))
 
       (testing "dynamic resolution inputs"
         (let [dynamic-profile
@@ -197,6 +299,23 @@
                         (failure dynamic-profile
                                  (assoc-in request ["env" "NODE_PATH"]
                                            "/unreviewed/modules")))))
+          (is (= "" (marker-content marker))))
+        (let [library (io/file (get request "cwd") "listed.dylib")
+              _ (spit library "unsafe")
+              listed
+              (finalize-profile
+               (-> profile
+                   (assoc-in [:executable-closure :resolution-inputs
+                              :environment "DYLD_INSERT_LIBRARIES"]
+                             (.getCanonicalPath library))
+                   (update-in [:executable-closure :artifacts]
+                              conj (closure/artifact "selector" library))))]
+          (is (re-find #"unsupported dynamic resolution inputs"
+                       (ex-message
+                        (failure
+                         listed
+                         (assoc-in request ["env" "DYLD_INSERT_LIBRARIES"]
+                                   (.getCanonicalPath library))))))
           (is (= "" (marker-content marker)))))
 
       (testing "incomplete required roles"

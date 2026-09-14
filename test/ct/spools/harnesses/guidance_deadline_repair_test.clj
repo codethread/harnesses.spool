@@ -247,3 +247,195 @@
         (is (nil? (:stale-result result)))
         (is (= 2 (:retry-attempt result)))
         (is (true? (:retry-no-write result)))))))
+
+(deftest scheduled-expiry-and-generation-retirement-serialize
+  (guidance-test/with-guidance-world
+    (fn [ctx]
+      (let [result
+            (test-alpha/repl!
+             ctx
+             (list
+              'do guidance-test/lifecycle-setup
+              guidance-fixture/interactive-selection
+              '(binding [capability/*test-capability-profiles* [profile]
+                         capability/*test-preflight-runner* accepted-runner]
+                 (with-native-interactive-fixture
+                   (fn []
+                     (let [deadline-hook
+                           (ns-resolve 'ct.spools.harnesses.execution
+                                       'guidance-deadline-hook!)
+                           execution-state
+                           (deref
+                            (ns-resolve 'ct.spools.harnesses.execution
+                                        'state))
+                           prepare-run
+                           (fn [millis]
+                             (let [created
+                                   (harnesses/create!
+                                    rt {:harness :native-codex
+                                        :mode :interactive
+                                        :cwd "/tmp"
+                                        :guidance-transport "native-v1"})
+                                   started
+                                   (harnesses/begin-attempt! rt (:id created))
+                                   record
+                                   (guidance/current-attempt (:strand started))
+                                   deadline
+                                   (str (.plusMillis
+                                         (java.time.Instant/now) millis))]
+                               {:run
+                                (weaver/update!
+                                 rt (:id created)
+                                 {:attributes
+                                  {:harness/guidance-attempts
+                                   [(assoc record "deadline-at" deadline)]}})
+                                :deadline deadline}))
+                           expiry (prepare-run 400)
+                           expiry-entered
+                           (java.util.concurrent.CountDownLatch. 1)
+                           expiry-release
+                           (java.util.concurrent.CountDownLatch. 1)
+                           expiry-paused? (atom false)
+                           expiry-events (atom [])
+                           expiry-hook
+                           (fn [event]
+                             (swap! expiry-events conj event)
+                             (when (and (= :after-reload (:phase event))
+                                        (= "harness-worker"
+                                           (.getName (Thread/currentThread)))
+                                        (compare-and-set! expiry-paused?
+                                                          false true))
+                               (.countDown expiry-entered)
+                               (.await expiry-release)))
+                           expiry-result
+                           (with-redefs-fn
+                             {deadline-hook expiry-hook}
+                             (fn []
+                               (execution/open-execution! {:runtime rt})
+                               (when-not (.await expiry-entered 3
+                                                 java.util.concurrent.TimeUnit/SECONDS)
+                                 (throw (ex-info
+                                         "Scheduled expiry did not enter reload"
+                                         {})))
+                               (let [close-started
+                                     (java.util.concurrent.CountDownLatch. 1)
+                                     closing
+                                     (future
+                                       (.countDown close-started)
+                                       (execution/close-execution!
+                                        {:runtime rt}))]
+                                 (.await close-started)
+                                 (let [blocked
+                                       (deref closing 25 :blocked)]
+                                   (.countDown expiry-release)
+                                   @closing
+                                   {:close-blocked blocked
+                                    :run
+                                    (weaver/show rt (:id (:run expiry)))}))))
+                           retirement (prepare-run 400)
+                           retirement-entered
+                           (java.util.concurrent.CountDownLatch. 1)
+                           retirement-release
+                           (java.util.concurrent.CountDownLatch. 1)
+                           retirement-detached
+                           (java.util.concurrent.CountDownLatch. 1)
+                           retirement-paused? (atom false)
+                           retirement-events (atom [])
+                           old-generation (atom nil)
+                           new-generation (atom nil)
+                           retirement-hook
+                           (fn [event]
+                             (swap! retirement-events conj event)
+                             (when (and (= :before-publication-lock
+                                           (:phase event))
+                                        (= @old-generation
+                                           (:generation event))
+                                        (= "harness-worker"
+                                           (.getName (Thread/currentThread)))
+                                        (compare-and-set! retirement-paused?
+                                                          false true))
+                               (.countDown retirement-entered)
+                               (loop []
+                                 (let [released?
+                                       (try
+                                         (.await retirement-release)
+                                         true
+                                         (catch InterruptedException _
+                                           (.countDown retirement-detached)
+                                           false))]
+                                   (when-not released? (recur))))))
+                           retirement-result
+                           (with-redefs-fn
+                             {deadline-hook retirement-hook}
+                             (fn []
+                               (execution/open-execution! {:runtime rt})
+                               (reset! old-generation
+                                       (:generation (execution-state rt)))
+                               (when-not (.await retirement-entered 3
+                                                 java.util.concurrent.TimeUnit/SECONDS)
+                                 (throw (ex-info
+                                         "Scheduled expiry did not pause"
+                                         {})))
+                               (let [closing
+                                     (future
+                                       (execution/close-execution!
+                                        {:runtime rt}))]
+                                 (when-not (.await retirement-detached 3
+                                                   java.util.concurrent.TimeUnit/SECONDS)
+                                   (throw (ex-info
+                                           "Retirement did not detach generation"
+                                           {})))
+                                 (execution/open-execution! {:runtime rt})
+                                 (reset! new-generation
+                                         (:generation (execution-state rt)))
+                                 (let [after-reopen
+                                       (weaver/show rt (:id (:run retirement)))]
+                                   (.countDown retirement-release)
+                                   @closing
+                                   (execution/close-execution! {:runtime rt})
+                                   {:run after-reopen
+                                    :old-generation @old-generation
+                                    :new-generation @new-generation}))))]
+                       {:expiry
+                        {:close-blocked (:close-blocked expiry-result)
+                         :status (attr (:run expiry-result) :harness/status)
+                         :substatus
+                         (attr (:run expiry-result) :harness/substatus)
+                         :deadline
+                         (get (guidance/current-attempt (:run expiry-result))
+                              "deadline-at")
+                         :expected-deadline (:deadline expiry)
+                         :events @expiry-events}
+                        :retirement
+                        {:status
+                         (attr (:run retirement-result) :harness/status)
+                         :substatus
+                         (attr (:run retirement-result) :harness/substatus)
+                         :deadline
+                         (get (guidance/current-attempt
+                               (:run retirement-result)) "deadline-at")
+                         :expected-deadline (:deadline retirement)
+                         :old-generation (:old-generation retirement-result)
+                         :new-generation (:new-generation retirement-result)
+                         :events @retirement-events}}))))))]
+        (is (= :blocked (get-in result [:expiry :close-blocked])))
+        (is (= ["failed" "bootstrap"]
+               [(get-in result [:expiry :status])
+                (get-in result [:expiry :substatus])]))
+        (is (= (get-in result [:expiry :expected-deadline])
+               (get-in result [:expiry :deadline])))
+        (is (not= (get-in result [:retirement :old-generation])
+                  (get-in result [:retirement :new-generation])))
+        (is (= ["failed" "bootstrap"]
+               [(get-in result [:retirement :status])
+                (get-in result [:retirement :substatus])]))
+        (is (= (get-in result [:retirement :expected-deadline])
+               (get-in result [:retirement :deadline])))
+        (let [old (get-in result [:retirement :old-generation])
+              events (get-in result [:retirement :events])
+              phases (mapv :phase
+                           (filter #(= old (:generation %)) events))
+              counts (frequencies phases)]
+          (is (= :before-publication-lock (last phases)))
+          (is (= (inc (get counts :after-reload 0))
+                 (get counts :before-publication-lock 0))))))))

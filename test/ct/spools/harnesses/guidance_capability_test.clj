@@ -45,10 +45,6 @@
    "max-context-bytes" (if (= "codex" harness) 3072 65536)
    "hook-fact" (if (= "codex" harness) (codex-hook) (pi-hook))})
 
-(defn- resolution-environment [environment]
-  (into {} (map (fn [key] [key (get environment key)]))
-        ["PATH" "NODE_OPTIONS" "NODE_PATH"]))
-
 (defn- finalize-profile [profile]
   (assoc-in profile [:process-ownership :reviewed-closure-sha256]
             (capability/process-ownership-sha256 profile)))
@@ -62,10 +58,11 @@
     :executable-closure
     {:schema "millstrand.local-guidance-executable-closure/v1"
      :reviewed-complete true
+     :resolver-policy (closure/resolver-policy)
      :artifacts (vec artifacts)
      :resolution-inputs
      {:cwd (.getCanonicalPath root)
-      :environment (resolution-environment environment)}}
+      :environment (closure/resolution-environment environment)}}
     :process-ownership
     {:contract "private-posix-session/inherited-process-group-v1"
      :reviewed-closure-sha256 (str/join (repeat 64 "0"))
@@ -248,7 +245,8 @@
                    (assoc :capability document)
                    (assoc-in [:executable-closure :resolution-inputs
                               :environment]
-                             (resolution-environment launch-environment))))
+                             (closure/resolution-environment
+                              launch-environment))))
               document (:capability profile)
               captured-request (atom nil)
               runner (fn [accepted request-json]

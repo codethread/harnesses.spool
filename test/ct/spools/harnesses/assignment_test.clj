@@ -688,6 +688,8 @@
            []))
        (ns-resolve 'ct.spools.harnesses.execution 'state)
        (constantly scheduler-state)
+       (ns-resolve 'ct.spools.harnesses.execution 'state-holder)
+       (constantly {:active (atom scheduler-state)})
        (ns-resolve 'ct.spools.harnesses.execution 'full-run)
        (fn [_ _]
          {:id run-id

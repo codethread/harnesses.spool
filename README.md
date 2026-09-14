@@ -441,17 +441,29 @@ instead keeps this evidence in a closed local profile whose digest binds the wir
 capability to a finite canonical manifest. The manifest hashes and sizes the
 reviewed interpreter, preflight entrypoint, direct and transitive imports,
 package or module selectors, helper subprocesses, and ownership scanner that the
-profile needs; it also binds cwd plus exact PATH, NODE_OPTIONS, and NODE_PATH
-resolution inputs. Dynamic NODE_OPTIONS loaders/preloads and NODE_PATH lookup are
-rejected by this profile version. Missing, incomplete, duplicate, noncanonical,
-or changed artifacts fail before helper execution.
+profile needs. A mandatory Darwin resolver policy binds cwd and PATH exactly,
+with absent and empty selectors remaining distinct. It requires explicit absence
+of NODE_OPTIONS, NODE_PATH, DYLD loader/library redirection, LD_PRELOAD, and
+LD_LIBRARY_PATH; listing those unsafe inputs or their artifacts never authorizes
+them. Missing policy keys, incomplete, duplicate, noncanonical, or changed
+artifacts fail before the first process starts. The same closure is checked again
+before helper release, after completion, and before every cleanup scanner.
 
 The local profile must also contain exact reviewed evidence that its closure
 keeps every child in the inherited private process group. A private supervisor
-then establishes and verifies that group identity across root and intermediate exits. Verified
-helper completion retires the supervisor's stream handles independently from
-the retained cleanup identity. Input, execution, bounded output capture, exact
-owned-PID cleanup, and worker joins share one monotonic budget; unrelated
+then establishes and verifies that group identity across root and intermediate
+exits. Verified helper completion retires the supervisor's stream handles
+independently from the retained cleanup identity. Cleanup scanners drain bounded
+stdout and stderr concurrently on dedicated workers. Scanner timeout, overflow,
+malformed output, nonzero exit, or drain failure still retires and joins the
+scanner and all safely retained identities.
+
+Numerical PID and PGID rows are discovery evidence only. Harnesses retains each
+actual process handle plus its start identity, confirms group membership while
+the original anchor is live, and signals and joins only that same birth-fenced
+identity. It never reacquires a PID for authority or adopts a replacement group
+after anchor disappearance. Input, execution, capture, cleanup, and worker joins
+share one monotonic 3,000 ms budget with 400 ms reserved for cleanup; unrelated
 processes are never selected by command pattern.
 Evidence must match one approved preflight source and the complete approved
 adapter/executable/package/profile/ownership closure. Missing, changed, untrusted,
@@ -489,8 +501,11 @@ evidence. A later exact-current reconstruction failure may move an acknowledged
 attempt to failed without discarding its real attachment. Durable handoff
 deadlines are restored after execution reopens. Nanosecond scheduling and locked
 early-callback rearming retain the persisted deadline and exact
-attempt/invocation plus execution-resource generation; obsolete timers cannot
-fail retries or completed work, rearm after shutdown, or reset deadlines. Fetched
+attempt/invocation plus execution-resource generation. Reload, validation,
+expiry/rearm, generation activation, and retirement serialize under the
+publication lock; retirement detaches its generation before performing shutdown
+waits. Obsolete timers cannot fail retries or completed work, rearm after
+shutdown, or reset deadlines. Fetched
 interactive Pi remains exempt. Acknowledgement proves adapter handoff only—not
 atomic host ingestion, model
 obedience, or removal of historical transcript instructions.

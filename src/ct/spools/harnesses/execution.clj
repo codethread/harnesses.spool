@@ -28,10 +28,17 @@
 (def ^:private event-types
   #{:strand/added :strand/updated :batch/applied :strand/burned})
 
+(defn ^:dynamic ^:private guidance-deadline-hook!
+  [_event]
+  nil)
+
+(def ^:dynamic ^:private *launch-state* nil)
+
 (declare schedule! inspect-owned! launch-in-flight?
          ^:private finish-process! ^:private state
          ^:private activate-state! ^:private deactivate-state!
          ^:private ready-headless ^:private claim! ^:private release!
+         ^:private release-opened!
          ^:private launch-headless! ^:private full-run
          ^:private resolved-definition ^:private prepare-launch
          ^:private enforce-stop! ^:private schedule-inspection!
@@ -101,10 +108,15 @@
 (defn schedule!
   "Claim and asynchronously launch every published, ready headless run."
   [rt]
-  (let [claimed (filterv #(claim! rt (:id %)) (ready-headless rt))
-        executor (:executor (state rt))]
+  (let [opened (state rt)
+        claimed (filterv #(claim! opened (:id %)) (ready-headless rt))
+        executor (:executor opened)]
     (doseq [run claimed]
-      (.execute executor ^Runnable #(launch-headless! rt (:id run))))
+      (.execute executor
+                ^Runnable
+                (bound-fn []
+                  (binding [*launch-state* opened]
+                    (launch-headless! rt (:id run))))))
     (mapv :id claimed)))
 
 (s/fdef schedule!
@@ -357,11 +369,11 @@
      :executor executor
      :scheduler scheduler
      :close-fn (fn []
-                 (locking open?
-                   (reset! open? false)
-                   (.shutdownNow executor)
-                   (.shutdownNow scheduler))
-                 (.awaitTermination executor 1000 TimeUnit/MILLISECONDS))}))
+                 (reset! open? false)
+                 (.shutdownNow executor)
+                 (.shutdownNow scheduler)
+                 (.awaitTermination executor 1000 TimeUnit/MILLISECONDS)
+                 (.awaitTermination scheduler 1000 TimeUnit/MILLISECONDS))}))
 
 (defn- state-holder [rt]
   (runtime/spool-state rt ::state {:version state-version}
@@ -373,25 +385,32 @@
 
 (defn- activate-state! [rt]
   (let [active (:active (state-holder rt))
-        opened (new-state)]
-    (when-not (compare-and-set! active nil opened)
+        opened (new-state)
+        activated?
+        #_{:clj-kondo/ignore [:locking-suspicious-lock]}
+        #_{:splint/disable [lint/locking-object]}
+        (locking (catalog/publication-lock rt)
+          (compare-and-set! active nil opened))]
+    (when-not activated?
       ((:close-fn opened))
       (fail! "Harness execution resources are already open" {}))
     opened))
 
 (defn- deactivate-state! [rt]
-  (let [active (:active (state-holder rt))
-        opened @active]
-    (when-not opened
-      (fail! "Harness execution resources are not open" {}))
+  (let [active (:active (state-holder rt))]
     #_{:clj-kondo/ignore [:locking-suspicious-lock]}
     #_{:splint/disable [lint/locking-object]}
-    (locking (:open? opened)
-      (when-not (and @(:open? opened)
-                     (compare-and-set! active opened nil))
-        (fail! "Harness execution resources are not open" {}))
-      (reset! (:open? opened) false))
-    opened))
+    (locking (catalog/publication-lock rt)
+      (let [opened @active]
+        (when-not opened
+          (fail! "Harness execution resources are not open" {}))
+        #_{:splint/disable [lint/locking-object]}
+        (locking (:open? opened)
+          (when-not (and @(:open? opened)
+                         (compare-and-set! active opened nil))
+            (fail! "Harness execution resources are not open" {}))
+          (reset! (:open? opened) false))
+        opened))))
 
 (defn- eligible-guidance-deadline? [run record]
   (and (= "running" (life/status run))
@@ -409,18 +428,20 @@
       opened)))
 
 (defn- schedule-guidance-task! [rt originating-run generation delay-nanos]
-  (when-let [opened (active-generation rt generation)]
-    #_{:clj-kondo/ignore [:locking-suspicious-lock]}
-    #_{:splint/disable [lint/locking-object]}
-    (locking (:open? opened)
-      (when (and @(:open? opened)
-                 (identical? opened (active-generation rt generation)))
-        (.schedule
-         ^java.util.concurrent.ScheduledExecutorService (:scheduler opened)
-         ^Runnable #(arm-guidance-deadline! rt originating-run generation)
-         (max 1 delay-nanos)
-         TimeUnit/NANOSECONDS)
-        :scheduled))))
+  #_{:clj-kondo/ignore [:locking-suspicious-lock]}
+  #_{:splint/disable [lint/locking-object]}
+  (locking (catalog/publication-lock rt)
+    (when-let [opened (active-generation rt generation)]
+      #_{:splint/disable [lint/locking-object]}
+      (locking (:open? opened)
+        (when (and @(:open? opened)
+                   (identical? opened (active-generation rt generation)))
+          (.schedule
+           ^java.util.concurrent.ScheduledExecutorService (:scheduler opened)
+           ^Runnable #(arm-guidance-deadline! rt originating-run generation)
+           (max 1 delay-nanos)
+           TimeUnit/NANOSECONDS)
+          :scheduled)))))
 
 (defn- same-guidance-attempt? [originating-run current]
   (and (= (attr-get originating-run :harness/attempt)
@@ -429,11 +450,19 @@
           (attr-get current :harness/invocation))))
 
 (defn- arm-guidance-deadline! [rt originating-run generation]
+  (guidance-deadline-hook!
+   {:phase :before-publication-lock
+    :run-id (:id originating-run)
+    :generation generation})
   #_{:clj-kondo/ignore [:locking-suspicious-lock]}
   #_{:splint/disable [lint/locking-object]}
   (locking (catalog/publication-lock rt)
     (when (active-generation rt generation)
       (let [current (full-run rt (:id originating-run))
+            _ (guidance-deadline-hook!
+               {:phase :after-reload
+                :run-id (:id originating-run)
+                :generation generation})
             record (guidance/current-attempt current)]
         (when (and (same-guidance-attempt? originating-run current)
                    (eligible-guidance-deadline? current record))
@@ -487,12 +516,15 @@
                  (assignment/launch-ready? rt %))
            (weaver/ready rt)))
 
-(defn- claim! [rt id]
-  (let [[before _] (swap-vals! (:in-flight (state rt)) conj id)]
+(defn- claim! [opened id]
+  (let [[before _] (swap-vals! (:in-flight opened) conj id)]
     (not (contains? before id))))
 
+(defn- release-opened! [opened id]
+  (swap! (:in-flight opened) disj id))
+
 (defn- release! [rt id]
-  (swap! (:in-flight (state rt)) disj id))
+  (release-opened! (state rt) id))
 
 (defn- full-run [rt id]
   (or (weaver/show rt id) (fail! "Harness run not found" {:id id})))
@@ -725,9 +757,11 @@
       (when-not (:deferred (ex-data e))
         (throw e)))
     (finally
-      (release! rt id)
-      (inspect-owned! rt)
-      (schedule! rt))))
+      (let [opened (or *launch-state* (state rt))]
+        (release-opened! opened id)
+        (when (identical? opened @(:active (state-holder rt)))
+          (inspect-owned! rt)
+          (schedule! rt))))))
 
 (lifecycle/defresource harness-execution-runtime
   "Own asynchronous and interactive harness execution resources."
