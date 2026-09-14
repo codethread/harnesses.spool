@@ -240,10 +240,11 @@
   "Record and return a terminal provider-neutral outcome, fenced by invocation.
 
   `:invocation` names the execution the outcome belongs to. A callback naming a
-  superseded attempt, or arriving after the run is already terminal, changes
-  nothing and returns the run as it stands: a stale callback can neither attach
-  native identity, finish newer work, nor rewrite a settled result. Settlement
-  evidence remains separate from identity attachment.
+  superseded active attempt, or arriving after the run is already terminal,
+  changes nothing and returns the run as it stands. A supplied invocation after
+  retry has retired the current token fails loudly. Neither stale case can
+  attach native identity, finish newer work, or rewrite a settled result.
+  Settlement evidence remains separate from identity attachment.
 
   Positive Codex/Pi session evidence first attaches the reserved identity. A
   hook-confirmed session survives an interactive finish that cannot observe
@@ -264,6 +265,11 @@
     (let [run (runs/require-run rt id)
           current (life/invocation run)
           status (if (keyword? status) status (keyword (str status)))
+          _ (when (and invocation
+                       (nil? current)
+                       (not (life/terminal? run)))
+              (fail! "Harness finish has a retired invocation token"
+                     {:id id :actual invocation}))
           stale? (or (and invocation current (not= invocation current))
                      (life/terminal? run))]
       (if stale?

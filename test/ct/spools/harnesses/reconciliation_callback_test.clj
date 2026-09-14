@@ -133,6 +133,175 @@
        (is (= {:status "failed" :settled "true"}
               (:exact-finish result)))))))
 
+(deftest serialized-finish-rejects-a-retired-invocation-after-retry
+  (test-alpha/run-with-weaver-world
+   (full-world-options)
+   (fn [ctx]
+     (let [result
+           (test-alpha/repl!
+            ctx
+            '(do
+               (require '[ct.spools.harnesses :as harnesses]
+                        '[ct.spools.harnesses.execution :as execution]
+                        '[ct.spools.harnesses.providers.pi :as pi]
+                        '[millhouse.spools.identity :as identity]
+                        '[millstrand.api.current.alpha :as current]
+                        '[millstrand.api.spool.alpha :as spool]
+                        '[millstrand.api.weaver.alpha :as weaver])
+               (let [rt (current/runtime)
+                     pid (.pid (java.lang.ProcessHandle/current))
+                     created (weaver/op!
+                              rt 'agent
+                              ["run" "pi" "--interactive" "--cwd" "/tmp"])
+                     started
+                     (execution/mark-interactive-running!
+                      rt (:id created) pid)
+                     invocation
+                     (spool/attr-get started :harness/invocation)
+                     _ (execution/mark-interactive-provider!
+                        rt (:id created) invocation pid)
+                     entered (promise)
+                     release (promise)
+                     snapshot
+                     (fn []
+                       (let [run (weaver/show rt (:id created))]
+                         {:run run
+                          :identity
+                          (identity/current rt (spool/attr-get run :identity/id))
+                          :strand-count (count (weaver/list rt))}))]
+                 (with-redefs
+                  [pi/finish
+                   (fn [_rt _definition _run _observed]
+                     (deliver entered :entered)
+                     @release
+                     {:status :failed
+                      :exit-code 1
+                      :error "delayed attempt-1 completion"})]
+                   (let [delayed
+                         (future
+                           (try
+                             {:returned
+                              (execution/finish-interactive!
+                               rt (:id created) invocation 1)}
+                             (catch Throwable error
+                               {:error (ex-message error)
+                                :data (ex-data error)})))
+                         entered-result (deref entered 5000 :timeout)
+                         _ (when (= :timeout entered-result)
+                             (deliver release :release)
+                             (throw (ex-info "Delayed callback did not enter"
+                                             {})))
+                         race-state
+                         (try
+                           (harnesses/finish!
+                            rt (:id created)
+                            {:status :failed
+                             :exit-code 1
+                             :invocation invocation
+                             :evidence {:settled true
+                                        :settlement "process-exit"}
+                             :error "competing completion"})
+                           (harnesses/retry! rt (:id created) {})
+                           {:before (snapshot)}
+                           (finally
+                             (deliver release :release)))
+                         delayed-result (deref delayed 5000 :timeout)
+                         after (snapshot)
+                         before (:before race-state)
+                         before-run (:run before)]
+                     {:entered entered-result
+                      :delayed-result delayed-result
+                      :unchanged (= before after)
+                      :ready-state
+                      [(spool/attr-get before-run :harness/status)
+                       (spool/attr-get before-run :harness/substatus)
+                       (spool/attr-get before-run :harness/invocation)
+                       (spool/attr-get before-run :harness/settled)]
+                      :retained-custody
+                      [(spool/attr-get before-run
+                                       :harness/completion-owner-invocation)
+                       (spool/attr-get before-run
+                                       :harness/provider-invocation)]})))))]
+       (is (= :entered (:entered result)))
+       (is (re-find #"retired invocation token"
+                    (get-in result [:delayed-result :error])))
+       (is (true? (:unchanged result)))
+       (is (= ["ready" "pending" nil nil] (:ready-state result)))
+       (is (= 2 (count (filter string? (:retained-custody result)))))
+       (is (apply = (:retained-custody result)))))))
+
+(deftest final-finish-fence-preserves-supported-ready-and-current-outcomes
+  (test-alpha/run-with-weaver-world
+   (full-world-options)
+   (fn [ctx]
+     (let [result
+           (test-alpha/repl!
+            ctx
+            '(do
+               (require '[ct.spools.harnesses :as harnesses]
+                        '[ct.spools.harnesses.reconciliation :as reconcile]
+                        '[millstrand.api.current.alpha :as current]
+                        '[millstrand.api.spool.alpha :as spool]
+                        '[millstrand.api.weaver.alpha :as weaver])
+               (let [rt (current/runtime)
+                     stale (harnesses/create!
+                            rt {:harness :cursor :mode :interactive})
+                     stale-before (weaver/show rt (:id stale))
+                     stale-error
+                     (try
+                       (harnesses/finish!
+                        rt (:id stale)
+                        {:status :failed
+                         :exit-code 1
+                         :invocation "retired-attempt"
+                         :evidence {:settled true
+                                    :settlement "process-exit"}})
+                       nil
+                       (catch clojure.lang.ExceptionInfo error
+                         (ex-message error)))
+                     stale-unchanged
+                     (= stale-before (weaver/show rt (:id stale)))
+                     current (harnesses/create!
+                              rt {:harness :cursor :mode :interactive})
+                     current-start
+                     (harnesses/begin-attempt!
+                      rt (:id current)
+                      (reconcile/completion-owner-attributes
+                       (.pid (java.lang.ProcessHandle/current))))
+                     exact
+                     (harnesses/finish!
+                      rt (:id current)
+                      {:status :failed
+                       :exit-code 1
+                       :invocation (:invocation current-start)
+                       :evidence {:settled true
+                                  :settlement "process-exit"}})
+                     fresh (harnesses/create!
+                            rt {:harness :cursor :mode :interactive})
+                     fresh
+                     (harnesses/finish!
+                      rt (:id fresh)
+                      {:status :failed
+                       :exit-code 1
+                       :evidence {:settled true
+                                  :settlement "process-exit"}})]
+                 {:stale-error stale-error
+                  :stale-unchanged stale-unchanged
+                  :exact
+                  [(spool/attr-get exact :harness/status)
+                   (spool/attr-get exact :harness/settled)
+                   (spool/attr-get exact :harness/invocation)]
+                  :exact-invocation (:invocation current-start)
+                  :fresh
+                  [(spool/attr-get fresh :harness/status)
+                   (spool/attr-get fresh :harness/settled)
+                   (spool/attr-get fresh :harness/invocation)]})))]
+       (is (re-find #"retired invocation token" (:stale-error result)))
+       (is (true? (:stale-unchanged result)))
+       (is (= ["failed" "true" (:exact-invocation result)]
+              (:exact result)))
+       (is (= ["failed" "true" nil] (:fresh result)))))))
+
 (deftest invocation-less-completion-is-limited-to-legacy-attempts
   (test-alpha/run-with-weaver-world
    (full-world-options)

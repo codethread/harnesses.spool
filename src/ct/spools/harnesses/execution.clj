@@ -196,7 +196,8 @@
 
   Legacy bins may omit `invocation` only for a durable legacy callback attempt.
   Current v2 attempts require their exact invocation before provider outcome
-  processing begins."
+  processing begins. The serialized core transition checks the token again
+  after provider outcome processing."
   [rt id invocation exit-code]
   (let [run (full-run rt id)]
     (when-not (= "interactive" (attr-get run :harness/mode))
@@ -205,25 +206,27 @@
           (originating-interactive-invocation run invocation "_finished")]
       (if (not= invocation (life/invocation run))
         run
-        (try
-          (let [definition (resolved-definition rt run)
-                outcome ((callback (:finish definition))
-                         rt definition run
-                         {:exit-code exit-code :stdout nil :stderr nil})]
-            (harness/finish! rt id (assoc outcome
-                                          :invocation invocation
-                                          :evidence (life/settlement-evidence
-                                                     {:exit-code exit-code}))))
-          (catch Exception e
-            (harness/finish! rt id {:status :failed
-                                    :exit-code exit-code
-                                    :invocation invocation
-                                    :evidence (assoc (life/settlement-evidence
-                                                      {:exit-code exit-code})
-                                                     :failure-class "execution")
-                                    :error (str (ex-message e)
-                                                (when-let [data (ex-data e)]
-                                                  (str " " (pr-str data))))})))))))
+        (let [definition (resolved-definition rt run)
+              {:keys [outcome provider-error?]}
+              (try
+                {:outcome
+                 ((callback (:finish definition))
+                  rt definition run
+                  {:exit-code exit-code :stdout nil :stderr nil})}
+                (catch Exception e
+                  {:provider-error? true
+                   :outcome
+                   {:status :failed
+                    :exit-code exit-code
+                    :error (str (ex-message e)
+                                (when-let [data (ex-data e)]
+                                  (str " " (pr-str data))))}}))
+              evidence (cond-> (life/settlement-evidence
+                                {:exit-code exit-code})
+                         provider-error? (assoc :failure-class "execution"))]
+          (harness/finish! rt id (assoc outcome
+                                        :invocation invocation
+                                        :evidence evidence)))))))
 
 (defn launch-in-flight?
   "Return whether this worker still owns an unfinished launch for `run`.
