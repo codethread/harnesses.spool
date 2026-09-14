@@ -5,6 +5,8 @@
             [clojure.string :as str]
             [ct.spools.harnesses :as harness]
             [ct.spools.harnesses.assignment :as assignment]
+            [ct.spools.harnesses.internal.guidance :as guidance]
+            [ct.spools.harnesses.internal.guidance-receipts :as guidance-receipts]
             [ct.spools.harnesses.internal.launcher :as launcher]
             [ct.spools.harnesses.internal.lifecycle :as life]
             [ct.spools.harnesses.internal.managed-startup :as managed]
@@ -30,7 +32,7 @@
          ^:private launch-headless! ^:private full-run
          ^:private resolved-definition ^:private prepare-launch
          ^:private enforce-stop! ^:private schedule-inspection!
-         ^:private callback)
+         ^:private schedule-guidance-deadline! ^:private callback)
 
 (s/def ::event
   (s/and map?
@@ -139,7 +141,12 @@
            (harness/begin-attempt! rt id owner-attributes)]
        (try
          (when-let [bootstrap (managed/bootstrap rt strand)]
-           (launcher/arm! rt strand bootstrap))
+           (launcher/arm!
+            rt strand bootstrap
+            (when (some? (attr-get strand :harness/guidance-version))
+              (guidance/bootstrap strand))))
+         (when (guidance/native? strand)
+           (schedule-guidance-deadline! rt id))
          strand
          (catch Throwable error
            (harness/finish!
@@ -223,10 +230,13 @@
                                   (str " " (pr-str data))))}}))
               evidence (cond-> (life/settlement-evidence
                                 {:exit-code exit-code})
-                         provider-error? (assoc :failure-class "execution"))]
-          (harness/finish! rt id (assoc outcome
-                                        :invocation invocation
-                                        :evidence evidence)))))))
+                         provider-error? (assoc :failure-class "execution"))
+              outcome (assoc outcome :invocation invocation)
+              current-run (full-run rt id)]
+          (if (and (guidance/native? current-run)
+                   (= "bootstrap" (life/substatus current-run)))
+            (harness/settle-outcome! rt id outcome evidence)
+            (harness/finish! rt id (assoc outcome :evidence evidence))))))))
 
 (defn launch-in-flight?
   "Return whether this worker still owns an unfinished launch for `run`.
@@ -249,7 +259,8 @@
             failures (:reconciliation-failures (state rt))]
         (doseq [run owned]
           (try
-            (let [record (custody/record-for "harness" run records)
+            (let [run (guidance-receipts/expire! rt run)
+                  record (custody/record-for "harness" run records)
                   durable (custody/durable-attributes "harness"
                                                       (:id run)
                                                       (attr-get run :harness/attempt)
@@ -362,6 +373,12 @@
       (fail! "Harness execution resources are not open" {}))
     opened))
 
+(defn- schedule-guidance-deadline! [rt id]
+  (let [scheduler (:scheduler (state rt))]
+    (.schedule ^java.util.concurrent.ScheduledExecutorService scheduler
+               ^Runnable #(guidance-receipts/expire! rt (full-run rt id))
+               20 TimeUnit/SECONDS)))
+
 (defn- schedule-inspection! [rt]
   (let [{:keys [inspection-scheduled? scheduler]} (state rt)]
     (when (compare-and-set! inspection-scheduled? false true)
@@ -417,7 +434,11 @@
      "Harness prepare must return a valid launch specification")))
 
 (defn- process-spec [rt run {:keys [argv env stdin]}]
-  (let [bootstrap (managed/bootstrap rt run)]
+  (let [bootstrap (managed/bootstrap rt run)
+        guidance-document
+        (when (and bootstrap
+                   (some? (attr-get run :harness/guidance-version)))
+          (guidance/bootstrap run))]
     {:argv argv
      :cwd (attr-get run :harness/cwd)
      :env (cond-> (assoc (or env {})
@@ -427,7 +448,10 @@
             (assoc "MILLSTRAND_AGENT_ID" (attr-get run :identity/id))
             bootstrap
             (assoc "MILLSTRAND_MANAGED_BOOTSTRAP"
-                   (json/write-str bootstrap)))
+                   (json/write-str bootstrap))
+            guidance-document
+            (assoc "MILLSTRAND_MANAGED_GUIDANCE"
+                   (json/write-str guidance-document)))
      :stdin stdin}))
 
 (defn- finish-process!

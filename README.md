@@ -399,6 +399,72 @@ native adapters own how this structured result is delivered. Existing CLI prompt
 flags remain active until an explicit native transport version selects their
 replacement.
 
+### Managed guidance transport
+
+New managed Codex/Pi requests accept an explicit delivery selection:
+
+```text
+strand agent run pi --guidance-transport legacy ...
+strand agent resume RUN_ID --guidance-transport legacy ...
+strand agent retry RUN_ID --guidance-transport legacy
+```
+
+The values are exactly `legacy` and `native-v1`. Fresh work defaults to `legacy`;
+a continuation inherits its predecessor's selection. The exact choice, frozen
+context template, materialized current-run context, RFC 8785 bundle digest, and
+ordered attempt records are durable. Intentionally equal appended strings remain
+separate vector positions. Older rows with no guidance attributes remain legacy;
+a partial versioned representation is corruption rather than a downgrade signal.
+
+`native-v1` is deliberately unavailable in this release. Harnesses' production
+capability allowlist is empty until the Agents adapter artifacts and exact Codex
+0.154.0/Pi 0.84.4 host profiles are independently accepted. An explicit native
+request therefore fails before run publication or identity reservation with the
+remedy to submit legacy work. Harnesses never infers capability from installed
+files, startup-v1 metadata, package versions, branches, or helper claims.
+
+When profiles are eventually accepted, Harnesses runs the approved no-model
+preflight against the actual executable, cwd, workspace, environment, provider
+selectors, and resume settings before publication and again before each attempt.
+Evidence must match one approved preflight source and the complete approved
+adapter/executable/package/profile closure. Missing, changed, untrusted,
+duplicate, malformed, oversized, nonzero, or mismatched evidence fails loudly;
+there is no retry or native-to-legacy fallback.
+
+A selected native launch exports both prompt-free routing documents:
+
+```text
+MILLSTRAND_MANAGED_BOOTSTRAP
+MILLSTRAND_MANAGED_GUIDANCE
+```
+
+The native guidance document fences run ID, positive attempt, invocation,
+provider, bundle digest, and capability digest. `agent startup` additionally
+accepts `--guidance` and returns the frozen
+`millstrand.agent-guidance-bundle/v1` only after the actual native root session
+passes every attachment fence. The digest is:
+
+```text
+SHA256(UTF8(RFC8785([run-id, canonical-workspace, context])))
+```
+
+The adapter renders identity first, then every ordered append, then the
+current-run/workspace footer. It records adapter handoff with `agent guidance
+acknowledge --receipt JSON`, or failure with `agent guidance fail --receipt
+JSON`. Attempt states are `pending`, `fetched`, `acknowledged`, and `failed`;
+legacy attempts are `not-required`. Exact receipt replay is no-write, stale
+receipts cannot satisfy a newer attempt, and an unacknowledged native process
+exit is a bootstrap failure. Acknowledgement proves adapter handoff only—not
+atomic host ingestion, model obedience, or removal of historical transcript
+instructions.
+
+Native mode removes only Harnesses-generated Codex `developer_instructions` or
+Pi `--append-system-prompt` arguments. Competing raw provider prompt controls are
+rejected before publication; wrapper-level `--append-system-prompt` remains the
+supported input. Main task prompts, model/effort, native session/resume, aliases,
+and unrelated provider argv are preserved. Claude and Cursor retain their
+maintenance transports unchanged.
+
 Provider finish and late custody settlement use the same fenced attachment when
 they observe usable native evidence. Hook-confirmed interactive Codex identity
 survives a finish callback with no stdout. Attachment never substitutes for

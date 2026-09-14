@@ -1,6 +1,7 @@
 (ns ct.spools.harnesses.internal.runs
   "Durable run publication, reservation, and continuation helpers."
   (:require [clojure.string :as str]
+            [ct.spools.harnesses.internal.guidance :as guidance]
             [ct.spools.harnesses.internal.lifecycle :as life]
             [ct.spools.harnesses.internal.managed-legacy :as legacy]
             [ct.spools.harnesses.internal.managed-startup :as managed]
@@ -107,7 +108,8 @@
   [rt {:keys [title alias harness mode generated env overrides effective
               literal-extra-argv cwd session-id requested-session-id prompt
               resumes after target root-targets context request-id fingerprint
-              logical-id by-identity]
+              logical-id by-identity guidance-selection
+              guidance-context-template]
        :as request}]
   (when resumes
     (let [predecessor (require-run rt resumes)
@@ -178,6 +180,11 @@
                            :effective effective})
         run-id (:id run)
         identity-id (:identity identity-binding)
+        guidance-patch
+        (guidance/publication-patch
+         rt run-id identity-id (:prompt identity-binding)
+         (:harness/appended-system-prompts effective)
+         guidance-selection guidance-context-template [])
         effective (bind-invocation-markers effective run-id identity-id)
         effective (cond-> effective
                     (some? literal-extra-argv)
@@ -189,6 +196,7 @@
                    (weaver/update!
                     rt (:id run)
                     {:attributes (merge effective
+                                        guidance-patch
                                         (when (some? prompt) {:harness/prompt prompt})
                                         (when context {:harness/context context})
                                         {:identity/id identity-id
@@ -314,6 +322,8 @@
             :harness/overrides overrides-delta
             :harness/session-id session-id
             :harness/session-usable nil
+            :harness/stop-requested-at nil
+            :harness/stop-reason nil
             :harness/error nil
             :harness/result nil
             :harness/exit-code nil

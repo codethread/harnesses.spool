@@ -19,10 +19,10 @@
   `pending` is only for a ready run that has not launched. A running run has
   no substatus unless a stop is in flight (`requested`). `abandoned` records
   explicit loss of interactive launcher custody without claiming process exit.
-  Failed runs use an actionable class: `launch`, `execution`, or
+  Failed runs use an actionable class: `bootstrap`, `launch`, `execution`, or
   `reconciliation`."
   #{"pending" "completed" "requested" "abandoned"
-    "launch" "execution" "reconciliation"})
+    "bootstrap" "launch" "execution" "reconciliation"})
 
 (defn now
   "Return an ISO-8601 timestamp for durable lifecycle evidence."

@@ -3,6 +3,8 @@
   (:require [clojure.spec.alpha :as s]
             [clojure.string :as str]
             [ct.spools.harnesses.catalog :as catalog]
+            [ct.spools.harnesses.internal.guidance :as guidance]
+            [ct.spools.harnesses.internal.guidance-receipts :as guidance-receipts]
             [ct.spools.harnesses.internal.lifecycle :as life]
             [ct.spools.harnesses.internal.managed-repair :as managed-repair]
             [ct.spools.harnesses.internal.managed-startup :as managed]
@@ -37,6 +39,26 @@
 (def managed-context-schema
   "Schema identifier for context returned by managed native startup."
   managed/managed-context-schema)
+
+(def guidance-bootstrap-schema
+  "Schema identifier for managed guidance launcher metadata."
+  guidance/guidance-bootstrap-schema)
+
+(def guidance-bundle-schema
+  "Schema identifier for frozen native managed guidance."
+  guidance/guidance-bundle-schema)
+
+(def ^:dynamic ^:private *guidance-context-template* nil)
+
+(defn guidance-acknowledge!
+  "Record an exact adapter-handoff receipt for the current native attempt."
+  [rt receipt]
+  (guidance-receipts/acknowledge! rt receipt))
+
+(defn guidance-fail!
+  "Record an exact adapter failure receipt for the current native attempt."
+  [rt receipt]
+  (guidance-receipts/fail! rt receipt))
 
 (defn managed-bootstrap
   "Return prompt-free bootstrap metadata for a managed running invocation."
@@ -85,7 +107,8 @@
   caller overlay precedence but remains exempt from invocation templating."
   [rt {:keys [harness mode prompt cwd attributes title resumes after session-id
               append-system-prompt literal-extra-argv by-identity target
-              root-targets context request-id logical-id frozen]
+              root-targets context request-id logical-id frozen
+              guidance-transport]
        :as request}]
   (require-valid! ::runtime rt "create! requires a Weaver runtime")
   (require-valid! ::create-request request "create! requires a valid run request")
@@ -107,9 +130,27 @@
                          (some? literal-extra-argv)
                          (assoc :harness/extra-argv literal-extra-argv))
              effective (registry/merge-overlays generated overrides)
+             effective (if *guidance-context-template*
+                         (assoc effective
+                                :harness/appended-system-prompts
+                                (or (get *guidance-context-template*
+                                         "appended-system-prompts")
+                                    (get *guidance-context-template*
+                                         :appended-system-prompts)))
+                         effective)
              cwd (or cwd (System/getProperty "user.dir"))
              requested-session-id session-id
-             session-id (or session-id (str (UUID/randomUUID)))]
+             session-id (or session-id (str (UUID/randomUUID)))
+             guidance-selection
+             (guidance/select!
+              rt {:harness harness
+                  :requested guidance-transport
+                  :mode mode
+                  :cwd cwd
+                  :env env
+                  :effective effective
+                  :session-id session-id
+                  :resumes resumes})]
          (when by-identity
            (identity/current rt by-identity))
          (when-not (contains? (:modes definition) mode)
@@ -135,7 +176,9 @@
            :prompt prompt :resumes resumes :after after :target target
            :root-targets root-targets :context context :request-id request-id
            :fingerprint fingerprint
-           :logical-id logical-id :by-identity by-identity}))))))
+           :logical-id logical-id :by-identity by-identity
+           :guidance-selection guidance-selection
+           :guidance-context-template *guidance-context-template*}))))))
 
 (s/fdef create! :args (s/cat :runtime ::runtime :request ::create-request) :ret ::strand)
 
@@ -203,32 +246,44 @@
          (fail! "Harness run is not ready to start"
                 {:id id :status (life/status run)
                  :substatus (life/substatus run)}))
-       (require-valid!
-        ::started
-        {:strand (require-valid!
-                  ::strand
-                  (weaver/update!
-                   rt id
-                   {:attributes
-                    (merge
-                     (when interactive? (retired-interactive-custody))
-                     {:harness/status "running"
-                      :harness/substatus nil
-                      :harness/settled "false"
-                      :harness/settlement nil
-                      :harness/attempt attempt
-                      :harness/invocation invocation
-                      :harness/started-at (life/now)}
-                     start-attributes
-                     (when interactive?
-                       {:harness/interactive-callback-contract
-                        (if (seq start-attributes) "v2" "legacy")})
-                     (when (seq start-attributes)
-                       {:harness/completion-owner-invocation invocation}))})
-                  "begin-attempt! produced an invalid run strand")
-         :invocation invocation
-         :attempt attempt}
-        "begin-attempt! produced an invalid start record")))))
+       (let [guidance-patch
+             (try
+               (guidance/begin-attempt-patch rt run attempt invocation)
+               (catch Throwable error
+                 (when (guidance/native? run)
+                   (weaver/update!
+                    rt id
+                    {:attributes
+                     (guidance/preflight-failure-patch
+                      run attempt invocation error)}))
+                 (throw error)))]
+         (require-valid!
+          ::started
+          {:strand (require-valid!
+                    ::strand
+                    (weaver/update!
+                     rt id
+                     {:attributes
+                      (merge
+                       (when interactive? (retired-interactive-custody))
+                       {:harness/status "running"
+                        :harness/substatus nil
+                        :harness/settled "false"
+                        :harness/settlement nil
+                        :harness/attempt attempt
+                        :harness/invocation invocation
+                        :harness/started-at (life/now)}
+                       guidance-patch
+                       start-attributes
+                       (when interactive?
+                         {:harness/interactive-callback-contract
+                          (if (seq start-attributes) "v2" "legacy")})
+                       (when (seq start-attributes)
+                         {:harness/completion-owner-invocation invocation}))})
+                    "begin-attempt! produced an invalid run strand")
+           :invocation invocation
+           :attempt attempt}
+          "begin-attempt! produced an invalid start record"))))))
 
 (s/fdef begin-attempt!
   :args (s/or :plain (s/cat :runtime ::runtime :id ::id)
@@ -253,9 +308,7 @@
 
   A pre-reservation Codex/Pi run retains its historical identity binding and
   provider session evidence without claiming native startup attachment."
-  [rt id {:keys [status exit-code result session-id error session-usable
-                 invocation evidence]
-          :as outcome}]
+  [rt id {:keys [invocation evidence] :as outcome}]
   (require-valid! ::runtime rt "finish! requires a Weaver runtime")
   (require-valid! ::id id "finish! requires a run id")
   (require-valid! ::outcome outcome "finish! requires a valid outcome")
@@ -264,7 +317,8 @@
   (locking (catalog/publication-lock rt)
     (let [run (runs/require-run rt id)
           current (life/invocation run)
-          status (if (keyword? status) status (keyword (str status)))
+          status (let [status (:status outcome)]
+                   (if (keyword? status) status (keyword (str status))))
           _ (when (and invocation
                        (nil? current)
                        (not (life/terminal? run)))
@@ -278,8 +332,22 @@
                            (nil? invocation))
                   (fail! "Running harness finish requires its invocation token"
                          {:id id :invocation current}))
+              guidance-completion
+              (guidance-receipts/completion run (assoc outcome :status status))
+              outcome (:outcome guidance-completion)
+              status (:status outcome)
+              exit-code (:exit-code outcome)
+              result (:result outcome)
+              session-id (:session-id outcome)
+              error (:error outcome)
+              session-usable (:session-usable outcome)
+              guidance-evidence (:evidence guidance-completion)
+              evidence (if guidance-evidence
+                         (merge (or evidence {}) guidance-evidence)
+                         evidence)
+              guidance-failed? (some? (:attributes guidance-completion))
               _ (managed/require-legacy-positive-attempt!
-                 run (assoc outcome :status status))
+                 run outcome)
               _ (when-not (contains? #{"ready" "running"} (life/status run))
                   (fail! "Harness finish transition is invalid"
                          {:id id :status (life/status run) :outcome status}))
@@ -292,7 +360,8 @@
                   (fail! "Successful headless harness outcome requires a result"
                          {:id id}))
               legacy-managed? (managed/legacy-managed-run? run)
-              _ (managed/attach-outcome! rt run outcome)
+              _ (when-not guidance-failed?
+                  (managed/attach-outcome! rt run outcome))
               run (runs/require-run rt id)
               attached? (= "true" (attr-get run :harness/native-attached))
               session-id (if attached?
@@ -320,6 +389,7 @@
             {:state (if (= "stopped" (:harness/status patch)) "closed" "active")
              :attributes
              (merge patch
+                    (:attributes guidance-completion)
                     {:harness/exit-code exit-code
                      :harness/result result
                      :harness/session-id session-id
@@ -424,7 +494,11 @@
                         (when-let [gap (:gap evidence)]
                           {:harness/settlement-gap gap}))})
                      "settle-outcome! produced an invalid run strand")
-            attached-result (managed/attach-outcome! rt settled outcome)]
+            bootstrap-failed?
+            (and (guidance/native? run)
+                 (= "bootstrap" (life/substatus run)))
+            attached-result (when-not bootstrap-failed?
+                              (managed/attach-outcome! rt settled outcome))]
         (if attached-result
           (require-valid!
            ::strand
@@ -570,7 +644,24 @@
               (fail! "Retry cannot move a managed identity to a maintenance provider"
                      {:id id :retained old-concrete :requested concrete}))
           generated (:generated resolved)
+          inherited-transport (guidance/transport run)
+          selected-transport (or (:guidance-transport request)
+                                 inherited-transport)
+          frozen-guidance-template
+          (attr-get run :harness/guidance-context-template)
+          _ (when (and (= "native-v1"
+                          (guidance/parse-transport selected-transport))
+                       (nil? frozen-guidance-template))
+              (fail! "Native retry requires a versioned frozen guidance template"
+                     {:id id}))
           effective (registry/merge-overlays generated overrides)
+          effective (if (and resumed? frozen-guidance-template)
+                      (assoc effective :harness/appended-system-prompts
+                             (or (get frozen-guidance-template
+                                      "appended-system-prompts")
+                                 (get frozen-guidance-template
+                                      :appended-system-prompts)))
+                      effective)
           session-id (if resumed?
                        (attr-get run :harness/session-id)
                        (str (UUID/randomUUID)))
@@ -581,7 +672,17 @@
           session-writers (when resumed?
                             (remove #(= id (:id %))
                                     (runs/reserving-session-writers
-                                     rt session-id)))]
+                                     rt session-id)))
+          guidance-selection
+          (guidance/select!
+           rt {:harness concrete
+               :requested selected-transport
+               :mode (keyword (attr-get run :harness/mode))
+               :cwd cwd
+               :env (:env resolved)
+               :effective effective
+               :session-id session-id
+               :resumes (attr-get run :harness/resumes)})]
       (when (seq target-writers)
         (fail! "Retry target already has an active managed run"
                {:id id :target target :runs (mapv :id target-writers)}))
@@ -591,22 +692,35 @@
                 :runs (mapv :id session-writers)}))
       (concrete-harness rt concrete)
       (let [identity-binding (managed/retry-identity!
-                              rt run concrete session-id effective)]
+                              rt run concrete session-id effective)
+            identity-id (or (:identity identity-binding)
+                            (attr-get run :identity/id))
+            identity-prompt (or (:prompt identity-binding)
+                                (attr-get run :identity/prompt))
+            guidance-patch
+            (guidance/publication-patch
+             rt id identity-id identity-prompt
+             (:harness/appended-system-prompts effective)
+             guidance-selection
+             (when resumed? frozen-guidance-template)
+             (attr-get run :harness/guidance-attempts))]
         (require-valid!
          ::strand
          (weaver/update!
           rt id
           {:attributes
-           (runs/retry-attribute-patch
-            run {:requested requested
-                 :concrete concrete
-                 :env (:env resolved)
-                 :generated generated
-                 :overrides overrides
-                 :effective effective
-                 :cwd cwd
-                 :session-id session-id
-                 :identity-binding identity-binding})})
+           (merge
+            (runs/retry-attribute-patch
+             run {:requested requested
+                  :concrete concrete
+                  :env (:env resolved)
+                  :generated generated
+                  :overrides overrides
+                  :effective effective
+                  :cwd cwd
+                  :session-id session-id
+                  :identity-binding identity-binding})
+            guidance-patch)})
          "retry! produced an invalid run strand")))))
 
 (s/fdef retry! :args (s/cat :runtime ::runtime :id ::id :request ::retry-request) :ret ::strand)
@@ -724,7 +838,8 @@
   A repeated `:request-id` returns the original continuation even while that
   child is still active. Ineligible predecessors fail loudly and are never
   quietly restarted fresh."
-  [rt id {:keys [prompt cwd attributes mode title by-identity request-id]
+  [rt id {:keys [prompt cwd attributes mode title by-identity request-id
+                 guidance-transport]
           :as request}]
   (require-valid! ::runtime rt "resume! requires a Weaver runtime")
   (require-valid! ::id id "resume! requires a predecessor run id")
@@ -739,10 +854,22 @@
                        (or (contains? context "assignment/run-id")
                            (contains? context :assignment/run-id)))
                   (assoc "assignment/run-id" "{{RUN_ID}}"))
+        inherited-transport (guidance/transport run)
+        selected-transport
+        (guidance/parse-transport (or guidance-transport inherited-transport))
+        frozen-guidance-template
+        (attr-get run :harness/guidance-context-template)
+        _ (when (and (= "native-v1" selected-transport)
+                     (nil? frozen-guidance-template))
+            (fail! "Native resume requires a versioned frozen guidance template"
+                   {:id id}))
         retained (registry/normalize-overlay (attr-get run :harness/overrides))
-        retained (if-let [prompts (get retained :harness/appended-system-prompts)]
-                   (assoc retained :harness/appended-system-prompts
-                          (mapv #(str/replace % id "{{RUN_ID}}") prompts))
+        retained (if (and (= "legacy" selected-transport)
+                          (get retained :harness/appended-system-prompts))
+                   (update retained :harness/appended-system-prompts
+                           #(mapv (fn [prompt]
+                                    (str/replace prompt id "{{RUN_ID}}"))
+                                  %))
                    retained)
         replacements (registry/normalize-overlay attributes)
         overrides (reduce-kv (fn [m k v] (if (nil? v) (dissoc m k) (assoc m k v)))
@@ -759,6 +886,7 @@
                                 :mode (or mode (attr-get run :harness/mode))
                                 :cwd (or cwd (attr-get run :harness/cwd))
                                 :attributes overrides
+                                :guidance-transport selected-transport
                                 :resumes id
                                 :logical-id (life/logical-id run)
                                 :session-id (attr-get run :harness/session-id)}
@@ -781,7 +909,10 @@
             (when-not eligible?
               (fail! "Harness run cannot be resumed natively"
                      {:id id :reason reason :status (life/status run)}))
-            (create! rt create-request))))))
+            (binding [*guidance-context-template*
+                      (when (= "native-v1" selected-transport)
+                        frozen-guidance-template)]
+              (create! rt create-request)))))))
 
 (s/fdef resume! :args (s/cat :runtime ::runtime :id ::id :request ::resume-request) :ret ::strand)
 

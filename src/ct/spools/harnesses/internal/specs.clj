@@ -168,12 +168,13 @@
 (s/def :ct.spools.harnesses/context (s/and map? registry/json-value?))
 (s/def :ct.spools.harnesses/request-id (s/and string? (complement str/blank?)))
 (s/def :ct.spools.harnesses/logical-id :ct.spools.harnesses/id)
+(s/def :ct.spools.harnesses/guidance-transport #{:legacy :native-v1 "legacy" "native-v1"})
 (s/def :ct.spools.harnesses/frozen map?)
 (def create-keys
   "Closed key set accepted by `create!`."
   #{:harness :mode :prompt :cwd :attributes :title :resumes :after :session-id
     :append-system-prompt :literal-extra-argv :by-identity :target :root-targets
-    :context :request-id :logical-id :frozen})
+    :context :request-id :logical-id :frozen :guidance-transport})
 (s/def :ct.spools.harnesses/create-request
   (s/and
    (s/keys :req-un [:ct.spools.harnesses/harness]
@@ -189,7 +190,8 @@
                     :ct.spools.harnesses/context
                     :ct.spools.harnesses/request-id
                     :ct.spools.harnesses/logical-id
-                    :ct.spools.harnesses/frozen])
+                    :ct.spools.harnesses/frozen
+                    :ct.spools.harnesses/guidance-transport])
    #(every? create-keys (keys %))
    #(or (not (contains? % :attributes))
         (s/valid? :ct.spools.harnesses/overlay-attributes (:attributes %)))))
@@ -202,7 +204,8 @@
 (s/def :ct.spools.harnesses/settled boolean?)
 (s/def :ct.spools.harnesses/settlement (s/and string? (complement str/blank?)))
 (s/def :ct.spools.harnesses/gap string?)
-(s/def :ct.spools.harnesses/failure-class #{"launch" "execution" "reconciliation"})
+(s/def :ct.spools.harnesses/failure-class
+  #{"bootstrap" "launch" "execution" "reconciliation"})
 (s/def :ct.spools.harnesses/cancelled? boolean?)
 (s/def :ct.spools.harnesses/evidence
   (s/keys :req-un [:ct.spools.harnesses/settled :ct.spools.harnesses/settlement]
@@ -237,8 +240,9 @@
   (s/and
    (s/keys :opt-un [:ct.spools.harnesses/harness
                     :ct.spools.harnesses/cwd
-                    :ct.spools.harnesses/attributes])
-   #(every? #{:harness :cwd :attributes} (keys %))
+                    :ct.spools.harnesses/attributes
+                    :ct.spools.harnesses/guidance-transport])
+   #(every? #{:harness :cwd :attributes :guidance-transport} (keys %))
    #(or (not (contains? % :attributes))
         (s/valid? :ct.spools.harnesses/overlay-attributes (:attributes %)))))
 (s/def :ct.spools.harnesses/run-id :ct.spools.harnesses/id)
@@ -262,9 +266,10 @@
                     :ct.spools.harnesses/by-identity
                     :ct.spools.harnesses/target
                     :ct.spools.harnesses/context
-                    :ct.spools.harnesses/request-id])
+                    :ct.spools.harnesses/request-id
+                    :ct.spools.harnesses/guidance-transport])
    #(every? #{:prompt :cwd :attributes :mode :title :by-identity :target
-              :context :request-id}
+              :context :request-id :guidance-transport}
             (keys %))
    #(or (not (contains? % :attributes))
         (s/valid? :ct.spools.harnesses/overlay-attributes (:attributes %)))))
