@@ -224,6 +224,14 @@
           (do (Thread/sleep 1) (recur))))
       (do (Thread/sleep 1) (recur)))))
 
+(defn- release-supervisor! [process deadline]
+  (when (.isAlive process)
+    (.destroyForcibly process))
+  (let [remaining (remaining-nanos deadline)]
+    (when-not (and (pos? remaining)
+                   (.waitFor process remaining TimeUnit/NANOSECONDS))
+      (timed-out! "supervisor-retirement"))))
+
 (defn- await-helper! [state-path token futures deadline ownership]
   (loop []
     (inspect-futures! futures deadline)
@@ -378,6 +386,7 @@
             (write-signal! go-path token)
             (let [finished (await-helper! state-path token futures
                                           execution-deadline ownership)]
+              (release-supervisor! process execution-deadline)
               (await-future! input execution-deadline "request-input")
               (let [stdout-bytes (await-future! stdout execution-deadline
                                                 "stdout-drain")

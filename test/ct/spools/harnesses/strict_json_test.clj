@@ -10,6 +10,23 @@
                                     1024
                                     "empty containers"))))
 
+(deftest unicode-escapes-require-ascii-hex-digits
+  (is (= {"ascii" "¯" "literal" "λ" "surrogate" "😀"}
+         (strict-json/parse-object!
+          (str "{\"ascii\":\"\\u00aF\",\"literal\":\"λ\","
+               "\"surrogate\":\"\\uD83D\\uDE00\"}")
+          1024
+          "protocol evidence")))
+  (doseq [source ["{\"value\":\"\\u００４１\"}"
+                  "{\"value\":\"\\u٠٠٤١\"}"
+                  "{\"value\":\"\\u00Ａ1\"}"
+                  "{\"\\u００４１\":true}"]]
+    (testing source
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                            #"invalid Unicode escape"
+                            (strict-json/parse-object! source 1024
+                                                       "protocol evidence"))))))
+
 (deftest trailing-container-commas-are-rejected
   (doseq [source ["{\"a\":1,}"
                   "{\"a\":1,  \n }"

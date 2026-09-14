@@ -3,6 +3,8 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
+            [ct.spools.harnesses.execution :as execution]
+            [ct.spools.harnesses.internal.guidance :as guidance]
             [ct.spools.harnesses.internal.guidance-capability :as capability]
             [ct.spools.harnesses.internal.guidance-process :as guidance-process]
             [ct.spools.harnesses.internal.strict-json :as strict-json])
@@ -40,6 +42,10 @@
    "host-version" (if (= "codex" harness) "0.154.0" "0.84.4")
    "launch-profile-sha256" (str/join (repeat 64 "b"))
    "max-context-bytes" (if (= "codex" harness) 3072 65536)
+   "process-ownership"
+   {"contract" "private-posix-session/inherited-process-group-v1"
+    "reviewed-closure-sha256" (str/join (repeat 64 "e"))
+    "child-process-behavior" "inherited-process-group-only"}
    "hook-fact" (if (= "codex" harness) (codex-hook) (pi-hook))})
 
 (defn- with-profile [harness f]
@@ -51,12 +57,18 @@
         preflight (java.io.File. scripts "managed-guidance-preflight.mjs")
         _ (spit preflight "// exact disposable preflight\n")
         executable "/usr/bin/true"
-        document (capability-document harness
-                                      (capability/file-sha256 executable))
-        profile {:harness harness
-                 :preflight {:path (.getCanonicalPath preflight)
-                             :sha256 (capability/file-sha256 preflight)}
-                 :capability document}
+        initial-document
+        (capability-document harness (capability/file-sha256 executable))
+        base-profile {:harness harness
+                      :preflight {:path (.getCanonicalPath preflight)
+                                  :sha256 (capability/file-sha256 preflight)}
+                      :capability initial-document}
+        profile
+        (assoc-in base-profile
+                  [:capability "process-ownership"
+                   "reviewed-closure-sha256"]
+                  (capability/process-ownership-sha256 base-profile))
+        document (:capability profile)
         request {"harness" harness
                  "executable" executable
                  "mode" "headless"
@@ -110,6 +122,8 @@
     (fn [{:keys [profile document request]}]
       (doseq [[label process]
               [["malformed" (process-result profile "{nope}")]
+               ["unicode-lookalike"
+                (process-result profile "{\"schema\":\"\\u００４１\"}")]
                ["duplicate-key"
                 (process-result
                  profile
@@ -145,6 +159,28 @@
             (is (thrown? clojure.lang.ExceptionInfo
                          (capability/preflight! request)))))))))
 
+(deftest unsupported-process-ownership-is-rejected-before-helper-execution
+  (with-profile
+    "codex"
+    (fn [{:keys [profile request]}]
+      (doseq [profile [(update profile :capability dissoc "process-ownership")
+                       (assoc-in profile
+                                 [:capability "process-ownership"
+                                  "child-process-behavior"]
+                                 "may-create-detached-sessions")
+                       (assoc-in profile
+                                 [:capability "process-ownership"
+                                  "reviewed-closure-sha256"]
+                                 (str/join (repeat 64 "f")))]]
+        (let [called? (atom false)]
+          (binding [capability/*test-capability-profiles* [profile]
+                    capability/*test-preflight-runner*
+                    (fn [_ _] (reset! called? true))]
+            (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                                  #"process ownership|children to escape"
+                                  (capability/preflight! request)))
+            (is (false? @called?))))))))
+
 (deftest changed-preflight-source-is-rejected-before-execution
   (with-profile
     "codex"
@@ -162,8 +198,13 @@
 (defn- actual-preflight-failure [profile request source]
   (let [path (get-in profile [:preflight :path])
         _ (spit path source)
-        profile (assoc-in profile [:preflight :sha256]
-                          (capability/file-sha256 path))
+        profile-base (assoc-in profile [:preflight :sha256]
+                               (capability/file-sha256 path))
+        profile
+        (assoc-in profile-base
+                  [:capability "process-ownership"
+                   "reviewed-closure-sha256"]
+                  (capability/process-ownership-sha256 profile-base))
         started (System/nanoTime)
         failure (binding [capability/*test-capability-profiles* [profile]]
                   (try
@@ -172,6 +213,107 @@
                     (catch Throwable error error)))]
     {:failure failure
      :elapsed-millis (/ (- (System/nanoTime) started) 1000000.0)}))
+
+(deftest validated-executable-environment-and-selectors-reach-custody
+  (doseq [harness ["codex" "pi"]]
+    (with-profile
+      harness
+      (fn [{:keys [profile document request]}]
+        (let [root (io/file (get request "cwd"))
+              bin (doto (io/file root (str harness "-bin")) .mkdirs)
+              executable (io/file bin harness)
+              _ (spit executable "#!/bin/sh\nexit 0\n")
+              _ (.setExecutable executable true)
+              document (assoc document "executable-sha256"
+                              (capability/file-sha256 executable))
+              profile-base (assoc profile :capability document)
+              profile
+              (assoc-in profile-base
+                        [:capability "process-ownership"
+                         "reviewed-closure-sha256"]
+                        (capability/process-ownership-sha256 profile-base))
+              document (:capability profile)
+              captured-request (atom nil)
+              runner (fn [accepted request-json]
+                       (reset! captured-request
+                               (strict-json/parse-object!
+                                request-json 65536 "captured preflight"))
+                       (process-result accepted (result-json document)))
+              run {:id (str harness "-launch")
+                   :attributes
+                   (cond->
+                    {:harness/guidance-version 1
+                     :harness/guidance-transport "native-v1"
+                     :harness/guidance-attempts []
+                     :harness/guidance-capability document
+                     :harness/guidance-capability-sha256
+                     (strict-json/canonical-sha256 document)
+                     :harness/guidance-bundle-sha256
+                     (str/join (repeat 64 "f"))
+                     :harness/guidance-context-template {}
+                     :harness/guidance-context {}
+                     :harness/harness harness
+                     :harness/mode "headless"
+                     :harness/cwd (.getCanonicalPath root)
+                     :harness/env {"PATH" (.getCanonicalPath bin)
+                                   "PRIVATE_FIXTURE" "secret"}
+                     :harness/extra-argv ["--unrelated"]
+                     :harness/model "fixture-model"
+                     :harness/effort "high"
+                     :harness/resumes true
+                     :harness/session-id "native-session-1"
+                     :harness/prompt "fixture task"
+                     :harness/published "true"
+                     :harness/attempt 1
+                     :harness/invocation "invocation-1"
+                     :identity/id "steady-fair-lynx"
+                     :identity/reservation-id "reservation-1"}
+                     (= "pi" harness)
+                     (assoc :harness/provisional-session-id "native-session-1"))}
+              rt {:metadata {:config-dir (.getCanonicalPath root)}}]
+          (binding [capability/*test-capability-profiles* [profile]
+                    capability/*test-preflight-runner* runner]
+            (let [patch (guidance/begin-attempt-patch
+                         rt run 1 "invocation-1")
+                  started (guidance/carry-launch-plan patch {:strand run})
+                  plan (guidance/launch-plan started)
+                  running (update run :attributes merge patch)
+                  provider-argv
+                  [harness "resume" "native-session-1"
+                   "--model" "fixture-model" "--effort" "high"
+                   "--unrelated" "fixture task"]
+                  prepared (#'execution/apply-native-launch-plan
+                            running
+                            {:argv provider-argv
+                             :env {"PATH" (.getCanonicalPath bin)
+                                   "PRIVATE_FIXTURE" "secret"}
+                             :stdin nil}
+                            plan)
+                  custody-spec (#'execution/process-spec rt running prepared)]
+              (is (= (.getCanonicalPath executable)
+                     (first (:argv custody-spec))))
+              (is (= (subvec provider-argv 1)
+                     (subvec (:argv custody-spec) 1)))
+              (is (= (.getCanonicalPath root) (:cwd custody-spec)))
+              (is (= "secret" (get-in custody-spec
+                                      [:env "PRIVATE_FIXTURE"])))
+              (is (= (.getCanonicalPath executable)
+                     (get @captured-request "executable")))
+              (is (not (contains? patch :launch-plan)))
+              (is (thrown-with-msg?
+                   clojure.lang.ExceptionInfo
+                   #"no longer matches"
+                   (#'execution/apply-native-launch-plan
+                    (assoc-in running [:attributes :harness/extra-argv]
+                              ["--changed"])
+                    {:argv [harness "--changed"] :env {} :stdin nil}
+                    plan)))
+              (spit executable "#!/bin/sh\nexit 7\n")
+              (is (thrown-with-msg?
+                   clojure.lang.ExceptionInfo
+                   #"executable.*evidence"
+                   (guidance/begin-attempt-patch
+                    rt run 2 "invocation-2"))))))))))
 
 (deftest exact-preflight-command-bounds-process-and-pipe-lifetimes
   (with-profile
@@ -201,8 +343,13 @@
                 (actual-preflight-failure profile request source)]
             (is (instance? Throwable failure))
             (is (< elapsed-millis 4500.0))
-            (if (= "flooded output" label)
+            (case label
+              "flooded output"
               (is (re-find #"output exceeded" (ex-message failure)))
+
+              "descendant holding pipes"
+              (is (re-find #"JSON value is missing" (ex-message failure)))
+
               (is (re-find #"timed out" (ex-message failure))))))))))
 
 (deftest untrusted-and-duplicate-approved-sources-are-rejected
@@ -210,9 +357,15 @@
     "codex"
     (fn [{:keys [profile document request]}]
       (let [untrusted (assoc-in document ["hook-fact" "trustStatus"]
-                                "bypassed")]
-        (binding [capability/*test-capability-profiles*
-                  [(assoc profile :capability untrusted)]
+                                "bypassed")
+            untrusted-base (assoc profile :capability untrusted)
+            untrusted-profile
+            (assoc-in untrusted-base
+                      [:capability "process-ownership"
+                       "reviewed-closure-sha256"]
+                      (capability/process-ownership-sha256 untrusted-base))
+            untrusted (:capability untrusted-profile)]
+        (binding [capability/*test-capability-profiles* [untrusted-profile]
                   capability/*test-preflight-runner*
                   (fn [accepted _]
                     (process-result accepted (result-json untrusted)))]
@@ -248,20 +401,24 @@
             (str "let input = '';\n"
                  "process.stdin.setEncoding('utf8');\n"
                  "process.stdin.on('data', chunk => input += chunk);\n"
-                 "process.stdin.on('end', () => process.stdout.write(input));\n")
+                 "process.stdin.on('end', () => {"
+                 "process.stdout.write(input);"
+                 "process.stderr.write('fixture-stderr');});\n")
             _ (spit path normal-source)
             profile (assoc-in profile [:preflight :sha256]
-                              (capability/file-sha256 path))
-            process-result (guidance-process/run! profile "{\"probe\":true}")
-            pids (vals (:owned-pids process-result))]
-        (is (= [0 "{\"probe\":true}" ""]
-               [(:exit-code process-result)
-                (:stdout process-result)
-                (:stderr process-result)]))
-        (is (= 3 (count pids)))
-        (is (every? pos-int? pids))
-        (is (= (count pids) (count (set pids))))
-        (is (not-any? alive-pid? pids))))))
+                              (capability/file-sha256 path))]
+        (dotimes [_ 5]
+          (let [process-result
+                (guidance-process/run! profile "{\"probe\":true}")
+                pids (vals (:owned-pids process-result))]
+            (is (= [0 "{\"probe\":true}" "fixture-stderr"]
+                   [(:exit-code process-result)
+                    (:stdout process-result)
+                    (:stderr process-result)]))
+            (is (= 3 (count pids)))
+            (is (every? pos-int? pids))
+            (is (= (count pids) (count (set pids))))
+            (is (not-any? alive-pid? pids))))))))
 
 (deftest private-supervisor-reaps-immediately-orphaned-process-groups-only
   (with-profile
@@ -290,6 +447,7 @@
                    ["immediate root and intermediate exits"
                     "intermediate-child.pid"
                     (str "const {spawn} = await import('node:child_process');\n"
+                         "const fs = await import('node:fs');\n"
                          "const leafFile = new URL('../intermediate-child.pid', "
                          "import.meta.url).pathname;\n"
                          "const code = `const {spawn} = require('node:child_process');"
@@ -303,13 +461,15 @@
                          "['-e', code, leafFile], "
                          "{stdio: ['ignore', 'inherit', 'inherit']});\n"
                          "intermediate.unref();\n"
-                         "process.exit(0);\n")]]]
+                         "const wait = setInterval(() => {"
+                         "if (fs.existsSync(leafFile)) {"
+                         "clearInterval(wait);process.exit(0);}}, 5);\n")]]]
             (testing label
               (let [pid-file (io/file root pid-name)
                     {:keys [failure elapsed-millis]}
                     (actual-preflight-failure profile request source)
                     child-pid (await-pid-file pid-file)]
-                (is (re-find #"timed out" (ex-message failure)))
+                (is (re-find #"JSON value is missing" (ex-message failure)))
                 (is (< elapsed-millis 4500.0))
                 (is (not (alive-pid? child-pid)))
                 (is (.isAlive unrelated)))))

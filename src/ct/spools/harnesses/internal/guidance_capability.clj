@@ -19,6 +19,10 @@
   "Native adapter contract selected by this Harnesses implementation."
   "native-v1")
 
+(def process-ownership-contract
+  "Reviewed helper behavior retained inside the private POSIX session."
+  "private-posix-session/inherited-process-group-v1")
+
 (def ^:private metadata-limit (* 64 1024))
 (def ^:private sha-pattern #"[0-9a-f]{64}")
 (def ^:private required-request-keys
@@ -145,7 +149,10 @@
 (def ^:private capability-keys
   #{"schema" "harness" "adapter-contract" "adapter-sha256"
     "executable-sha256" "host-version" "launch-profile-sha256"
-    "max-context-bytes" "hook-fact"})
+    "max-context-bytes" "process-ownership" "hook-fact"})
+
+(def ^:private process-ownership-keys
+  #{"contract" "reviewed-closure-sha256" "child-process-behavior"})
 
 (def ^:private codex-hook-keys
   #{"eventName" "key" "source" "sourcePath" "pluginId" "command"
@@ -194,6 +201,48 @@
                                   extensions)))
       (fail! "Pi guidance evidence does not name exactly one prompt owner" {}))))
 
+(defn- validate-process-ownership! [ownership]
+  (when-not (map? ownership)
+    (fail! "Guidance capability has no reviewed process ownership evidence" {}))
+  (closed-keys! ownership process-ownership-keys
+                "Guidance process ownership evidence")
+  (when-not (= process-ownership-contract (get ownership "contract"))
+    (fail! "Guidance capability process ownership is unsupported"
+           {:contract (get ownership "contract")}))
+  (when-not (= "inherited-process-group-only"
+               (get ownership "child-process-behavior"))
+    (fail! "Guidance capability permits children to escape private ownership"
+           {:child-process-behavior
+            (get ownership "child-process-behavior")}))
+  (sha! (get ownership "reviewed-closure-sha256")
+        "Guidance process ownership closure hash")
+  ownership)
+
+(defn process-ownership-sha256
+  "Hash the exact helper, adapter, executable, host, and launch ownership closure."
+  [profile]
+  (let [capability (:capability profile)
+        ownership (get capability "process-ownership")]
+    (strict-json/canonical-sha256
+     {"preflight-sha256" (get-in profile [:preflight :sha256])
+      "adapter-sha256" (get capability "adapter-sha256")
+      "executable-sha256" (get capability "executable-sha256")
+      "host-version" (get capability "host-version")
+      "launch-profile-sha256" (get capability "launch-profile-sha256")
+      "hook-fact" (get capability "hook-fact")
+      "contract" (get ownership "contract")
+      "child-process-behavior" (get ownership
+                                    "child-process-behavior")})))
+
+(defn- validate-profile-process-ownership! [profile]
+  (let [ownership (validate-process-ownership!
+                   (get-in profile [:capability "process-ownership"]))
+        expected (process-ownership-sha256 profile)]
+    (when-not (= expected (get ownership "reviewed-closure-sha256"))
+      (fail! "Guidance process ownership does not match its exact reviewed closure"
+             {:expected expected}))
+    ownership))
+
 (defn- validate-capability! [capability harness]
   (when-not (map? capability)
     (fail! "Guidance preflight capability must be an object" {}))
@@ -211,6 +260,7 @@
     (fail! "Guidance adapter contract is unsupported" {}))
   (when-not (pos-int? (get capability "max-context-bytes"))
     (fail! "Guidance capability context limit must be a positive integer" {}))
+  (validate-process-ownership! (get capability "process-ownership"))
   (case harness
     "codex" (validate-codex-hook! (get capability "hook-fact"))
     "pi" (validate-pi-hook! (get capability "hook-fact"))
@@ -275,9 +325,10 @@
     (when-not (= 1 (count matching))
       (fail! "Native guidance has duplicate accepted preflight sources"
              {:harness harness :profiles (count matching)}))
-    (let [wire-request (validate-request!
+    (let [profile (first matching)
+          _ (validate-profile-process-ownership! profile)
+          wire-request (validate-request!
                         (assoc request "schema" preflight-schema))
-          profile (first matching)
           source-path (get-in profile [:preflight :path])
           _ (validate-source!
              profile

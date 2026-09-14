@@ -20,7 +20,11 @@
       index)))
 
 (defn- hex-value [character]
-  (Character/digit ^char character 16))
+  (cond
+    (<= (int \0) (int character) (int \9)) (- (int character) (int \0))
+    (<= (int \A) (int character) (int \F)) (+ 10 (- (int character) (int \A)))
+    (<= (int \a) (int character) (int \f)) (+ 10 (- (int character) (int \a)))
+    :else -1))
 
 (defn- read-hex [^String source index]
   (when (> (+ index 4) (.length source))

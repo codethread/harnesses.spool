@@ -270,33 +270,35 @@
                      (guidance/preflight-failure-patch
                       run attempt invocation error)}))
                  (throw error)))]
-         (require-valid!
-          ::started
-          {:strand (require-valid!
-                    ::strand
-                    (weaver/update!
-                     rt id
-                     {:attributes
-                      (merge
-                       (when interactive? (retired-interactive-custody))
-                       {:harness/status "running"
-                        :harness/substatus nil
-                        :harness/settled "false"
-                        :harness/settlement nil
-                        :harness/attempt attempt
-                        :harness/invocation invocation
-                        :harness/started-at (life/now)}
-                       guidance-patch
-                       start-attributes
-                       (when interactive?
-                         {:harness/interactive-callback-contract
-                          (if (seq start-attributes) "v2" "legacy")})
-                       (when (seq start-attributes)
-                         {:harness/completion-owner-invocation invocation}))})
-                    "begin-attempt! produced an invalid run strand")
-           :invocation invocation
-           :attempt attempt}
-          "begin-attempt! produced an invalid start record"))))))
+         (guidance/carry-launch-plan
+          guidance-patch
+          (require-valid!
+           ::started
+           {:strand (require-valid!
+                     ::strand
+                     (weaver/update!
+                      rt id
+                      {:attributes
+                       (merge
+                        (when interactive? (retired-interactive-custody))
+                        {:harness/status "running"
+                         :harness/substatus nil
+                         :harness/settled "false"
+                         :harness/settlement nil
+                         :harness/attempt attempt
+                         :harness/invocation invocation
+                         :harness/started-at (life/now)}
+                        guidance-patch
+                        start-attributes
+                        (when interactive?
+                          {:harness/interactive-callback-contract
+                           (if (seq start-attributes) "v2" "legacy")})
+                        (when (seq start-attributes)
+                          {:harness/completion-owner-invocation invocation}))})
+                     "begin-attempt! produced an invalid run strand")
+            :invocation invocation
+            :attempt attempt}
+           "begin-attempt! produced an invalid start record")))))))
 
 (s/fdef begin-attempt!
   :args (s/or :plain (s/cat :runtime ::runtime :id ::id)

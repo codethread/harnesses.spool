@@ -29,19 +29,42 @@
                                  :prompt "Acknowledged repair fixture"
                                  :guidance-transport "native-v1"})
                         started (harnesses/begin-attempt! rt (:id run))
+                        startup-request
+                        {:harness "codex"
+                         :native-session-id "reconstructed-session"
+                         :cwd "/tmp"
+                         :scope "root"
+                         :bootstrap (harnesses/managed-bootstrap rt (:id run))}
+                        invalid-unicode "{\"schema\":\"\\u００４１\"}"
+                        startup-before (weaver/show rt (:id run))
+                        startup-unicode-error
+                        (try
+                          (harnesses/managed-startup!
+                           rt (assoc startup-request :guidance invalid-unicode))
+                          nil
+                          (catch clojure.lang.ExceptionInfo error
+                            (ex-message error)))
+                        startup-after (weaver/show rt (:id run))
                         bundle
                         (harnesses/managed-startup!
-                         rt {:harness "codex"
-                             :native-session-id "reconstructed-session"
-                             :cwd "/tmp"
-                             :scope "root"
-                             :bootstrap
-                             (harnesses/managed-bootstrap rt (:id run))
-                             :guidance (guidance/bootstrap (:strand started))})
+                         rt (assoc startup-request
+                                   :guidance
+                                   (guidance/bootstrap (:strand started))))
                         acknowledgement
                         (guidance-receipt bundle "adapter-handoff")
-                        _ (harnesses/guidance-acknowledge!
-                           rt acknowledgement)
+                        receipt-before (weaver/show rt (:id run))
+                        receipt-unicode-errors
+                        (mapv
+                         (fn [record!]
+                           (try
+                             (record! rt invalid-unicode)
+                             nil
+                             (catch clojure.lang.ExceptionInfo error
+                               (ex-message error))))
+                         [harnesses/guidance-acknowledge!
+                          harnesses/guidance-fail!])
+                        receipt-after (weaver/show rt (:id run))
+                        _ (harnesses/guidance-acknowledge! rt acknowledgement)
                         malformed-receipt
                         (str (subs (strict-json/canonical-json acknowledgement)
                                    0
@@ -107,6 +130,10 @@
                                    "diagnostic" "late failure"))
                         completed-after (weaver/show rt (:id completed))]
                     {:trailing-comma trailing-comma
+                     :startup-unicode-error startup-unicode-error
+                     :startup-no-write (= startup-before startup-after)
+                     :receipt-unicode-errors receipt-unicode-errors
+                     :receipt-no-write (= receipt-before receipt-after)
                      :recorded (get recorded :result)
                      :replayed (get replayed :result)
                      :late-ack (get late-ack :result)
@@ -126,6 +153,12 @@
                      :completed-failure (get completed-failure :result)
                      :completed-no-write
                      (= completed-before completed-after)}))))]
+        (is (re-find #"invalid Unicode escape"
+                     (:startup-unicode-error result)))
+        (is (true? (:startup-no-write result)))
+        (is (every? #(re-find #"invalid Unicode escape" %)
+                    (:receipt-unicode-errors result)))
+        (is (true? (:receipt-no-write result)))
         (is (re-find #"trailing comma" (:trailing-comma result)))
         (is (= ["recorded" "replayed" "ignored"]
                [(:recorded result) (:replayed result) (:late-ack result)]))

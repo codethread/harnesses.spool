@@ -511,14 +511,62 @@
      (update launch-spec :env #(merge alias-env (or % {})))
      "Harness prepare must return a valid launch specification")))
 
-(defn- process-spec [rt run {:keys [argv env stdin]}]
+(defn- current-launch-selectors [run]
+  (cond-> {"extra-argv" (or (attr-get run :harness/extra-argv) [])
+           "resumes" (boolean (attr-get run :harness/resumes))}
+    (attr-get run :harness/model)
+    (assoc "model" (attr-get run :harness/model))
+    (attr-get run :harness/effort)
+    (assoc "effort" (attr-get run :harness/effort))
+    (attr-get run :harness/resumes)
+    (assoc "native-session-id" (attr-get run :harness/session-id))))
+
+(defn- launch-plan-failure! [run reason data]
+  (fail! "Native guidance launch no longer matches its validated preflight"
+         (merge {:code "guidance/launch-plan-mismatch"
+                 :run-id (:id run)
+                 :reason reason}
+                data)))
+
+(defn- apply-native-launch-plan [run launch-spec plan]
+  (if-not (guidance/native? run)
+    launch-spec
+    (let [{:keys [argv env]} launch-spec
+          harness (attr-get run :harness/harness)
+          canonical-cwd (.getCanonicalPath
+                         (java.io.File. ^String
+                          (attr-get run :harness/cwd)))]
+      (when-not (and (map? plan)
+                     (= harness (:harness plan))
+                     (string? (:executable plan))
+                     (= (:executable plan)
+                        (.getCanonicalPath
+                         (java.io.File. ^String (:executable plan))))
+                     (= canonical-cwd (:cwd plan))
+                     (map? (:env plan))
+                     (every? (fn [[key value]]
+                               (and (string? key) (string? value)))
+                             (:env plan))
+                     (= (current-launch-selectors run) (:selectors plan)))
+        (launch-plan-failure! run "transient plan fields changed" {}))
+      (when-not (= harness (first argv))
+        (launch-plan-failure! run "provider command changed"
+                              {:provider-command (first argv)}))
+      (when-not (= (:env plan) (merge (:env plan) (or env {})))
+        (launch-plan-failure! run "provider environment changed" {}))
+      (assoc launch-spec
+             :argv (assoc argv 0 (:executable plan))
+             :env (:env plan)
+             :validated-cwd (:cwd plan)))))
+
+(defn- process-spec [rt run {:keys [argv env stdin validated-cwd]}]
   (let [bootstrap (managed/bootstrap rt run)
         guidance-document
         (when (and bootstrap
                    (some? (attr-get run :harness/guidance-version)))
           (guidance/bootstrap run))]
     {:argv argv
-     :cwd (attr-get run :harness/cwd)
+     :cwd (or validated-cwd (attr-get run :harness/cwd))
      :env (cond-> (assoc (or env {})
                          "MILLSTRAND_RUN_ID" (:id run)
                          "MILLSTRAND_WORKSPACE" (launcher/workspace rt))
@@ -609,11 +657,14 @@
     ;; transition. Only failures after this point belong to this worker, and
     ;; they are published with this exact invocation rather than one read from
     ;; mutable durable state.
-    (let [{:keys [attempt invocation]} (harness/begin-attempt! rt id)]
+    (let [{:keys [attempt invocation] :as started}
+          (harness/begin-attempt! rt id)
+          launch-plan (guidance/launch-plan started)]
       (try
         (let [run (full-run rt id)
               definition (resolved-definition rt run)
-              launch-spec (prepare-launch rt definition run)
+              launch-spec (apply-native-launch-plan
+                           run (prepare-launch rt definition run) launch-plan)
               _ (weaver/update! rt id
                                 {:attributes
                                  (custody/durable-attributes
@@ -639,7 +690,9 @@
                                (when error-data
                                  (str " " (pr-str error-data))))
                   evidence
-                  (if (= "process/malformed-launch" (:code error-data))
+                  (if (contains? #{"process/malformed-launch"
+                                   "guidance/launch-plan-mismatch"}
+                                 (:code error-data))
                     (assoc (life/settlement-evidence
                             {:launch-failure error-data})
                            :failure-class "launch")

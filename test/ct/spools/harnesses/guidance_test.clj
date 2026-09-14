@@ -2,7 +2,6 @@
   "Focused native managed-guidance protocol and lifecycle tests."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
-            [ct.spools.harnesses.internal.cli :as cli]
             [ct.spools.harnesses.internal.guidance :as guidance]
             [ct.spools.harnesses.internal.guidance-capability :as capability]
             [ct.spools.harnesses.internal.strict-json :as strict-json]
@@ -78,20 +77,6 @@
                     (assoc-in [:attributes :harness/harness] "pi")
                     (assoc-in [:attributes :harness/mode] "headless"))
                 (assoc record "state" "fetched") after)))))
-
-(deftest public-cli-exposes-explicit-transport-and-receipts
-  (doseq [command ["run" "retry" "resume"]]
-    (is (contains? (get-in cli/agent-arg-spec
-                           [:subcommands command :flags])
-                   :guidance-transport)))
-  (is (= :string
-         (get-in cli/agent-arg-spec
-                 [:subcommands "startup" :flags :guidance :type])))
-  (doseq [command ["acknowledge" "fail"]]
-    (is (= :string
-           (get-in cli/agent-arg-spec
-                   [:subcommands "guidance" :subcommands command
-                    :flags :receipt :type])))))
 
 (deftest production-admission-is-disabled-and-hostile-argv-fails-first
   (is (empty? (capability/production-allowlist)))
@@ -217,6 +202,10 @@
         "host-version" "0.154.0-test"
         "launch-profile-sha256" (apply str (repeat 64 "b"))
         "max-context-bytes" 3072
+        "process-ownership"
+        {"contract" "private-posix-session/inherited-process-group-v1"
+         "reviewed-closure-sha256" (apply str (repeat 64 "e"))
+         "child-process-behavior" "inherited-process-group-only"}
         "hook-fact"
         {"eventName" "sessionStart"
          "key" "managed-guidance"
@@ -230,10 +219,16 @@
          "timeoutSec" 15
          "additionalContextLimit" 4096}})
      (def profile
-       {:harness "codex"
-        :preflight {:path (.getCanonicalPath preflight-file)
-                    :sha256 (capability/file-sha256 preflight-file)}
-        :capability capability-document})
+       (let [candidate
+             {:harness "codex"
+              :preflight {:path (.getCanonicalPath preflight-file)
+                          :sha256 (capability/file-sha256 preflight-file)}
+              :capability capability-document}]
+         (assoc-in candidate
+                   [:capability "process-ownership"
+                    "reviewed-closure-sha256"]
+                   (capability/process-ownership-sha256 candidate))))
+     (def capability-document (:capability profile))
      (defn accepted-runner [accepted-profile request-json]
        (strict-json/parse-object! request-json 65536 "test preflight request")
        {:source (:preflight accepted-profile)

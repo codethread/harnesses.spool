@@ -108,8 +108,8 @@
         (do
           (prompt-controls/reject! harness
                                    (or (:harness/extra-argv effective) []))
-          (let [capability (capability/preflight!
-                            (preflight-request rt request))]
+          (let [preflight (preflight-request rt request)
+                capability (capability/preflight! preflight)]
             (when-not (= (get provider-context-limits harness)
                          (get capability "max-context-bytes"))
               (spool/fail! "Guidance capability has an unaccepted context limit"
@@ -119,7 +119,16 @@
             {:transport transport
              :capability capability
              :capability-sha256
-             (strict-json/canonical-sha256 capability)}))))))
+             (strict-json/canonical-sha256 capability)
+             :launch-plan
+             {:harness harness
+              :executable (get preflight "executable")
+              :cwd (get preflight "cwd")
+              :env (get preflight "env")
+              :selectors
+              (select-keys preflight
+                           ["extra-argv" "model" "effort" "resumes"
+                            "native-session-id"])}}))))))
 
 (defn- normalize-context [context]
   (when (map? context)
@@ -299,49 +308,70 @@
      :harness/session-usable "false"
      :harness/error diagnostic}))
 
+(defn- execution-selection! [rt run selected]
+  (let [selection (select!
+                   rt {:harness (spool/attr-get run :harness/harness)
+                       :requested selected
+                       :mode (keyword (spool/attr-get run :harness/mode))
+                       :cwd (spool/attr-get run :harness/cwd)
+                       :env (spool/attr-get run :harness/env)
+                       :effective (:attributes run)
+                       :session-id (spool/attr-get run :harness/session-id)
+                       :resumes (spool/attr-get run :harness/resumes)})
+        stored-capability (spool/attr-get run :harness/guidance-capability)
+        stored-digest
+        (spool/attr-get run :harness/guidance-capability-sha256)]
+    (when-not (= (:capability-sha256 selection)
+                 stored-digest
+                 (strict-json/canonical-sha256 stored-capability))
+      (spool/fail! "Native guidance capability changed before execution"
+                   {:run-id (:id run)}))
+    selection))
+
 (defn begin-attempt-patch
   "Return a fenced guidance-attempt patch, rechecking native capability first."
   [rt run attempt invocation]
   (if-not (some? (spool/attr-get run :harness/guidance-version))
     {}
     (let [selected (transport run)
+          selection (when (= "native-v1" selected)
+                      (execution-selection! rt run selected))
           attempts (attempt-records run)
-          now (Instant/now)]
-      (when (= "native-v1" selected)
-        (let [selection (select!
-                         rt {:harness (spool/attr-get run :harness/harness)
-                             :requested selected
-                             :mode (keyword (spool/attr-get run :harness/mode))
-                             :cwd (spool/attr-get run :harness/cwd)
-                             :env (spool/attr-get run :harness/env)
-                             :effective (:attributes run)
-                             :session-id (spool/attr-get run :harness/session-id)
-                             :resumes (spool/attr-get run :harness/resumes)})
-              stored-capability
-              (spool/attr-get run :harness/guidance-capability)
-              stored-digest
-              (spool/attr-get run :harness/guidance-capability-sha256)]
-          (when-not (= (:capability-sha256 selection)
-                       stored-digest
-                       (strict-json/canonical-sha256 stored-capability))
-            (spool/fail! "Native guidance capability changed before execution"
-                         {:run-id (:id run)}))))
-      {:harness/guidance-attempts
-       (conj attempts
-             (cond-> {"attempt" attempt
-                      "invocation" invocation
-                      "transport" selected
-                      "state" (if (= "native-v1" selected)
-                                "pending"
-                                "not-required")
-                      "started-at" (str now)}
-               (= "native-v1" selected)
-               (assoc "bundle-sha256"
-                      (spool/attr-get run :harness/guidance-bundle-sha256)
-                      "capability-sha256"
-                      (spool/attr-get run :harness/guidance-capability-sha256)
-                      "deadline-at"
-                      (str (.plusSeconds now acknowledgement-deadline-seconds)))))})))
+          now (Instant/now)
+          patch
+          {:harness/guidance-attempts
+           (conj attempts
+                 (cond-> {"attempt" attempt
+                          "invocation" invocation
+                          "transport" selected
+                          "state" (if (= "native-v1" selected)
+                                    "pending"
+                                    "not-required")
+                          "started-at" (str now)}
+                   (= "native-v1" selected)
+                   (assoc "bundle-sha256"
+                          (spool/attr-get run :harness/guidance-bundle-sha256)
+                          "capability-sha256"
+                          (spool/attr-get run
+                                          :harness/guidance-capability-sha256)
+                          "deadline-at"
+                          (str (.plusSeconds
+                                now acknowledgement-deadline-seconds)))))}]
+      (if selection
+        (with-meta patch {::launch-plan (:launch-plan selection)})
+        patch))))
+
+(defn carry-launch-plan
+  "Carry a private attempt launch plan in process-local result metadata."
+  [attempt-patch result]
+  (if-let [plan (::launch-plan (meta attempt-patch))]
+    (with-meta result {::launch-plan plan})
+    result))
+
+(defn launch-plan
+  "Return a process-local validated launch plan without durable disclosure."
+  [attempt-result]
+  (::launch-plan (meta attempt-result)))
 
 (defn deadline-expired?
   "Return whether a native handoff record has crossed its durable deadline."

@@ -431,14 +431,19 @@ versions, branches, or helper claims.
 When profiles are eventually accepted, Harnesses runs the approved no-model
 preflight against the actual executable, cwd, workspace, environment, provider
 selectors, and resume settings before publication and again before each attempt.
-The canonical executable path remains an explicit field in the bounded private
-request. Before helper execution, a private supervisor establishes and verifies
-a dedicated process-group identity that survives root and intermediate exits.
-Input, execution, output drains, exact owned-PID cleanup, and bounded worker
-joins share one monotonic budget; unrelated processes are never selected by
-command pattern.
+The canonical executable and effective environment are carried only in a
+process-local launch plan into custody; delayed launches recheck the provider
+command and configuration selectors, use the validated path as `argv[0]`, and
+never persist the inherited environment. Before helper execution, an accepted
+profile must contain exact reviewed evidence that its closure keeps every child
+in the inherited private process group. A private supervisor then establishes
+and verifies that group identity across root and intermediate exits. Verified
+helper completion retires the supervisor's stream handles independently from
+the retained cleanup identity. Input, execution, bounded output capture, exact
+owned-PID cleanup, and worker joins share one monotonic budget; unrelated
+processes are never selected by command pattern.
 Evidence must match one approved preflight source and the complete approved
-adapter/executable/package/profile closure. Missing, changed, untrusted,
+adapter/executable/package/profile/ownership closure. Missing, changed, untrusted,
 duplicate, malformed, oversized, nonzero, or mismatched evidence fails loudly;
 there is no retry or native-to-legacy fallback.
 
@@ -464,8 +469,10 @@ current-run/workspace footer. It records adapter handoff with `agent guidance
 acknowledge --receipt JSON`, or failure with `agent guidance fail --receipt
 JSON`. Attempt states are `pending`, `fetched`, `acknowledged`, and `failed`;
 legacy attempts are `not-required`. Exact receipt replay is no-write, stale
-receipts cannot satisfy a newer attempt, and an unacknowledged native process
-exit is a bootstrap failure with an unusable projection and durable stop intent,
+receipts cannot satisfy a newer attempt. All protocol JSON requires ASCII hex
+characters in `\\uXXXX` escapes; malformed capability, startup, acknowledgement,
+or failure documents are rejected without mutation. An unacknowledged native
+process exit is a bootstrap failure with an unusable projection and durable stop intent,
 while genuine attachment, reservation, and custody remain intact for later
 evidence. A later exact-current reconstruction failure may move an acknowledged
 attempt to failed without discarding its real attachment. Durable handoff
@@ -478,10 +485,15 @@ atomic host ingestion, model
 obedience, or removal of historical transcript instructions.
 
 Native mode removes only Harnesses-generated Codex `developer_instructions` or
-Pi `--append-system-prompt` arguments. Competing raw provider prompt controls are
-rejected before publication; wrapper-level `--append-system-prompt` remains the
-supported input. Main task prompts, model/effort, native session/resume, aliases,
-and unrelated provider argv are preserved. Verified failures before launch may
+Pi `--append-system-prompt` arguments. Token-aware, case-sensitive filtering
+rejects only Codex `developer_instructions`, `instructions`, and
+`model_instructions_file` assignments at the root, plus the profile-supported
+`profiles.<name>.model_instructions_file` path, and Pi's exact system-prompt
+options; quoted Codex key segments and CLI
+literal tails retain their provider grammar. Competing controls fail before
+publication, while wrapper-level `--append-system-prompt`, main task prompts,
+model/effort, native session/resume, aliases, and unrelated provider argv remain
+byte-for-byte intact. Verified failures before launch may
 settle without inventing an attempt or custody, while unknown custody remains
 unsettled. Pre-reservation Pi continuations and retries remain legacy-only even
 when their rows contain current guidance templates. Claude and Cursor retain
