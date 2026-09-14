@@ -127,6 +127,104 @@
 (defn- with-core-world [f]
   (test-alpha/run-with-weaver-world (core-world-options :sqlite-memory) f))
 
+(deftest malformed-probes-cannot-bypass-live-or-terminal-protection
+  (with-core-world
+    (fn [ctx]
+      (let [result
+            (test-alpha/repl!
+             ctx
+             '(do
+                (require '[ct.spools.harnesses :as harnesses]
+                         '[ct.spools.harnesses.reconciliation :as reconcile]
+                         '[millstrand.api.current.alpha :as current]
+                         '[millstrand.api.spool.alpha :as spool]
+                         '[millstrand.api.weaver.alpha :as weaver])
+                (let [rt (current/runtime)
+                      _ (harnesses/register-harness!
+                         rt :cursor
+                         {:modes #{:interactive}
+                          :prepare 'ct.spools.harnesses/create!
+                          :finish 'ct.spools.harnesses/finish!})
+                      pid (.pid (java.lang.ProcessHandle/current))
+                      owner (reconcile/completion-owner-attributes pid)
+                      run (harnesses/create!
+                           rt {:harness :cursor :mode :interactive})
+                      started (harnesses/begin-attempt! rt (:id run) owner)
+                      _ (reconcile/register-provider!
+                         rt (:id run) (:invocation started) pid)
+                      _ (weaver/update!
+                         rt (:id run)
+                         {:attributes {:harness/provider-started-at 123}})
+                      before-live (weaver/show rt (:id run))
+                      inspected
+                      (with-redefs [reconcile/native-observation
+                                    (constantly {:state "not-observed"})]
+                        (weaver/op! rt 'agent ["reconcile" (:id run)]))
+                      live-refusal
+                      (with-redefs [reconcile/native-observation
+                                    (constantly {:state "not-observed"})]
+                        (try
+                          (weaver/op!
+                           rt 'agent
+                           ["reconcile" (:id run) "--abandon"
+                            "--reason" "malformed provider evidence"
+                            "--by-identity"
+                            (spool/attr-get run :identity/id)])
+                          nil
+                          (catch clojure.lang.ExceptionInfo error
+                            (ex-message error))))
+                      live-no-write (= before-live (weaver/show rt (:id run)))
+                      completed
+                      (harnesses/finish!
+                       rt (:id run)
+                       {:status :done
+                        :exit-code 0
+                        :session-usable true
+                        :invocation (:invocation started)
+                        :evidence {:settled true
+                                   :settlement "process-exit"}})
+                      before-terminal (weaver/show rt (:id run))
+                      terminal-refusal
+                      (try
+                        (weaver/op!
+                         rt 'agent
+                         ["reconcile" (:id run) "--abandon"
+                          "--reason" "must not rewrite completion"
+                          "--by-identity"
+                          (spool/attr-get run :identity/id)])
+                        nil
+                        (catch clojure.lang.ExceptionInfo error
+                          (ex-message error)))
+                      terminal-no-write
+                      (= before-terminal (weaver/show rt (:id run)))]
+                  {:classification
+                   (get-in inspected [:runs 0 :classification])
+                   :owner-state
+                   (get-in inspected
+                           [:runs 0 :evidence :completion-owner :state])
+                   :provider-state
+                   (get-in inspected [:runs 0 :evidence :provider :state])
+                   :live-refusal live-refusal
+                   :live-no-write live-no-write
+                   :completed-status
+                   [(spool/attr-get completed :harness/status)
+                    (spool/attr-get completed :harness/substatus)
+                    (spool/attr-get completed :harness/settled)
+                    (spool/attr-get completed :harness/exit-code)]
+                   :terminal-refusal terminal-refusal
+                   :terminal-no-write terminal-no-write})))]
+        (is (= "protected" (:classification result)))
+        (is (= "live" (:owner-state result)))
+        (is (= "unavailable" (:provider-state result)))
+        (is (re-find #"refuses known live or ineligible"
+                     (:live-refusal result)))
+        (is (true? (:live-no-write result)))
+        (is (= ["stopped" "completed" "true" 0]
+               (:completed-status result)))
+        (is (re-find #"refuses known live or ineligible"
+                     (:terminal-refusal result)))
+        (is (true? (:terminal-no-write result)))))))
+
 (deftest explicit-legacy-abandonment-is-auditable-and-idempotent
   (with-core-world
     (fn [ctx]

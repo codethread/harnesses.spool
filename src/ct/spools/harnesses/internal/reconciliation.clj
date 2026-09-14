@@ -13,7 +13,8 @@
   are positively gone or PID-replaced. It does not claim that a remote provider
   backend exited. Missing or unavailable observations remain `:unknown`.
   Positive native, owner, or provider liveness always protects the run."
-  [run {:keys [completion-owner provider native active-session-writers]}]
+  [run {:keys [completion-owner provider native active-session-writers
+               session-writers]}]
   (let [gone? #(contains? #{"gone" "replaced"} (:state %))]
     (cond
       (life/terminal? run)
@@ -46,6 +47,7 @@
        :reason "this maintenance-mode provider has no managed exec evidence"}
 
       (or (= "unavailable" (:state native))
+          (= "unavailable" (:state session-writers))
           (contains? #{"missing" "remote" "unavailable"} (:state provider))
           (contains? #{"missing" "remote" "unavailable"}
                      (:state completion-owner)))

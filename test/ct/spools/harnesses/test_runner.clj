@@ -12,6 +12,7 @@
             [ct.spools.harnesses.providers.cursor-test]
             [ct.spools.harnesses.providers.internal.outcome-test]
             [ct.spools.harnesses.providers.pi-test]
+            [ct.spools.harnesses.reconciliation-callback-test]
             [ct.spools.harnesses.reconciliation-sweep-test]
             [ct.spools.harnesses.reconciliation-test]
             [ct.spools.harnesses.review-git-test]
@@ -29,6 +30,7 @@
     ct.spools.harnesses.providers.cursor-test
     ct.spools.harnesses.providers.internal.outcome-test
     ct.spools.harnesses.providers.pi-test
+    ct.spools.harnesses.reconciliation-callback-test
     ct.spools.harnesses.reconciliation-sweep-test
     ct.spools.harnesses.reconciliation-test
     ct.spools.harnesses.review-git-test

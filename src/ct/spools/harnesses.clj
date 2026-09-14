@@ -144,6 +144,19 @@
     :harness/completion-owner-started-at
     :harness/completion-owner-host})
 
+(def ^:private interactive-custody-attribute-keys
+  #{:harness/completion-owner-pid
+    :harness/completion-owner-started-at
+    :harness/completion-owner-host
+    :harness/completion-owner-invocation
+    :harness/provider-pid
+    :harness/provider-started-at
+    :harness/provider-host
+    :harness/provider-invocation})
+
+(defn- retired-interactive-custody []
+  (zipmap interactive-custody-attribute-keys (repeat nil)))
+
 (defn begin-attempt!
   "Move a published ready run to running and mint its fencing token.
 
@@ -154,7 +167,8 @@
 
   The optional third argument is the closed completion-owner identity captured
   for an interactive start. It commits with the attempt and is fenced by the
-  same invocation."
+  same invocation. Starting an interactive retry retires every prior attempt's
+  process evidence before recording the new callback contract and custody."
   ([rt id] (begin-attempt! rt id {}))
   ([rt id start-attributes]
    (require-valid! ::runtime rt "begin-attempt! requires a Weaver runtime")
@@ -176,6 +190,7 @@
    #_{:splint/disable [lint/locking-object]}
    (locking (catalog/publication-lock rt)
      (let [run (runs/require-run rt id)
+           interactive? (= "interactive" (attr-get run :harness/mode))
            attempt (inc (or (attr-get run :harness/attempt) 0))
            invocation (str (UUID/randomUUID))]
        (when-not (life/published? run)
@@ -196,6 +211,7 @@
                    rt id
                    {:attributes
                     (merge
+                     (when interactive? (retired-interactive-custody))
                      {:harness/status "running"
                       :harness/substatus nil
                       :harness/settled "false"
@@ -204,6 +220,9 @@
                       :harness/invocation invocation
                       :harness/started-at (life/now)}
                      start-attributes
+                     (when interactive?
+                       {:harness/interactive-callback-contract
+                        (if (seq start-attributes) "v2" "legacy")})
                      (when (seq start-attributes)
                        {:harness/completion-owner-invocation invocation}))})
                   "begin-attempt! produced an invalid run strand")

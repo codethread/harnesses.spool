@@ -99,21 +99,18 @@
 
   The generated child shell reports itself immediately before `exec`, so the
   PID and start instant remain stable across the exec. Repeats with identical
-  evidence converge; conflicts and stale invocations fail loudly.
-
-  A legacy launcher may omit `invocation`; its current durable attempt token is
-  used so a launcher generated across a backend upgrade remains compatible."
+  evidence converge; conflicts and stale invocations fail loudly. The execution
+  boundary resolves any accepted legacy callback before calling this function."
   [rt id invocation pid]
   (require-valid! ::runtime rt "register-provider! requires a Weaver runtime")
   (require-valid! ::run-id id "register-provider! requires a run ID")
-  (require-valid! #(or (nil? %) (s/valid? ::run-id %)) invocation
-                  "register-provider! requires a valid optional invocation")
+  (require-valid! ::run-id invocation
+                  "register-provider! requires an invocation")
   (require-valid! pos-int? pid "register-provider! requires a positive PID")
   #_{:clj-kondo/ignore [:locking-suspicious-lock]}
   #_{:splint/disable [lint/locking-object]}
   (locking (catalog/publication-lock rt)
     (let [run (runs/require-run rt id)
-          invocation (or invocation (life/invocation run))
           fact (process-identity pid)
           host (process/scoped-host-observation)
           existing-invocation (attr-get run :harness/provider-invocation)
@@ -160,35 +157,53 @@
            (remove #(= (:id run) (:id %)))
            (mapv :id)))))
 
+(defn- unavailable-probe [error]
+  {:state "unavailable"
+   :reason (ex-message error)
+   :data (ex-data error)})
+
+(defn- observe-process [probe]
+  (try
+    (probe)
+    (catch Throwable error
+      (unavailable-probe error))))
+
+(defn- observe-session-writers [rt run]
+  (try
+    {:state "available"
+     :runs (active-session-writers rt run)}
+    (catch Throwable error
+      (unavailable-probe error))))
+
 (defn- evidence [rt run]
-  {:observed-at (str (runtime/now rt))
-   :completion-owner (completion-owner-observation run)
-   :provider (provider-observation run)
-   :native (native-observation run)
-   :active-session-writers (active-session-writers rt run)
-   :attempt (attr-get run :harness/attempt)
-   :invocation (life/invocation run)})
+  (let [session-writers (observe-session-writers rt run)]
+    {:observed-at (str (runtime/now rt))
+     :completion-owner
+     (observe-process #(completion-owner-observation run))
+     :provider (observe-process #(provider-observation run))
+     :native (observe-process #(native-observation run))
+     :session-writers session-writers
+     :active-session-writers (or (:runs session-writers) [])
+     :attempt (attr-get run :harness/attempt)
+     :invocation (life/invocation run)}))
+
+(defn- inspection-report [run observed classified]
+  (merge {:id (:id run)
+          :status (life/status run)
+          :substatus (life/substatus run)
+          :target (attr-get run :harness/target)
+          :settled (life/settled? run)
+          :evidence observed}
+         classified))
 
 (defn- inspect-one [rt run]
-  (try
-    (let [observed (evidence rt run)
-          classified (decision/classification run observed)]
-      (merge {:id (:id run)
-              :status (life/status run)
-              :substatus (life/substatus run)
-              :target (attr-get run :harness/target)
-              :settled (life/settled? run)
-              :evidence observed}
-             classified))
-    (catch Throwable error
-      {:id (:id run)
-       :status (life/status run)
-       :substatus (life/substatus run)
-       :classification "unknown"
-       :reason "interactive evidence probe failed"
-       :evidence {:probe {:state "unavailable"
-                          :message (ex-message error)
-                          :data (ex-data error)}}})))
+  (let [without-probes (decision/classification run {})]
+    (if (contains? #{"terminal" "ineligible"}
+                   (:classification without-probes))
+      (inspection-report run {} without-probes)
+      (let [observed (evidence rt run)]
+        (inspection-report run observed
+                           (decision/classification run observed))))))
 
 (defn- rotate-candidates [candidates offset]
   (if (seq candidates)
@@ -253,6 +268,11 @@
                  :abandoned-at at :abandoned-by by
                  :abandon-reason reason))))))
 
+(defn- explicit-abandonment-eligible? [report]
+  (or (contains? #{"unknown" "orphaned"} (:classification report))
+      (and (= "terminal" (:classification report))
+           (= "abandoned" (:substatus report)))))
+
 (defn reconcile!
   "Reconcile interactive active projections from honest current evidence.
 
@@ -282,8 +302,7 @@
          reports (if limit (vec (take limit inspected)) inspected)
          report (first reports)
          _ (when (and abandon?
-                      (not (contains? #{"unknown" "orphaned" "terminal"}
-                                      (:classification report))))
+                      (not (explicit-abandonment-eligible? report)))
              (fail! "Explicit abandonment refuses known live or ineligible evidence"
                     {:run-id run-id :report report}))
          results (mapv #(abandon-one! rt % opts) reports)]
