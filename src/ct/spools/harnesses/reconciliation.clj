@@ -10,16 +10,14 @@
             [ct.spools.harnesses.catalog :as catalog]
             [ct.spools.harnesses.internal.lifecycle :as life]
             [ct.spools.harnesses.internal.reconciliation :as decision]
+            [ct.spools.harnesses.internal.reconciliation-process :as process]
+            [ct.spools.harnesses.internal.reconciliation-sweep :as sweep]
             [ct.spools.harnesses.internal.runs :as runs]
             [millstrand.api.lifecycle.alpha :as lifecycle]
             [millstrand.api.runtime.alpha :as runtime]
-            [millstrand.api.scheduler.alpha :as scheduler]
             [millstrand.api.spool.alpha :refer [attr-get fail! require-valid!]]
             [millstrand.api.weaver.alpha :as weaver])
-  (:import [java.net InetAddress]
-           [java.time Instant]
-           [java.util Optional UUID]
-           [java.lang ProcessHandle]))
+  (:import [java.util UUID]))
 
 (def default-sweep-interval-ms
   "Default interval between durable orphan-reconciliation sweeps."
@@ -29,11 +27,7 @@
   "Environment variable overriding the positive sweep interval in milliseconds."
   "MILLSTRAND_HARNESS_RECONCILIATION_INTERVAL_MS")
 
-(def ^:private state-version 1)
 (def ^:private sweep-limit 100)
-(def ^:private sweep-key "harness/interactive-reconciliation")
-(def ^:private sweep-handler
-  'ct.spools.harnesses.reconciliation/sweep-wake!)
 
 (s/def ::runtime map?)
 (s/def ::run-id (s/and string? (complement str/blank?)))
@@ -80,128 +74,25 @@
   []
   (parse-sweep-interval (System/getenv sweep-environment-variable)))
 
-(defn- optional-value [^Optional optional]
-  (.orElse optional nil))
-
-(defn- host-name []
-  (.getHostName (InetAddress/getLocalHost)))
-
-(defn process-identity
+(def process-identity
   "Return the current non-signalling identity observation for local PID `pid`."
-  [pid]
-  (require-valid! pos-int? pid "process-identity requires a positive PID")
-  (if-let [^ProcessHandle handle (optional-value (ProcessHandle/of (long pid)))]
-    (if-let [started-at (some-> handle .info .startInstant optional-value)]
-      {:state (if (.isAlive handle) "live" "gone")
-       :pid pid
-       :started-at (str started-at)}
-      {:state "unavailable"
-       :pid pid
-       :reason "process start instant is unavailable"})
-    {:state "gone" :pid pid}))
+  process/process-identity)
 
-(defn- scoped-host-observation []
-  (try
-    {:state "available" :host (host-name)}
-    (catch Throwable error
-      {:state "unavailable" :reason (ex-message error)})))
-
-(defn- recorded-process-observation [run prefix]
-  (let [pid (attr-get run (keyword "harness" (str prefix "-pid")))
-        expected-start
-        (attr-get run (keyword "harness" (str prefix "-started-at")))
-        expected-host (attr-get run (keyword "harness" (str prefix "-host")))
-        expected-invocation
-        (attr-get run (keyword "harness" (str prefix "-invocation")))
-        current-invocation (life/invocation run)
-        observed-host (scoped-host-observation)]
-    (cond
-      (or (nil? pid) (str/blank? expected-start) (str/blank? expected-host)
-          (str/blank? expected-invocation))
-      {:state "missing"}
-
-      (not= expected-invocation current-invocation)
-      {:state "unavailable"
-       :reason "process identity belongs to another invocation"
-       :recorded-invocation expected-invocation
-       :current-invocation current-invocation}
-
-      (= "unavailable" (:state observed-host))
-      observed-host
-
-      (not= expected-host (:host observed-host))
-      {:state "remote"
-       :recorded-host expected-host
-       :observed-host (:host observed-host)}
-
-      (not (and (integer? pid) (pos? pid)))
-      {:state "unavailable" :reason "recorded process PID is invalid"}
-
-      :else
-      (try
-        (let [observed (process-identity pid)]
-          (if (and (= "live" (:state observed))
-                   (not= expected-start (:started-at observed)))
-            (assoc observed :state "replaced"
-                   :expected-started-at expected-start)
-            (assoc observed :expected-started-at expected-start)))
-        (catch Throwable error
-          {:state "unavailable" :reason (ex-message error)})))))
-
-(defn completion-owner-observation
+(def completion-owner-observation
   "Observe the exact completion-owning bin process without signalling it."
-  [run]
-  (recorded-process-observation run "completion-owner"))
+  process/completion-owner-observation)
 
-(defn provider-observation
+(def provider-observation
   "Observe the exact provider exec process without signalling it."
-  [run]
-  (recorded-process-observation run "provider"))
+  process/provider-observation)
 
-(defn native-observation
-  "Return positive local evidence of a process naming the run's native session.
+(def native-observation
+  "Return positive local evidence of a process naming the run's native session."
+  process/native-observation)
 
-  A missing match is only `not-observed`, never proof of provider exit. Process
-  metadata may be unavailable under host policy; that protects the run as an
-  unknown observation."
-  [run]
-  (let [session-id (attr-get run :harness/session-id)]
-    (if (str/blank? session-id)
-      {:state "not-observed"}
-      (try
-        (with-open [processes (ProcessHandle/allProcesses)]
-          (let [observable (atom 0)
-                matches
-                (->> (iterator-seq (.iterator processes))
-                     (keep (fn [^ProcessHandle handle]
-                             (when-let [arguments
-                                        (optional-value (.arguments (.info handle)))]
-                               (swap! observable inc)
-                               (when (some #{session-id} (seq arguments))
-                                 (.pid handle)))))
-                     vec)]
-            (cond
-              (seq matches) {:state "active" :pids matches}
-              (pos? @observable) {:state "not-observed"}
-              :else {:state "unavailable"
-                     :reason "no process arguments are observable"})))
-        (catch Throwable error
-          {:state "unavailable" :reason (ex-message error)})))))
-
-(defn completion-owner-attributes
+(def completion-owner-attributes
   "Return durable start attributes for the current completion-owning bin PID."
-  [pid]
-  (require-valid! pos-int? pid
-                  "Interactive completion owner requires a positive PID")
-  (let [fact (process-identity pid)
-        host (scoped-host-observation)]
-    (when-not (and (= "live" (:state fact))
-                   (= "available" (:state host)))
-      (fail! "Interactive completion owner is not positively observable"
-             {:process fact :host host}))
-    {:harness/completion-owner-pid pid
-     :harness/completion-owner-started-at (:started-at fact)
-     :harness/completion-owner-host (:host host)}))
+  process/completion-owner-attributes)
 
 (defn register-provider!
   "Bind the actual provider-exec PID to one running interactive invocation.
@@ -224,7 +115,7 @@
     (let [run (runs/require-run rt id)
           invocation (or invocation (life/invocation run))
           fact (process-identity pid)
-          host (scoped-host-observation)
+          host (process/scoped-host-observation)
           existing-invocation (attr-get run :harness/provider-invocation)
           existing-identity
           (select-keys (:attributes run)
@@ -406,25 +297,6 @@
       :runs results
       :changed (mapv :id (filter :changed results))})))
 
-(defn- state [rt]
-  (runtime/spool-state rt ::state {:version state-version}
-                       #(hash-map :sweep-config (atom nil))))
-
-(defn- sweep-config [rt]
-  (:sweep-config (state rt)))
-
-(defn- pending-sweep [rt]
-  (some #(when (= sweep-key (:key %)) %) (scheduler/pending rt)))
-
-(defn- arm-sweep! [rt interval-ms offset generation]
-  (scheduler/schedule!
-   rt {:key sweep-key
-       :wake-at (.plusMillis ^Instant (runtime/now rt) (long interval-ms))
-       :handler sweep-handler
-       :payload {:interval-ms interval-ms
-                 :offset offset
-                 :generation generation}}))
-
 (defn desired-sweep
   "Lifecycle read hook returning the configured reconciliation cadence."
   [_context]
@@ -435,20 +307,20 @@
 (defn actual-sweep
   "Lifecycle read hook returning the currently pending durable sweep wake."
   [{:keys [runtime]}]
-  (pending-sweep runtime))
+  (sweep/pending runtime))
 
 (defn apply-sweep!
   "Lifecycle apply hook converging one durable reconciliation wake."
   [{:keys [runtime desired]}]
-  (let [config (sweep-config runtime)]
+  (let [config (sweep/config-lock runtime)]
     #_{:splint/disable [lint/locking-object]}
     (locking config
-      (let [actual (pending-sweep runtime)
+      (let [actual (sweep/pending runtime)
             interval-ms (:interval-ms desired)
             current-interval (get-in actual [:payload :interval-ms])
             current-offset (get-in actual [:payload :offset])
             current-generation (get-in actual [:payload :generation])
-            unchanged? (and (= sweep-handler (:handler actual))
+            unchanged? (and (= sweep/handler (:handler actual))
                             (= interval-ms current-interval)
                             (nat-int? current-offset)
                             (s/valid? ::generation current-generation))]
@@ -457,7 +329,7 @@
           (do
             (reset! config desired)
             (when actual
-              (scheduler/cancel! runtime sweep-key))
+              (sweep/cancel! runtime))
             {:reconciled :harness-interactive-sweep
              :interval-ms nil
              :wake :disabled})
@@ -472,7 +344,7 @@
           :else
           (let [generation (str (UUID/randomUUID))]
             (reset! config (assoc desired :generation generation))
-            (arm-sweep! runtime interval-ms 0 generation)
+            (sweep/arm! runtime interval-ms 0 generation)
             {:reconciled :harness-interactive-sweep
              :interval-ms interval-ms
              :wake :scheduled}))))))
@@ -482,12 +354,12 @@
   [{:keys [runtime] :effect/keys [phase]}]
   (if (= :runtime-stop phase)
     {:reconciled :harness-interactive-sweep :status :preserved}
-    (let [config (sweep-config runtime)]
+    (let [config (sweep/config-lock runtime)]
       #_{:splint/disable [lint/locking-object]}
       (locking config
         (reset! config nil)
-        (when (pending-sweep runtime)
-          (scheduler/cancel! runtime sweep-key))
+        (when (sweep/pending runtime)
+          (sweep/cancel! runtime))
         {:reconciled :harness-interactive-sweep :status :removed}))))
 
 (defn sweep-wake!
@@ -501,7 +373,7 @@
   (let [interval-ms (:interval-ms payload)
         offset (or (:offset payload) 0)
         generation (:generation payload)
-        config (sweep-config runtime)]
+        config (sweep/config-lock runtime)]
     (require-valid! ::interval-ms interval-ms
                     "Harness reconciliation wake has an invalid interval")
     (require-valid! ::offset offset
@@ -515,7 +387,7 @@
                  (= interval-ms (:interval-ms configured))
                  (= generation (:generation configured)))
           (let [next-offset (mod (+ offset sweep-limit) Long/MAX_VALUE)]
-            (arm-sweep! runtime interval-ms next-offset generation)
+            (sweep/arm! runtime interval-ms next-offset generation)
             (reconcile! runtime {:source "scheduled"
                                  :limit sweep-limit
                                  :offset offset}))
