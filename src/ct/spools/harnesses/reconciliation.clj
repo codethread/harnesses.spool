@@ -208,17 +208,21 @@
 
   The generated child shell reports itself immediately before `exec`, so the
   PID and start instant remain stable across the exec. Repeats with identical
-  evidence converge; conflicts and stale invocations fail loudly."
+  evidence converge; conflicts and stale invocations fail loudly.
+
+  A legacy launcher may omit `invocation`; its current durable attempt token is
+  used so a launcher generated across a backend upgrade remains compatible."
   [rt id invocation pid]
   (require-valid! ::runtime rt "register-provider! requires a Weaver runtime")
   (require-valid! ::run-id id "register-provider! requires a run ID")
-  (require-valid! ::run-id invocation
-                  "register-provider! requires an invocation")
+  (require-valid! #(or (nil? %) (s/valid? ::run-id %)) invocation
+                  "register-provider! requires a valid optional invocation")
   (require-valid! pos-int? pid "register-provider! requires a positive PID")
   #_{:clj-kondo/ignore [:locking-suspicious-lock]}
   #_{:splint/disable [lint/locking-object]}
   (locking (catalog/publication-lock rt)
     (let [run (runs/require-run rt id)
+          invocation (or invocation (life/invocation run))
           fact (process-identity pid)
           host (scoped-host-observation)
           existing-invocation (attr-get run :harness/provider-invocation)

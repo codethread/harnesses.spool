@@ -51,9 +51,10 @@
     (spit file
           (str "#!/bin/sh\n"
                (when managed-exec?
-                 (str ": \"${MILLSTRAND_INVOCATION:?}\"\n"
-                      "readonly _MILLSTRAND_HARNESS_INVOCATION="
-                      "\"$MILLSTRAND_INVOCATION\"\n"))
+                 (str "if [ -n \"${MILLSTRAND_INVOCATION:-}\" ]; then\n"
+                      "  readonly _MILLSTRAND_HARNESS_INVOCATION="
+                      "\"$MILLSTRAND_INVOCATION\"\n"
+                      "fi\n"))
                provider-exports
                (when (attr-get run :identity/reservation-id)
                  bootstrap-sentinel)
@@ -64,10 +65,16 @@
                "export XDG_STATE_HOME=" (sh-quote (state-root runtime)) "\n"
                "cd " (sh-quote (attr-get run :harness/cwd)) " || exit 1\n"
                (when managed-exec?
-                 (str "strand --workspace \"$MILLSTRAND_WORKSPACE\" "
+                 (str "if [ -n \"${_MILLSTRAND_HARNESS_INVOCATION:-}\" ]; then\n"
+                      "  strand --workspace \"$MILLSTRAND_WORKSPACE\" "
                       "agent _provider_started \"$MILLSTRAND_RUN_ID\" "
                       "--invocation \"$_MILLSTRAND_HARNESS_INVOCATION\" "
                       "--provider-pid \"$$\" >/dev/null || exit $?\n"
+                      "else\n"
+                      "  strand --workspace \"$MILLSTRAND_WORKSPACE\" "
+                      "agent _provider_started \"$MILLSTRAND_RUN_ID\" "
+                      "--provider-pid \"$$\" >/dev/null || exit $?\n"
+                      "fi\n"
                       "unset MILLSTRAND_INVOCATION\n"))
                "exec " (str/join " " (map sh-quote argv)) "\n"))
     (Files/setPosixFilePermissions

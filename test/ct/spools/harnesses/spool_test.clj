@@ -48,8 +48,8 @@
                                   (mapcat #(vector % :subcommands) (butlast path))
                                   [(last path) :flags])))
                    :by-identity)))
-  (doseq [path [["startup"] ["repair-startup"] ["_started"]
-                ["_provider_started"] ["_finished"]
+  (doseq [path [["startup"] ["repair-startup"] ["_callback-contract"]
+                ["_started"] ["_provider_started"] ["_finished"]
                 ["config" "list"] ["config" "set"] ["config" "unset"]]]
     (is (not (contains? (or (get-in cli/agent-arg-spec
                                     (into [:subcommands]
@@ -290,6 +290,54 @@
                           script "agent _provider_started")
                          (clojure.string/includes?
                           script "--provider-pid \"$$\"")))})))))
+        (testing "legacy callbacks remain completable by the current backend"
+          (is (= {:contract 2
+                  :owner-recorded false
+                  :provider-fenced true
+                  :status "failed"
+                  :settled true
+                  :legacy-launcher-path true}
+                 (test-alpha/repl!
+                  ctx
+                  '(let [rt (millstrand.api.current.alpha/runtime)
+                         created
+                         (millstrand.api.weaver.alpha/op!
+                          rt 'agent
+                          ["run" "pi" "--interactive" "--cwd" "/tmp"])
+                         started
+                         (millstrand.api.weaver.alpha/op!
+                          rt 'agent ["_started" (:id created)])
+                         _
+                         (millstrand.api.weaver.alpha/op!
+                          rt 'agent
+                          ["_provider_started" (:id created)
+                           "--provider-pid"
+                           (str (.pid (java.lang.ProcessHandle/current)))])
+                         finished
+                         (millstrand.api.weaver.alpha/op!
+                          rt 'agent
+                          ["_finished" (:id created) "--exit-code" "1"])
+                         stored
+                         (millstrand.api.weaver.alpha/show rt (:id created))
+                         script (slurp (:launcher created))]
+                     {:contract
+                      (:version
+                       (millstrand.api.weaver.alpha/op!
+                        rt 'agent ["_callback-contract"]))
+                      :owner-recorded
+                      (some? (millstrand.api.spool.alpha/attr-get
+                              stored :harness/completion-owner-pid))
+                      :provider-fenced
+                      (= (:invocation started)
+                         (millstrand.api.spool.alpha/attr-get
+                          stored :harness/provider-invocation))
+                      :status (:status finished)
+                      :settled (:settled finished)
+                      :legacy-launcher-path
+                      (and
+                       (clojure.string/includes?
+                        script "${_MILLSTRAND_HARNESS_INVOCATION:-}")
+                       (clojure.string/includes? script "else\n  strand"))})))))
         (testing "configured provider argv keeps invocation templating"
           (is (true?
                (test-alpha/repl!

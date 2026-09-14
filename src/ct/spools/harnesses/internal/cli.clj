@@ -155,7 +155,10 @@
                      :doc "Attest abandonment for one unknown legacy run."}
                     :reason
                     {:type :string
-                     :doc "Required reason for explicit abandonment."}})
+                     :doc "Required reason for explicit abandonment."}
+                    :offset
+                    {:type :int
+                     :doc "Cursor returned by a prior bounded bulk scan."}})
      :positionals [{:name :run-id
                     :type :string
                     :doc "Optional exact interactive run ID."}]}
@@ -220,12 +223,15 @@
                     :type :string
                     :required? true
                     :doc "Final notes."}]}
+    "_callback-contract"
+    {:doc "Return the interactive callback protocol supported by this backend."
+     :hook-class :read
+     :deadline-class :standard}
     "_started" {:doc "Private agent transition: ready to running."
                 :hook-class :mutating
                 :deadline-class :standard
                 :flags {:completion-owner-pid
                         {:type :int
-                         :required? true
                          :doc "Completion-owning bin PID observed by Weaver."}}
                 :positionals [{:name :run-id
                                :type :string
@@ -235,9 +241,9 @@
     {:doc "Private agent transition: bind the provider exec process."
      :hook-class :mutating
      :deadline-class :standard
-     :flags {:invocation {:type :string
-                          :required? true
-                          :doc "Originating attempt invocation."}
+     :flags {:invocation
+             {:type :string
+              :doc "Originating attempt invocation; omitted by legacy launchers."}
              :provider-pid {:type :int
                             :required? true
                             :doc "Child shell PID retained across provider exec."}}
@@ -248,9 +254,9 @@
     "_finished" {:doc "Private agent transition: record process exit."
                  :hook-class :mutating
                  :deadline-class :standard
-                 :flags {:invocation {:type :string
-                                      :required? true
-                                      :doc "Originating attempt invocation."}
+                 :flags {:invocation
+                         {:type :string
+                          :doc "Originating invocation; omitted by legacy bins."}
                          :exit-code {:type :int
                                      :required? true
                                      :doc "Observed process exit code."}}

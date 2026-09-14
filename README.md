@@ -481,9 +481,25 @@ Millstrand's durable scheduler every 60 minutes. Set
 `MILLSTRAND_HARNESS_RECONCILIATION_INTERVAL_MS` to a positive integer before
 starting Weaver to choose another cadence, or to the exact value `disabled` to
 disable it. Each fire inspects at most 100 runs and persists a rotating offset
-in the next wake so ambiguous early rows cannot starve later candidates. Normal
-runtime restarts preserve the existing durable deadline. Cadence is never
-process-death evidence, and the sweep never stops or restarts Mill.
+in the next wake so ambiguous early rows cannot starve later candidates. Bulk
+manual results expose the same `next-offset` cursor, accepted by a subsequent
+`--offset` scan. Normal runtime restarts preserve the existing durable deadline.
+Cadence is never process-death evidence, and the sweep never stops or restarts
+Mill.
+
+`bin/agent` is the mutable client entrypoint, while launcher scripts and agent
+callback grammar come from the Harnesses library loaded by a particular
+Weaver. The bin queries that backend's callback contract before sending new
+PID/invocation fences. A pre-upgrade backend therefore receives its legacy
+callbacks, and an upgraded backend continues to accept callbacks from already
+running legacy bins and launchers. Legacy callbacks remain completable but lack
+retrospective process-custody evidence, so ordinary reconciliation keeps them
+unknown.
+
+Updating this checkout does not update an already loaded Weaver. The callback
+contract, provider custody, and scheduled sweep take effect only after the
+supported runtime module update has loaded this library; source tests do not
+constitute deployment evidence.
 
 ## Declarative reviewers
 

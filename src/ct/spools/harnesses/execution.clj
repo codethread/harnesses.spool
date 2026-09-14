@@ -153,14 +153,21 @@
            (throw error)))))))
 
 (defn mark-interactive-provider!
-  "Bind the actual provider exec to its originating interactive invocation."
+  "Bind the actual provider exec to its interactive attempt.
+
+  Legacy launchers omit `invocation`; the current durable invocation is safe for
+  that one attempt because retry requires its predecessor to be settled."
   [rt id invocation provider-pid]
   (reconciliation/register-provider! rt id invocation provider-pid))
 
 (defn finish-interactive!
-  "Finish an interactive run through its fenced provider callback."
+  "Finish an interactive run through its fenced provider callback.
+
+  Legacy bins omit `invocation`; use the run's current token so callbacks
+  created before a backend upgrade remain completable."
   [rt id invocation exit-code]
-  (let [run (full-run rt id)]
+  (let [run (full-run rt id)
+        invocation (or invocation (life/invocation run))]
     (when-not (= "interactive" (attr-get run :harness/mode))
       (fail! "_finished applies only to interactive harness runs" {:id id}))
     (try

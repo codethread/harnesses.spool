@@ -136,7 +136,7 @@
      ["reconcile"]
      (reconciliation/reconcile!
       runtime
-      (cond-> (select-keys args [:run-id :reason])
+      (cond-> (select-keys args [:run-id :reason :offset])
         (:dry-run args) (assoc :dry-run? true)
         (:abandon args) (assoc :abandon? true)
         (:by-identity args) (assoc :by (:by-identity args))))
@@ -146,6 +146,7 @@
      ["self-complete"] (summary (harness/self-complete! runtime
                                                         (:run-id args)
                                                         (:result args)))
+     ["_callback-contract"] {:version 2}
      ["_started"]
      (summary (execution/mark-interactive-running!
                runtime (:run-id args) (:completion-owner-pid args)))

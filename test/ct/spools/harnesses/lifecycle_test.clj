@@ -480,6 +480,104 @@
         (is (true? (:target-blocked? result)))
         (is (true? (:same-session-blocked? result)))))))
 
+(deftest bounded-manual-and-scheduled-scans-reach-later-orphans
+  (test-alpha/run-with-weaver-world
+   (full-world-options :sqlite-memory)
+   (fn [ctx]
+     (let [result
+           (test-alpha/repl!
+            ctx
+            '(do
+               (require '[clojure.set :as set]
+                        '[ct.spools.harnesses :as harnesses]
+                        '[ct.spools.harnesses.reconciliation :as reconcile]
+                        '[millstrand.api.current.alpha :as current]
+                        '[millstrand.api.spool.alpha :as spool]
+                        '[millstrand.api.weaver.alpha :as weaver])
+               (let [rt (current/runtime)
+                     runs
+                     (mapv
+                      (fn [_]
+                        (let [run (harnesses/create!
+                                   rt {:harness :pi :mode :interactive})]
+                          (harnesses/begin-attempt! rt (:id run))))
+                      (range 101))
+                     ids (into #{} (map (comp :id :strand)) runs)
+                     first-manual
+                     (with-redefs [reconcile/native-observation
+                                   (constantly {:state "not-observed"})]
+                       (weaver/op! rt 'agent ["reconcile" "--dry-run"]))
+                     first-ids (into #{} (map :id) (:runs first-manual))
+                     orphan-id (first (set/difference ids first-ids))
+                     orphan-start
+                     (some #(when (= orphan-id (get-in % [:strand :id])) %)
+                           runs)
+                     pid (.pid (java.lang.ProcessHandle/current))
+                     owner
+                     (assoc (reconcile/completion-owner-attributes pid)
+                            :harness/completion-owner-invocation
+                            (:invocation orphan-start))
+                     _ (weaver/update! rt orphan-id {:attributes owner})
+                     _ (reconcile/register-provider!
+                        rt orphan-id (:invocation orphan-start) pid)
+                     _ (weaver/update!
+                        rt orphan-id
+                        {:attributes
+                         {:harness/completion-owner-started-at
+                          "1970-01-01T00:00:00Z"
+                          :harness/provider-started-at
+                          "1970-01-01T00:00:00Z"}})
+                     second-manual
+                     (with-redefs [reconcile/native-observation
+                                   (constantly {:state "not-observed"})]
+                       (weaver/op!
+                        rt 'agent
+                        ["reconcile" "--dry-run" "--offset"
+                         (str (:next-offset first-manual))]))
+                     first-payload (:payload
+                                    (reconcile/actual-sweep {:runtime rt}))
+                     first-scheduled
+                     (with-redefs [reconcile/native-observation
+                                   (constantly {:state "not-observed"})]
+                       (reconcile/sweep-wake!
+                        {:runtime rt :payload first-payload}))
+                     second-payload (:payload
+                                     (reconcile/actual-sweep {:runtime rt}))
+                     second-scheduled
+                     (with-redefs [reconcile/native-observation
+                                   (constantly {:state "not-observed"})]
+                       (reconcile/sweep-wake!
+                        {:runtime rt :payload second-payload}))
+                     stored (weaver/show rt orphan-id)]
+                 {:orphan-id orphan-id
+                  :first-manual
+                  {:count (count (:runs first-manual))
+                   :truncated (:truncated first-manual)
+                   :next-offset (:next-offset first-manual)
+                   :contains-orphan (contains? first-ids orphan-id)}
+                  :second-manual
+                  {:first-id (get-in second-manual [:runs 0 :id])
+                   :classification
+                   (get-in second-manual [:runs 0 :classification])}
+                  :first-scheduled (:changed first-scheduled)
+                  :second-scheduled (:changed second-scheduled)
+                  :stored
+                  {:status (spool/attr-get stored :harness/status)
+                   :substatus (spool/attr-get stored
+                                              :harness/substatus)}})))]
+       (is (= {:count 100
+               :truncated true
+               :next-offset 100
+               :contains-orphan false}
+              (:first-manual result)))
+       (is (= {:first-id (:orphan-id result)
+               :classification "orphaned"}
+              (:second-manual result)))
+       (is (= [] (:first-scheduled result)))
+       (is (= [(:orphan-id result)] (:second-scheduled result)))
+       (is (= {:status "stopped" :substatus "abandoned"}
+              (:stored result)))))))
+
 (deftest durable-sweep-preserves-cadence-rearms-and-disables
   (with-core-world
     (fn [ctx]
