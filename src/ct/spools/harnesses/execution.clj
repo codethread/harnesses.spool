@@ -5,6 +5,7 @@
             [clojure.string :as str]
             [ct.spools.harnesses :as harness]
             [ct.spools.harnesses.assignment :as assignment]
+            [ct.spools.harnesses.catalog :as catalog]
             [ct.spools.harnesses.internal.guidance :as guidance]
             [ct.spools.harnesses.internal.guidance-receipts :as guidance-receipts]
             [ct.spools.harnesses.internal.launcher :as launcher]
@@ -19,7 +20,8 @@
             [millstrand.api.runtime.alpha :as runtime]
             [millstrand.api.spool.alpha :refer [attr-get fail! require-valid!]]
             [millstrand.api.weaver.alpha :as weaver])
-  (:import [java.time Duration Instant]
+  (:import [java.time Instant]
+           [java.util UUID]
            [java.util.concurrent Executors ThreadFactory TimeUnit]))
 
 (def ^:private state-version 4)
@@ -34,6 +36,7 @@
          ^:private resolved-definition ^:private prepare-launch
          ^:private enforce-stop! ^:private schedule-inspection!
          ^:private schedule-guidance-deadline!
+         ^:private arm-guidance-deadline!
          ^:private recover-guidance-deadlines! ^:private callback)
 
 (s/def ::event
@@ -343,16 +346,21 @@
 (defn- new-state []
   (let [executor (Executors/newCachedThreadPool (daemon-thread-factory))
         scheduler (java.util.concurrent.ScheduledThreadPoolExecutor. 1
-                                                                     (daemon-thread-factory))]
-    {:in-flight (atom #{})
+                                                                     (daemon-thread-factory))
+        open? (atom true)]
+    {:generation (str (UUID/randomUUID))
+     :open? open?
+     :in-flight (atom #{})
      :deferred-recovery (atom nil)
      :reconciliation-failures (atom {})
      :inspection-scheduled? (atom false)
      :executor executor
      :scheduler scheduler
      :close-fn (fn []
-                 (.shutdownNow executor)
-                 (.shutdownNow scheduler)
+                 (locking open?
+                   (reset! open? false)
+                   (.shutdownNow executor)
+                   (.shutdownNow scheduler))
                  (.awaitTermination executor 1000 TimeUnit/MILLISECONDS))}))
 
 (defn- state-holder [rt]
@@ -374,8 +382,15 @@
 (defn- deactivate-state! [rt]
   (let [active (:active (state-holder rt))
         opened @active]
-    (when-not (and opened (compare-and-set! active opened nil))
+    (when-not opened
       (fail! "Harness execution resources are not open" {}))
+    #_{:clj-kondo/ignore [:locking-suspicious-lock]}
+    #_{:splint/disable [lint/locking-object]}
+    (locking (:open? opened)
+      (when-not (and @(:open? opened)
+                     (compare-and-set! active opened nil))
+        (fail! "Harness execution resources are not open" {}))
+      (reset! (:open? opened) false))
     opened))
 
 (defn- eligible-guidance-deadline? [run record]
@@ -386,22 +401,56 @@
        (not (and (= "pi" (attr-get run :harness/harness))
                  (= "fetched" (get record "state"))))))
 
+(defn- active-generation [rt generation]
+  (let [opened @(:active (state-holder rt))]
+    (when (and opened
+               @(:open? opened)
+               (= generation (:generation opened)))
+      opened)))
+
+(defn- schedule-guidance-task! [rt originating-run generation delay-nanos]
+  (when-let [opened (active-generation rt generation)]
+    #_{:clj-kondo/ignore [:locking-suspicious-lock]}
+    #_{:splint/disable [lint/locking-object]}
+    (locking (:open? opened)
+      (when (and @(:open? opened)
+                 (identical? opened (active-generation rt generation)))
+        (.schedule
+         ^java.util.concurrent.ScheduledExecutorService (:scheduler opened)
+         ^Runnable #(arm-guidance-deadline! rt originating-run generation)
+         (max 1 delay-nanos)
+         TimeUnit/NANOSECONDS)
+        :scheduled))))
+
+(defn- same-guidance-attempt? [originating-run current]
+  (and (= (attr-get originating-run :harness/attempt)
+          (attr-get current :harness/attempt))
+       (= (attr-get originating-run :harness/invocation)
+          (attr-get current :harness/invocation))))
+
+(defn- arm-guidance-deadline! [rt originating-run generation]
+  #_{:clj-kondo/ignore [:locking-suspicious-lock]}
+  #_{:splint/disable [lint/locking-object]}
+  (locking (catalog/publication-lock rt)
+    (when (active-generation rt generation)
+      (let [current (full-run rt (:id originating-run))
+            record (guidance/current-attempt current)]
+        (when (and (same-guidance-attempt? originating-run current)
+                   (eligible-guidance-deadline? current record))
+          (let [now (Instant/now)]
+            (if (guidance/deadline-expired? current record now)
+              (do
+                (guidance-receipts/expire! rt originating-run)
+                :expired)
+              (let [deadline (Instant/parse (get record "deadline-at"))
+                    delay-nanos (.toNanos (java.time.Duration/between
+                                           now deadline))]
+                (schedule-guidance-task! rt originating-run generation
+                                         delay-nanos)))))))))
+
 (defn- schedule-guidance-deadline! [rt run]
-  (let [record (guidance/current-attempt run)]
-    (when (eligible-guidance-deadline? run record)
-      (let [now (Instant/now)]
-        (if (guidance/deadline-expired? run record now)
-          (do
-            (guidance-receipts/expire! rt run)
-            :expired)
-          (let [deadline (Instant/parse (get record "deadline-at"))
-                delay (max 1 (.toMillis (Duration/between now deadline)))
-                scheduler (:scheduler (state rt))]
-            (.schedule
-             ^java.util.concurrent.ScheduledExecutorService scheduler
-             ^Runnable #(guidance-receipts/expire! rt run)
-             delay TimeUnit/MILLISECONDS)
-            :scheduled))))))
+  (when-let [opened @(:active (state-holder rt))]
+    (arm-guidance-deadline! rt run (:generation opened))))
 
 (defn- recover-guidance-deadlines! [rt]
   (->> (weaver/list rt)

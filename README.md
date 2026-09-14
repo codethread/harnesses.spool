@@ -420,14 +420,23 @@ a partial versioned representation is corruption rather than a downgrade signal.
 capability allowlist is empty until the Agents adapter artifacts and exact Codex
 0.154.0/Pi 0.84.4 host profiles are independently accepted. An explicit native
 request therefore fails before run publication or identity reservation with the
-remedy to submit legacy work. Harnesses never infers capability from installed
-files, startup-v1 metadata, package versions, branches, or helper claims.
+remedy to submit legacy work. Native interactive selection is also rejected for
+fresh work, continuation, retry, and queued execution revalidation because a
+terminal launcher environment cannot yet be proven equal to the preflight
+environment. Interactive work remains available through default or explicit
+legacy transport; admitted native profiles apply only to headless work. Harnesses
+never infers capability from installed files, startup-v1 metadata, package
+versions, branches, or helper claims.
 
 When profiles are eventually accepted, Harnesses runs the approved no-model
 preflight against the actual executable, cwd, workspace, environment, provider
 selectors, and resume settings before publication and again before each attempt.
 The canonical executable path remains an explicit field in the bounded private
-request.
+request. Before helper execution, a private supervisor establishes and verifies
+a dedicated process-group identity that survives root and intermediate exits.
+Input, execution, output drains, exact owned-PID cleanup, and bounded worker
+joins share one monotonic budget; unrelated processes are never selected by
+command pattern.
 Evidence must match one approved preflight source and the complete approved
 adapter/executable/package/profile closure. Missing, changed, untrusted,
 duplicate, malformed, oversized, nonzero, or mismatched evidence fails loudly;
@@ -456,11 +465,16 @@ acknowledge --receipt JSON`, or failure with `agent guidance fail --receipt
 JSON`. Attempt states are `pending`, `fetched`, `acknowledged`, and `failed`;
 legacy attempts are `not-required`. Exact receipt replay is no-write, stale
 receipts cannot satisfy a newer attempt, and an unacknowledged native process
-exit is a bootstrap failure. A later exact-current reconstruction failure may
-move an acknowledged attempt to failed without discarding its real attachment.
-Durable handoff deadlines are restored after execution reopens; obsolete timers
-cannot fail retries or completed work, and fetched interactive Pi remains exempt.
-Acknowledgement proves adapter handoff only—not atomic host ingestion, model
+exit is a bootstrap failure with an unusable projection and durable stop intent,
+while genuine attachment, reservation, and custody remain intact for later
+evidence. A later exact-current reconstruction failure may move an acknowledged
+attempt to failed without discarding its real attachment. Durable handoff
+deadlines are restored after execution reopens. Nanosecond scheduling and locked
+early-callback rearming retain the persisted deadline and exact
+attempt/invocation plus execution-resource generation; obsolete timers cannot
+fail retries or completed work, rearm after shutdown, or reset deadlines. Fetched
+interactive Pi remains exempt. Acknowledgement proves adapter handoff only—not
+atomic host ingestion, model
 obedience, or removal of historical transcript instructions.
 
 Native mode removes only Harnesses-generated Codex `developer_instructions` or

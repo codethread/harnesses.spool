@@ -282,8 +282,9 @@
                      native-error
                      (try
                        (harnesses/create!
-                        rt {:harness :native-codex :mode :interactive
-                            :cwd "/tmp" :guidance-transport "native-v1"})
+                        rt {:harness :native-codex :mode :headless
+                            :cwd "/tmp" :prompt "Native admission probe"
+                            :guidance-transport "native-v1"})
                        nil
                        (catch clojure.lang.ExceptionInfo error
                          (ex-message error)))
@@ -326,8 +327,9 @@
                          capability/*test-preflight-runner* accepted-runner]
                  (let [run (harnesses/create!
                             rt {:harness :native-codex
-                                :mode :interactive
+                                :mode :headless
                                 :cwd "/tmp"
+                                :prompt "Native bundle fixture"
                                 :append-system-prompt "same"
                                 :attributes
                                 {:harness/appended-system-prompts
@@ -410,8 +412,9 @@
               '(binding [capability/*test-capability-profiles* [profile]
                          capability/*test-preflight-runner* accepted-runner]
                  (let [run (harnesses/create!
-                            rt {:harness :native-codex :mode :interactive
-                                :cwd "/tmp" :guidance-transport "native-v1"})
+                            rt {:harness :native-codex :mode :headless
+                                :cwd "/tmp" :prompt "Native failure fixture"
+                                :guidance-transport "native-v1"})
                        started (harnesses/begin-attempt! rt (:id run))
                        guidance-bootstrap (guidance/bootstrap (:strand started))
                        receipt {"schema" "millstrand.agent-guidance-receipt/v1"
@@ -439,8 +442,8 @@
                                                "outcome" "adapter-handoff")))
                        failed (weaver/show rt (:id run))
                        unacked (harnesses/create!
-                                rt {:harness :native-codex :mode :interactive
-                                    :cwd "/tmp"
+                                rt {:harness :native-codex :mode :headless
+                                    :cwd "/tmp" :prompt "Unacknowledged fixture"
                                     :guidance-transport "native-v1"})
                        unacked-start
                        (harnesses/begin-attempt! rt (:id unacked))
@@ -466,6 +469,10 @@
                                              :harness/substatus)
                     :unacked-settlement (attr unacked-finish
                                               :harness/settlement)
+                    :unacked-stop-requested
+                    (attr unacked-finish :harness/stop-requested-at)
+                    :unacked-session-usable
+                    (attr unacked-finish :harness/session-usable)
                     :unacked-attached (attr unacked-finish
                                             :harness/native-attached)}))))]
         (is (= "native-v1"
@@ -479,6 +486,8 @@
         (is (= "false" (:attached result)))
         (is (not= "invented" (:session result)))
         (is (= "native guidance bootstrap failed" (:stop-reason result)))
-        (is (= ["failed" "bootstrap" "process-exit" "false"]
+        (is (= ["failed" "bootstrap" "process-exit" "false" "false"]
                [(:unacked-status result) (:unacked-substatus result)
-                (:unacked-settlement result) (:unacked-attached result)]))))))
+                (:unacked-settlement result) (:unacked-session-usable result)
+                (:unacked-attached result)]))
+        (is (string? (:unacked-stop-requested result)))))))

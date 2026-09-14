@@ -1,6 +1,7 @@
 (ns ct.spools.harnesses.guidance-continuation-test
   "Native continuation, retry fencing, and explicit rollback tests."
   (:require [clojure.test :refer [deftest is]]
+            [ct.spools.harnesses.guidance-fixture :as guidance-fixture]
             [ct.spools.harnesses.guidance-test :as guidance-test]
             [millstrand.test.alpha :as test-alpha]))
 
@@ -12,12 +13,14 @@
              ctx
              (list
               'do guidance-test/lifecycle-setup
+              guidance-fixture/interactive-selection
               '(binding [capability/*test-capability-profiles* [profile]
                          capability/*test-preflight-runner* accepted-runner]
                  (let [parent (harnesses/create!
                                rt {:harness :native-codex
-                                   :mode :interactive
+                                   :mode :headless
                                    :cwd "/tmp"
+                                   :prompt "Parent native task"
                                    :attributes
                                    {:harness/appended-system-prompts
                                     ["first" "first"]}
@@ -46,7 +49,8 @@
                          :invocation (:invocation parent-start)
                          :evidence {:settled true
                                     :settlement "process-exit"}})
-                       child (harnesses/resume! rt (:id parent-done) {})
+                       child (harnesses/resume! rt (:id parent-done)
+                                                {:prompt "Continue native task"})
                        child-template
                        (attr child :harness/guidance-context-template)
                        child-start (harnesses/begin-attempt! rt (:id child))
@@ -140,6 +144,7 @@
              ctx
              (list
               'do guidance-test/lifecycle-setup
+              guidance-fixture/interactive-selection
               '(do
                  (require '[ct.spools.harnesses.internal.managed-startup
                             :as managed]
@@ -241,3 +246,177 @@
         (is (= "legacy" (:child-transport result)))
         (is (map? (:child-template result)))
         (is (nil? (:child-reservation result)))))))
+
+(deftest native-interactive-is-rejected-before-writes-and-at-execution
+  (guidance-test/with-guidance-world
+    (fn [ctx]
+      (let [result
+            (test-alpha/repl!
+             ctx
+             (list
+              'do guidance-test/lifecycle-setup
+              guidance-fixture/interactive-selection
+              '(binding [capability/*test-capability-profiles* [profile]
+                         capability/*test-preflight-runner* accepted-runner]
+                 (let [preflight-calls (atom 0)
+                       counting-runner
+                       (fn [accepted request]
+                         (swap! preflight-calls inc)
+                         (accepted-runner accepted request))
+                       fresh
+                       (binding [capability/*test-preflight-runner*
+                                 counting-runner]
+                         (mapv
+                          (fn [provider]
+                            (let [before (weaver/list rt)
+                                  error
+                                  (try
+                                    (harnesses/create!
+                                     rt {:harness provider
+                                         :mode :interactive
+                                         :cwd "/tmp"
+                                         :guidance-transport "native-v1"})
+                                    nil
+                                    (catch clojure.lang.ExceptionInfo failure
+                                      (ex-message failure)))]
+                              {:error error
+                               :no-write (= before (weaver/list rt))}))
+                          [:native-codex :native-pi]))
+                       legacy-default
+                       (harnesses/create!
+                        rt {:harness :codex :mode :interactive :cwd "/tmp"})
+                       legacy-explicit
+                       (harnesses/create!
+                        rt {:harness :pi :mode :interactive :cwd "/tmp"
+                            :guidance-transport "legacy"})
+                       headless
+                       (harnesses/create!
+                        rt {:harness :native-codex :mode :headless
+                            :cwd "/tmp" :prompt "Headless native remains admitted"
+                            :guidance-transport "native-v1"})
+                       completed
+                       (with-native-interactive-fixture
+                         (fn []
+                           (let [run
+                                 (harnesses/create!
+                                  rt {:harness :native-codex
+                                      :mode :interactive :cwd "/tmp"
+                                      :guidance-transport "native-v1"})
+                                 started
+                                 (harnesses/begin-attempt! rt (:id run))
+                                 bundle
+                                 (harnesses/managed-startup!
+                                  rt {:harness "codex"
+                                      :native-session-id "interactive-completed"
+                                      :cwd "/tmp" :scope "root"
+                                      :bootstrap
+                                      (harnesses/managed-bootstrap rt (:id run))
+                                      :guidance
+                                      (guidance/bootstrap (:strand started))})
+                                 _ (harnesses/guidance-acknowledge!
+                                    rt (guidance-receipt bundle
+                                                         "adapter-handoff"))]
+                             (harnesses/finish!
+                              rt (:id run)
+                              {:status :done :exit-code 0
+                               :session-id "interactive-completed"
+                               :session-usable true
+                               :invocation (:invocation started)
+                               :evidence {:settled true
+                                          :settlement "process-exit"}}))))
+                       _ (reset! preflight-calls 0)
+                       before-resume (weaver/list rt)
+                       resume-error
+                       (binding [capability/*test-preflight-runner*
+                                 counting-runner]
+                         (try
+                           (harnesses/resume! rt (:id completed) {})
+                           nil
+                           (catch clojure.lang.ExceptionInfo failure
+                             (ex-message failure))))
+                       after-resume (weaver/list rt)
+                       failed
+                       (with-native-interactive-fixture
+                         (fn []
+                           (let [run
+                                 (harnesses/create!
+                                  rt {:harness :native-codex
+                                      :mode :interactive :cwd "/tmp"
+                                      :guidance-transport "native-v1"})
+                                 started
+                                 (harnesses/begin-attempt! rt (:id run))
+                                 receipt
+                                 {"schema" "millstrand.agent-guidance-receipt/v1"
+                                  "run-id" (:id run)
+                                  "attempt" (:attempt started)
+                                  "invocation" (:invocation started)
+                                  "harness" "codex"
+                                  "transport" "native-v1"
+                                  "bundle-sha256"
+                                  (attr run :harness/guidance-bundle-sha256)
+                                  "capability-sha256"
+                                  (attr run :harness/guidance-capability-sha256)
+                                  "outcome" "failed"
+                                  "stage" "rendering"
+                                  "code" "fixture-failure"
+                                  "diagnostic" "fixture failure"}
+                                 _ (harnesses/guidance-fail! rt receipt)]
+                             (harnesses/settle-outcome!
+                              rt (:id run)
+                              {:status :failed :exit-code 1
+                               :session-usable false
+                               :invocation (:invocation started)}
+                              {:settled true :settlement "process-exit"
+                               :failure-class "bootstrap"}))))
+                       _ (reset! preflight-calls 0)
+                       before-retry (weaver/show rt (:id failed))
+                       retry-error
+                       (binding [capability/*test-preflight-runner*
+                                 counting-runner]
+                         (try
+                           (harnesses/retry! rt (:id failed) {})
+                           nil
+                           (catch clojure.lang.ExceptionInfo failure
+                             (ex-message failure))))
+                       after-retry (weaver/show rt (:id failed))
+                       queued
+                       (with-native-interactive-fixture
+                         #(harnesses/create!
+                           rt {:harness :native-codex :mode :interactive
+                               :cwd "/tmp"
+                               :guidance-transport "native-v1"}))
+                       _ (reset! preflight-calls 0)
+                       queued-error
+                       (binding [capability/*test-preflight-runner*
+                                 counting-runner]
+                         (try
+                           (harnesses/begin-attempt! rt (:id queued))
+                           nil
+                           (catch clojure.lang.ExceptionInfo failure
+                             (ex-message failure))))
+                       queued-after (weaver/show rt (:id queued))]
+                   {:fresh fresh
+                    :legacy [(attr legacy-default :harness/guidance-transport)
+                             (attr legacy-explicit :harness/guidance-transport)]
+                    :headless (attr headless :harness/guidance-transport)
+                    :resume-error resume-error
+                    :resume-no-write (= before-resume after-resume)
+                    :retry-error retry-error
+                    :retry-no-write (= before-retry after-retry)
+                    :queued-error queued-error
+                    :queued [(attr queued-after :harness/status)
+                             (attr queued-after :harness/substatus)
+                             (attr queued-after :harness/settled)]
+                    :preflight-calls @preflight-calls}))))]
+        (is (every? #(re-find #"does not support interactive" (:error %))
+                    (:fresh result)))
+        (is (every? :no-write (:fresh result)))
+        (is (= ["legacy" "legacy"] (:legacy result)))
+        (is (= "native-v1" (:headless result)))
+        (is (re-find #"does not support interactive" (:resume-error result)))
+        (is (true? (:resume-no-write result)))
+        (is (re-find #"does not support interactive" (:retry-error result)))
+        (is (true? (:retry-no-write result)))
+        (is (re-find #"does not support interactive" (:queued-error result)))
+        (is (= ["failed" "bootstrap" "true"] (:queued result)))
+        (is (zero? (:preflight-calls result)))))))

@@ -1,9 +1,12 @@
 (ns ct.spools.harnesses.guidance-capability-test
   "Exact disposable capability admission tests for disabled native guidance."
-  (:require [clojure.string :as str]
+  (:require [clojure.java.io :as io]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [ct.spools.harnesses.internal.guidance-capability :as capability]
-            [ct.spools.harnesses.internal.strict-json :as strict-json]))
+            [ct.spools.harnesses.internal.guidance-process :as guidance-process]
+            [ct.spools.harnesses.internal.strict-json :as strict-json])
+  (:import [java.lang ProcessHandle]))
 
 (defn- codex-hook []
   {"eventName" "sessionStart"
@@ -223,3 +226,93 @@
           (is (thrown-with-msg? clojure.lang.ExceptionInfo
                                 #"duplicate accepted"
                                 (capability/preflight! request))))))))
+
+(defn- alive-pid? [pid]
+  (some-> (ProcessHandle/of (long pid)) (.orElse nil) .isAlive))
+
+(defn- await-pid-file [file]
+  (loop [remaining 1000]
+    (if (.isFile file)
+      (parse-long (str/trim (slurp file)))
+      (if (pos? remaining)
+        (do (Thread/sleep 5) (recur (- remaining 5)))
+        (throw (ex-info "Fixture child PID was not recorded"
+                        {:file (str file)}))))))
+
+(deftest private-supervisor-records-and-reaps-exact-process-identities
+  (with-profile
+    "codex"
+    (fn [{:keys [profile]}]
+      (let [path (get-in profile [:preflight :path])
+            normal-source
+            (str "let input = '';\n"
+                 "process.stdin.setEncoding('utf8');\n"
+                 "process.stdin.on('data', chunk => input += chunk);\n"
+                 "process.stdin.on('end', () => process.stdout.write(input));\n")
+            _ (spit path normal-source)
+            profile (assoc-in profile [:preflight :sha256]
+                              (capability/file-sha256 path))
+            process-result (guidance-process/run! profile "{\"probe\":true}")
+            pids (vals (:owned-pids process-result))]
+        (is (= [0 "{\"probe\":true}" ""]
+               [(:exit-code process-result)
+                (:stdout process-result)
+                (:stderr process-result)]))
+        (is (= 3 (count pids)))
+        (is (every? pos-int? pids))
+        (is (= (count pids) (count (set pids))))
+        (is (not-any? alive-pid? pids))))))
+
+(deftest private-supervisor-reaps-immediately-orphaned-process-groups-only
+  (with-profile
+    "codex"
+    (fn [{:keys [profile request]}]
+      (let [root (.getParentFile
+                  (.getParentFile
+                   (io/file (get-in profile [:preflight :path]))))
+            unrelated (.start
+                       (ProcessBuilder.
+                        ^java.util.List
+                        ["node" "-e" "setInterval(() => {}, 10000)"]))]
+        (try
+          (doseq [[label pid-name source]
+                  [["immediate root exit"
+                    "child.pid"
+                    (str "const {spawn} = await import('node:child_process');\n"
+                         "const fs = await import('node:fs');\n"
+                         "const child = spawn(process.execPath, "
+                         "['-e', 'setInterval(() => {}, 10000)'], "
+                         "{stdio: ['ignore', 'inherit', 'inherit']});\n"
+                         "fs.writeFileSync(new URL('../child.pid', import.meta.url), "
+                         "String(child.pid));\n"
+                         "child.unref();\n"
+                         "process.exit(0);\n")]
+                   ["immediate root and intermediate exits"
+                    "intermediate-child.pid"
+                    (str "const {spawn} = await import('node:child_process');\n"
+                         "const leafFile = new URL('../intermediate-child.pid', "
+                         "import.meta.url).pathname;\n"
+                         "const code = `const {spawn} = require('node:child_process');"
+                         "const fs = require('node:fs');"
+                         "const leaf = spawn(process.execPath, "
+                         "['-e', 'setInterval(() => {}, 10000)'], "
+                         "{stdio: ['ignore', 'inherit', 'inherit']});"
+                         "fs.writeFileSync(process.argv[1], String(leaf.pid));"
+                         "leaf.unref();process.exit(0);`;\n"
+                         "const intermediate = spawn(process.execPath, "
+                         "['-e', code, leafFile], "
+                         "{stdio: ['ignore', 'inherit', 'inherit']});\n"
+                         "intermediate.unref();\n"
+                         "process.exit(0);\n")]]]
+            (testing label
+              (let [pid-file (io/file root pid-name)
+                    {:keys [failure elapsed-millis]}
+                    (actual-preflight-failure profile request source)
+                    child-pid (await-pid-file pid-file)]
+                (is (re-find #"timed out" (ex-message failure)))
+                (is (< elapsed-millis 4500.0))
+                (is (not (alive-pid? child-pid)))
+                (is (.isAlive unrelated)))))
+          (finally
+            (.destroyForcibly unrelated)
+            (.waitFor unrelated 2 java.util.concurrent.TimeUnit/SECONDS)))))))

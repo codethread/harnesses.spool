@@ -290,11 +290,12 @@
                    (spool/attr-get run :harness/attempt)
                    ". Repair the reviewed adapter/configuration or explicitly "
                    "submit legacy work after settlement.")
-              updated (assoc record "state" "failed"
-                             "failure" {"stage" "handoff"
-                                        "code" "missing-acknowledgement"
-                                        "diagnostic" diagnostic})]
+              failure {"stage" "handoff"
+                       "code" "missing-acknowledgement"
+                       "diagnostic" diagnostic}]
           {:outcome (assoc outcome :status :failed :error diagnostic
                            :session-usable false)
            :evidence {:failure-class "bootstrap"}
-           :attributes (update-record run record updated)})))))
+           :attributes
+           (failure-attributes
+            run record failure "native guidance bootstrap failed")})))))

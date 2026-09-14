@@ -89,8 +89,14 @@
 
 (defn select!
   "Select and preflight guidance before run publication or identity reservation."
-  [rt {:keys [harness requested inherited effective] :as request}]
+  [rt {:keys [harness mode requested inherited effective] :as request}]
   (let [transport (parse-transport (or requested inherited "legacy"))]
+    (when (and (= "native-v1" transport)
+               (= :interactive mode)
+               (contains? managed-harnesses harness))
+      (spool/fail!
+       "Native guidance does not support interactive launches; submit legacy work"
+       {:harness harness :mode mode :guidance-transport transport}))
     (if-not (contains? managed-harnesses harness)
       (do
         (when (= "native-v1" transport)

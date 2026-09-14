@@ -2,14 +2,10 @@
   "Admission and no-model preflight for native managed guidance."
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
+            [ct.spools.harnesses.internal.guidance-process :as guidance-process]
             [ct.spools.harnesses.internal.strict-json :as strict-json]
             [millstrand.api.spool.alpha :refer [fail!]])
-  (:import [java.io ByteArrayOutputStream]
-           [java.lang ProcessHandle]
-           [java.nio.charset CharacterCodingException CodingErrorAction StandardCharsets]
-           [java.security MessageDigest]
-           [java.util.concurrent Callable ExecutionException Executors Future
-            ThreadFactory TimeUnit TimeoutException]))
+  (:import [java.security MessageDigest]))
 
 (def preflight-schema
   "Version identifying the no-model preflight request and result."
@@ -24,8 +20,6 @@
   "native-v1")
 
 (def ^:private metadata-limit (* 64 1024))
-(def ^:private capture-limit (* 64 1024))
-(def ^:private timeout-millis 3000)
 (def ^:private sha-pattern #"[0-9a-f]{64}")
 (def ^:private required-request-keys
   #{"schema" "harness" "executable" "mode" "cwd" "workspace" "env"
@@ -87,146 +81,11 @@
         (fail! "Native guidance preflight cannot resolve the provider executable"
                {:command command}))))
 
-(defn- decode-utf8 [^bytes bytes label]
-  (try
-    (str (.decode (doto (.newDecoder StandardCharsets/UTF_8)
-                    (.onMalformedInput CodingErrorAction/REPORT)
-                    (.onUnmappableCharacter CodingErrorAction/REPORT))
-                  (java.nio.ByteBuffer/wrap bytes)))
-    (catch CharacterCodingException _
-      (fail! (str label " is not valid UTF-8") {}))))
-
-(defn- capture! [input]
-  (let [output (ByteArrayOutputStream.)
-        buffer (byte-array 4096)]
-    (loop [total 0]
-      (let [count (.read input buffer)]
-        (if (neg? count)
-          (.toByteArray output)
-          (let [next-total (+ total count)]
-            (when (> next-total capture-limit)
-              (fail! "Guidance preflight output exceeded its byte limit"
-                     {:max-bytes capture-limit}))
-            (.write output buffer 0 count)
-            (recur next-total)))))))
-
-(defn- remaining-nanos [deadline]
-  (- deadline (System/nanoTime)))
-
-(defn- timed-out! [phase]
-  (fail! "Guidance preflight timed out"
-         {:timeout-millis timeout-millis :phase phase}))
-
-(defn- await-future! [^Future future deadline phase]
-  (let [remaining (remaining-nanos deadline)]
-    (when-not (pos? remaining)
-      (timed-out! phase))
-    (try
-      (.get future remaining TimeUnit/NANOSECONDS)
-      (catch TimeoutException _
-        (timed-out! phase))
-      (catch ExecutionException error
-        (throw (.getCause error)))
-      (catch InterruptedException _
-        (.interrupt (Thread/currentThread))
-        (fail! "Guidance preflight was interrupted" {:phase phase})))))
-
-(defn- process-descendants [process]
-  (with-open [descendants (.descendants (.toHandle process))]
-    (vec (.toList descendants))))
-
-(defn- remember-descendants! [process descendants]
-  (swap! descendants into (process-descendants process)))
-
-(defn- await-process! [process futures descendants deadline]
-  (loop []
-    (remember-descendants! process descendants)
-    (doseq [[phase ^Future future] futures
-            :when (.isDone future)]
-      (await-future! future deadline phase))
-    (let [remaining (remaining-nanos deadline)]
-      (when-not (pos? remaining)
-        (timed-out! "process-completion"))
-      (when-not (.waitFor process
-                          (min remaining
-                               (.toNanos TimeUnit/MILLISECONDS 2))
-                          TimeUnit/NANOSECONDS)
-        (recur)))))
-
-(defn- close-stream! [stream]
-  (try
-    (.close stream)
-    (catch Exception _ nil)))
-
-(defn- cleanup-process! [process descendants executor]
-  (remember-descendants! process descendants)
-  (when (.isAlive process)
-    (.destroyForcibly process))
-  (doseq [^ProcessHandle descendant (reverse (vec @descendants))]
-    (when (.isAlive descendant)
-      (.destroyForcibly descendant)))
-  (close-stream! (.getOutputStream process))
-  (close-stream! (.getInputStream process))
-  (close-stream! (.getErrorStream process))
-  (.shutdownNow executor))
-
-(defn- run-process! [profile request-json]
-  (let [{:keys [path]} (:preflight profile)
-        script (io/file path)
-        scripts-dir (.getParentFile script)
-        root (.getParentFile scripts-dir)
-        _ (when-not (= "scripts" (.getName scripts-dir))
-            (fail! "Guidance preflight must use scripts/managed-guidance-preflight.mjs"
-                   {:path path}))
-        _ (when-not (= "managed-guidance-preflight.mjs" (.getName script))
-            (fail! "Guidance preflight command names the wrong implementation"
-                   {:path path}))
-        builder (doto (ProcessBuilder.
-                       ^java.util.List
-                       ["node" "scripts/managed-guidance-preflight.mjs"])
-                  (.directory root))
-        process (.start builder)
-        deadline (+ (System/nanoTime)
-                    (.toNanos TimeUnit/MILLISECONDS timeout-millis))
-        descendants (atom #{})
-        thread-factory
-        (reify ThreadFactory
-          (newThread [_ runnable]
-            (doto (Thread. runnable "guidance-preflight-io")
-              (.setDaemon true))))
-        executor (Executors/newFixedThreadPool 3 thread-factory)
-        input (.submit
-               executor
-               ^Callable
-               #(with-open [stream (.getOutputStream process)]
-                  (.write stream
-                          (.getBytes ^String request-json
-                                     StandardCharsets/UTF_8))))
-        stdout (.submit executor
-                        ^Callable #(capture! (.getInputStream process)))
-        stderr (.submit executor
-                        ^Callable #(capture! (.getErrorStream process)))
-        futures [["request-input" input]
-                 ["stdout-drain" stdout]
-                 ["stderr-drain" stderr]]]
-    (try
-      (await-process! process futures descendants deadline)
-      (await-future! input deadline "request-input")
-      (let [stdout-bytes (await-future! stdout deadline "stdout-drain")
-            stderr-bytes (await-future! stderr deadline "stderr-drain")]
-        {:source {:path (.getCanonicalPath (io/file path))
-                  :sha256 (file-sha256 path)}
-         :exit-code (.exitValue process)
-         :stdout (decode-utf8 stdout-bytes "Guidance preflight stdout")
-         :stderr (decode-utf8 stderr-bytes "Guidance preflight stderr")})
-      (finally
-        (cleanup-process! process descendants executor)))))
-
 (defn- profiles []
   (or *test-capability-profiles* production-capability-profiles))
 
 (defn- preflight-runner []
-  (or *test-preflight-runner* run-process!))
+  (or *test-preflight-runner* guidance-process/run!))
 
 (defn- closed-keys! [value required label]
   (when-not (= required (set (keys value)))

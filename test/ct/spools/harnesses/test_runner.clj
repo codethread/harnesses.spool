@@ -7,6 +7,8 @@
             [ct.spools.harnesses.executors.agent-test]
             [ct.spools.harnesses.guidance-capability-test]
             [ct.spools.harnesses.guidance-continuation-test]
+            [ct.spools.harnesses.guidance-custody-repair-test]
+            [ct.spools.harnesses.guidance-deadline-repair-test]
             [ct.spools.harnesses.guidance-repair-test]
             [ct.spools.harnesses.guidance-test]
             [ct.spools.harnesses.lifecycle-test]
@@ -30,6 +32,8 @@
     ct.spools.harnesses.executors.agent-test
     ct.spools.harnesses.guidance-capability-test
     ct.spools.harnesses.guidance-continuation-test
+    ct.spools.harnesses.guidance-custody-repair-test
+    ct.spools.harnesses.guidance-deadline-repair-test
     ct.spools.harnesses.guidance-repair-test
     ct.spools.harnesses.guidance-test
     ct.spools.harnesses.lifecycle-test

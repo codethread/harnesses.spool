@@ -1,11 +1,13 @@
 (ns ct.spools.harnesses.guidance-repair-test
   "Concurrency, prelaunch, and recovery regressions for native guidance."
   (:require [clojure.test :refer [deftest is]]
+            [ct.spools.harnesses.guidance-fixture :as guidance-fixture]
             [ct.spools.harnesses.guidance-test :as guidance-test]
             [millstrand.test.alpha :as test-alpha]))
 
 (defn- eval-guidance-world [ctx body]
-  (test-alpha/repl! ctx (list 'do guidance-test/lifecycle-setup body)))
+  (test-alpha/repl! ctx (list 'do guidance-test/lifecycle-setup
+                              guidance-fixture/interactive-selection body)))
 
 (deftest acknowledged-reconstruction-failure-is-sticky-and-preserves-attachment
   (guidance-test/with-guidance-world
@@ -22,8 +24,9 @@
                           capability/*test-preflight-runner* accepted-runner]
                   (let [run (harnesses/create!
                              rt {:harness :native-codex
-                                 :mode :interactive
+                                 :mode :headless
                                  :cwd "/tmp"
+                                 :prompt "Acknowledged repair fixture"
                                  :guidance-transport "native-v1"})
                         started (harnesses/begin-attempt! rt (:id run))
                         bundle
@@ -68,8 +71,9 @@
                         (identity/current rt (attr failed :identity/id))
                         completed-run
                         (harnesses/create!
-                         rt {:harness :native-codex :mode :interactive
-                             :cwd "/tmp" :guidance-transport "native-v1"})
+                         rt {:harness :native-codex :mode :headless
+                             :cwd "/tmp" :prompt "Completed receipt fixture"
+                             :guidance-transport "native-v1"})
                         completed-start
                         (harnesses/begin-attempt! rt (:id completed-run))
                         completed-bundle
@@ -162,8 +166,9 @@
                                      (guidance/attempt-records run))}})))
                         acknowledged-run
                         (harnesses/create!
-                         rt {:harness :native-codex :mode :interactive
-                             :cwd "/tmp" :guidance-transport "native-v1"})
+                         rt {:harness :native-codex :mode :headless
+                             :cwd "/tmp" :prompt "Acknowledged expiry fixture"
+                             :guidance-transport "native-v1"})
                         acknowledged-start
                         (harnesses/begin-attempt! rt (:id acknowledged-run))
                         stale-origin
@@ -204,7 +209,8 @@
                         (weaver/show rt (:id acknowledged-run))
                         expiring (harnesses/create!
                                   rt {:harness :native-codex
-                                      :mode :interactive :cwd "/tmp"
+                                      :mode :headless :cwd "/tmp"
+                                      :prompt "Expiring fixture"
                                       :guidance-transport "native-v1"})
                         expiring-start
                         (harnesses/begin-attempt! rt (:id expiring))
@@ -255,7 +261,7 @@
                 (binding [capability/*test-capability-profiles* [profile]
                           capability/*test-preflight-runner* accepted-runner]
                   (let [prelaunch
-                        (harnesses/create!
+                        (create-native-interactive-fixture!
                          rt {:harness :native-codex :mode :interactive
                              :cwd "/tmp" :guidance-transport "native-v1"})
                         preparation-error
@@ -270,7 +276,7 @@
                               (ex-message error))))
                         prelaunch-failed (weaver/show rt (:id prelaunch))
                         positive
-                        (harnesses/create!
+                        (create-native-interactive-fixture!
                          rt {:harness :native-codex :mode :interactive
                              :cwd "/tmp" :guidance-transport "native-v1"})
                         positive-before (weaver/show rt (:id positive))
@@ -285,7 +291,7 @@
                             (ex-message error)))
                         positive-after (weaver/show rt (:id positive))
                         unknown
-                        (harnesses/create!
+                        (create-native-interactive-fixture!
                          rt {:harness :native-codex :mode :interactive
                              :cwd "/tmp" :guidance-transport "native-v1"})
                         unknown
@@ -293,11 +299,11 @@
                          rt (:id unknown)
                          {:status :failed :error "unknown custody"})
                         malformed
-                        (harnesses/create!
+                        (create-native-interactive-fixture!
                          rt {:harness :native-codex :mode :interactive
                              :cwd "/tmp" :guidance-transport "native-v1"})
                         malformed-start
-                        (harnesses/begin-attempt! rt (:id malformed))
+                        (begin-native-interactive-fixture! rt (:id malformed))
                         _ (weaver/update!
                            rt (:id malformed)
                            {:attributes {:harness/guidance-attempts []}})
@@ -313,11 +319,11 @@
                             (ex-message error)))
                         malformed-after (weaver/show rt (:id malformed))
                         recoverable
-                        (harnesses/create!
+                        (create-native-interactive-fixture!
                          rt {:harness :native-codex :mode :interactive
                              :cwd "/tmp" :guidance-transport "native-v1"})
                         recoverable-start
-                        (harnesses/begin-attempt! rt (:id recoverable))
+                        (begin-native-interactive-fixture! rt (:id recoverable))
                         deadline
                         (str (.plusMillis (java.time.Instant/now) 1000))
                         record
@@ -331,11 +337,11 @@
                         _ (execution/open-execution! {:runtime rt})
                         _ (execution/close-execution! {:runtime rt})
                         fetched-codex
-                        (harnesses/create!
+                        (create-native-interactive-fixture!
                          rt {:harness :native-codex :mode :interactive
                              :cwd "/tmp" :guidance-transport "native-v1"})
                         fetched-codex-start
-                        (harnesses/begin-attempt! rt (:id fetched-codex))
+                        (begin-native-interactive-fixture! rt (:id fetched-codex))
                         _ (harnesses/managed-startup!
                            rt {:harness "codex"
                                :native-session-id "recovery-codex-session"
@@ -356,11 +362,11 @@
                              [(assoc record "deadline-at"
                                      "2026-09-14T00:00:00Z")]}}))
                         fetched-pi
-                        (harnesses/create!
+                        (create-native-interactive-fixture!
                          rt {:harness :native-codex :mode :interactive
                              :cwd "/tmp" :guidance-transport "native-v1"})
                         fetched-pi-start
-                        (harnesses/begin-attempt! rt (:id fetched-pi))
+                        (begin-native-interactive-fixture! rt (:id fetched-pi))
                         _ (harnesses/managed-startup!
                            rt {:harness "codex"
                                :native-session-id "recovery-pi-session"
