@@ -5,9 +5,11 @@
             [ct.spools.harnesses.internal.strict-json :as strict-json]
             [millstrand.api.spool.alpha :refer [fail!]])
   (:import [java.io ByteArrayOutputStream]
+           [java.lang ProcessHandle]
            [java.nio.charset CharacterCodingException CodingErrorAction StandardCharsets]
            [java.security MessageDigest]
-           [java.util.concurrent Callable Executors ThreadFactory TimeUnit]))
+           [java.util.concurrent Callable ExecutionException Executors Future
+            ThreadFactory TimeUnit TimeoutException]))
 
 (def preflight-schema
   "Version identifying the no-model preflight request and result."
@@ -25,6 +27,11 @@
 (def ^:private capture-limit (* 64 1024))
 (def ^:private timeout-millis 3000)
 (def ^:private sha-pattern #"[0-9a-f]{64}")
+(def ^:private required-request-keys
+  #{"schema" "harness" "executable" "mode" "cwd" "workspace" "env"
+    "extra-argv" "resumes"})
+(def ^:private optional-request-keys
+  #{"model" "effort" "native-session-id"})
 
 ;; This boundary is intentionally empty. Source acceptance in the Agents
 ;; repository and exact host conformance evidence are prerequisites for adding
@@ -103,6 +110,66 @@
             (.write output buffer 0 count)
             (recur next-total)))))))
 
+(defn- remaining-nanos [deadline]
+  (- deadline (System/nanoTime)))
+
+(defn- timed-out! [phase]
+  (fail! "Guidance preflight timed out"
+         {:timeout-millis timeout-millis :phase phase}))
+
+(defn- await-future! [^Future future deadline phase]
+  (let [remaining (remaining-nanos deadline)]
+    (when-not (pos? remaining)
+      (timed-out! phase))
+    (try
+      (.get future remaining TimeUnit/NANOSECONDS)
+      (catch TimeoutException _
+        (timed-out! phase))
+      (catch ExecutionException error
+        (throw (.getCause error)))
+      (catch InterruptedException _
+        (.interrupt (Thread/currentThread))
+        (fail! "Guidance preflight was interrupted" {:phase phase})))))
+
+(defn- process-descendants [process]
+  (with-open [descendants (.descendants (.toHandle process))]
+    (vec (.toList descendants))))
+
+(defn- remember-descendants! [process descendants]
+  (swap! descendants into (process-descendants process)))
+
+(defn- await-process! [process futures descendants deadline]
+  (loop []
+    (remember-descendants! process descendants)
+    (doseq [[phase ^Future future] futures
+            :when (.isDone future)]
+      (await-future! future deadline phase))
+    (let [remaining (remaining-nanos deadline)]
+      (when-not (pos? remaining)
+        (timed-out! "process-completion"))
+      (when-not (.waitFor process
+                          (min remaining
+                               (.toNanos TimeUnit/MILLISECONDS 2))
+                          TimeUnit/NANOSECONDS)
+        (recur)))))
+
+(defn- close-stream! [stream]
+  (try
+    (.close stream)
+    (catch Exception _ nil)))
+
+(defn- cleanup-process! [process descendants executor]
+  (remember-descendants! process descendants)
+  (when (.isAlive process)
+    (.destroyForcibly process))
+  (doseq [^ProcessHandle descendant (reverse (vec @descendants))]
+    (when (.isAlive descendant)
+      (.destroyForcibly descendant)))
+  (close-stream! (.getOutputStream process))
+  (close-stream! (.getInputStream process))
+  (close-stream! (.getErrorStream process))
+  (.shutdownNow executor))
+
 (defn- run-process! [profile request-json]
   (let [{:keys [path]} (:preflight profile)
         script (io/file path)
@@ -119,32 +186,41 @@
                        ["node" "scripts/managed-guidance-preflight.mjs"])
                   (.directory root))
         process (.start builder)
+        deadline (+ (System/nanoTime)
+                    (.toNanos TimeUnit/MILLISECONDS timeout-millis))
+        descendants (atom #{})
         thread-factory
         (reify ThreadFactory
           (newThread [_ runnable]
-            (doto (Thread. runnable "guidance-preflight-capture")
+            (doto (Thread. runnable "guidance-preflight-io")
               (.setDaemon true))))
-        executor (Executors/newFixedThreadPool 2 thread-factory)
+        executor (Executors/newFixedThreadPool 3 thread-factory)
+        input (.submit
+               executor
+               ^Callable
+               #(with-open [stream (.getOutputStream process)]
+                  (.write stream
+                          (.getBytes ^String request-json
+                                     StandardCharsets/UTF_8))))
         stdout (.submit executor
                         ^Callable #(capture! (.getInputStream process)))
         stderr (.submit executor
-                        ^Callable #(capture! (.getErrorStream process)))]
+                        ^Callable #(capture! (.getErrorStream process)))
+        futures [["request-input" input]
+                 ["stdout-drain" stdout]
+                 ["stderr-drain" stderr]]]
     (try
-      (with-open [input (.getOutputStream process)]
-        (.write input (.getBytes ^String request-json StandardCharsets/UTF_8)))
-      (when-not (.waitFor process timeout-millis TimeUnit/MILLISECONDS)
-        (.destroyForcibly process)
-        (.waitFor process)
-        (fail! "Guidance preflight timed out" {:timeout-millis timeout-millis}))
-      {:source {:path (.getCanonicalPath (io/file path))
-                :sha256 (file-sha256 path)}
-       :exit-code (.exitValue process)
-       :stdout (decode-utf8 (.get stdout) "Guidance preflight stdout")
-       :stderr (decode-utf8 (.get stderr) "Guidance preflight stderr")}
+      (await-process! process futures descendants deadline)
+      (await-future! input deadline "request-input")
+      (let [stdout-bytes (await-future! stdout deadline "stdout-drain")
+            stderr-bytes (await-future! stderr deadline "stderr-drain")]
+        {:source {:path (.getCanonicalPath (io/file path))
+                  :sha256 (file-sha256 path)}
+         :exit-code (.exitValue process)
+         :stdout (decode-utf8 stdout-bytes "Guidance preflight stdout")
+         :stderr (decode-utf8 stderr-bytes "Guidance preflight stderr")})
       (finally
-        (when (.isAlive process)
-          (.destroyForcibly process))
-        (.shutdownNow executor)))))
+        (cleanup-process! process descendants executor)))))
 
 (defn- profiles []
   (or *test-capability-profiles* production-capability-profiles))
@@ -164,6 +240,48 @@
 (defn- sha! [value label]
   (when-not (and (string? value) (re-matches sha-pattern value))
     (fail! (str label " must be a lowercase SHA-256 digest") {:value value})))
+
+(defn- validate-request! [request]
+  (let [keys (set (keys request))
+        executable (get request "executable")]
+    (when-not (and (every? (into required-request-keys optional-request-keys)
+                           keys)
+                   (every? keys required-request-keys))
+      (fail! "Guidance preflight request has invalid keys"
+             {:required (sort required-request-keys)
+              :allowed (sort (into required-request-keys
+                                   optional-request-keys))
+              :actual (sort keys)}))
+    (when-not (= preflight-schema (get request "schema"))
+      (fail! "Guidance preflight request has an unsupported schema" {}))
+    (when-not (contains? #{"codex" "pi"} (get request "harness"))
+      (fail! "Guidance preflight request names an unsupported provider" {}))
+    (when-not (contains? #{"headless" "interactive"} (get request "mode"))
+      (fail! "Guidance preflight request has an unsupported mode" {}))
+    (doseq [key ["executable" "cwd" "workspace"]]
+      (nonblank! (get request key) (str "Guidance preflight request " key)))
+    (when-not (= executable (.getCanonicalPath (io/file executable)))
+      (fail! "Guidance preflight executable must be canonical"
+             {:executable executable}))
+    (when-not (and (map? (get request "env"))
+                   (every? (fn [[key value]]
+                             (and (string? key) (string? value)))
+                           (get request "env")))
+      (fail! "Guidance preflight environment is malformed" {}))
+    (when-not (and (vector? (get request "extra-argv"))
+                   (every? string? (get request "extra-argv")))
+      (fail! "Guidance preflight extra argv is malformed" {}))
+    (when-not (boolean? (get request "resumes"))
+      (fail! "Guidance preflight resume marker must be boolean" {}))
+    (doseq [key ["model" "effort"]
+            :when (contains? request key)]
+      (nonblank! (get request key) (str "Guidance preflight request " key)))
+    (if (get request "resumes")
+      (nonblank! (get request "native-session-id")
+                 "Guidance preflight request native-session-id")
+      (when (contains? request "native-session-id")
+        (fail! "Fresh guidance preflight cannot name a native session" {})))
+    request))
 
 (def ^:private capability-keys
   #{"schema" "harness" "adapter-contract" "adapter-sha256"
@@ -298,15 +416,15 @@
     (when-not (= 1 (count matching))
       (fail! "Native guidance has duplicate accepted preflight sources"
              {:harness harness :profiles (count matching)}))
-    (let [profile (first matching)
+    (let [wire-request (validate-request!
+                        (assoc request "schema" preflight-schema))
+          profile (first matching)
           source-path (get-in profile [:preflight :path])
           _ (validate-source!
              profile
              {:path (.getCanonicalPath (io/file source-path))
               :sha256 (file-sha256 source-path)})
-          request-json (strict-json/canonical-json
-                        (assoc (dissoc request "executable")
-                               "schema" preflight-schema))
+          request-json (strict-json/canonical-json wire-request)
           _ (when (> (strict-json/utf8-bytes request-json) metadata-limit)
               (fail! "Guidance preflight request exceeds 64 KiB" {}))
           process-result ((preflight-runner) profile request-json)]

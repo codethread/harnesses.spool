@@ -50,6 +50,15 @@
 
 (def ^:dynamic ^:private *guidance-context-template* nil)
 
+(defn- require-guidance-lineage! [run transport]
+  (when (and (= "native-v1" (guidance/parse-transport transport))
+             (= "pi" (attr-get run :harness/harness))
+             (managed/legacy-managed-run? run))
+    (fail! "Pre-reservation Pi continuations require legacy guidance transport"
+           {:run-id (:id run)
+            :guidance-transport transport
+            :remedy "Explicitly select --guidance-transport legacy."})))
+
 (defn guidance-acknowledge!
   "Record an exact adapter-handoff receipt for the current native attempt."
   [rt receipt]
@@ -141,6 +150,10 @@
              cwd (or cwd (System/getProperty "user.dir"))
              requested-session-id session-id
              session-id (or session-id (str (UUID/randomUUID)))
+             _ (when resumes
+                 (require-guidance-lineage!
+                  (runs/require-run rt resumes)
+                  (or guidance-transport "legacy")))
              guidance-selection
              (guidance/select!
               rt {:harness harness
@@ -645,12 +658,13 @@
                      {:id id :retained old-concrete :requested concrete}))
           generated (:generated resolved)
           inherited-transport (guidance/transport run)
-          selected-transport (or (:guidance-transport request)
-                                 inherited-transport)
+          selected-transport
+          (guidance/parse-transport (or (:guidance-transport request)
+                                        inherited-transport))
+          _ (require-guidance-lineage! run selected-transport)
           frozen-guidance-template
           (attr-get run :harness/guidance-context-template)
-          _ (when (and (= "native-v1"
-                          (guidance/parse-transport selected-transport))
+          _ (when (and (= "native-v1" selected-transport)
                        (nil? frozen-guidance-template))
               (fail! "Native retry requires a versioned frozen guidance template"
                      {:id id}))
@@ -859,6 +873,7 @@
         (guidance/parse-transport (or guidance-transport inherited-transport))
         frozen-guidance-template
         (attr-get run :harness/guidance-context-template)
+        _ (require-guidance-lineage! run selected-transport)
         _ (when (and (= "native-v1" selected-transport)
                      (nil? frozen-guidance-template))
             (fail! "Native resume requires a versioned frozen guidance template"

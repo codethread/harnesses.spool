@@ -125,37 +125,57 @@
    (mapv #(if (= record %) updated %)
          (guidance/attempt-records run))})
 
+(defn- failure-attributes [run record failure stop-reason]
+  (merge
+   (update-record run record (assoc record "state" "failed"
+                                    "failure" failure))
+   {:harness/status "failed"
+    :harness/substatus "bootstrap"
+    :harness/error (get failure "diagnostic")
+    :harness/session-usable "false"
+    :harness/stop-requested-at (life/now)
+    :harness/stop-reason stop-reason}))
+
 (defn expire!
-  "Fail an overdue current native handoff, or return the run unchanged."
-  [rt run]
-  (if-not (guidance/native? run)
-    run
-    (let [record (attempt-record run)]
-      (when-not record
-        (spool/fail! "Native guidance run has no current attempt record"
-                     {:run-id (:id run)}))
-      (if-not (guidance/deadline-expired? run record)
-        run
-        (let [diagnostic
-              (str "Native guidance handoff deadline expired for run "
-                   (:id run) " attempt " (get record "attempt")
-                   ". Repair the reviewed adapter/configuration or explicitly "
-                   "submit legacy work after settlement.")
-              updated (assoc record "state" "failed"
-                             "failure" {"stage" "handoff"
-                                        "code" "acknowledgement-timeout"
-                                        "diagnostic" diagnostic})]
-          (weaver/update!
-           rt (:id run)
-           {:attributes
-            (merge
-             (update-record run record updated)
-             {:harness/status "failed"
-              :harness/substatus "bootstrap"
-              :harness/error diagnostic
-              :harness/session-usable "false"
-              :harness/stop-requested-at (life/now)
-              :harness/stop-reason "native guidance handoff timed out"})}))))))
+  "Fail an overdue exact-current native handoff.
+
+  The supplied run identifies the originating attempt only. The transition
+  reloads and rechecks durable state while holding the publication lock, so an
+  obsolete timer cannot overwrite acknowledgement, completion, or retry."
+  [rt originating-run]
+  (let [origin-attempt (spool/attr-get originating-run :harness/attempt)
+        origin-invocation (spool/attr-get originating-run :harness/invocation)]
+    #_{:clj-kondo/ignore [:locking-suspicious-lock]}
+    #_{:splint/disable [lint/locking-object]}
+    (locking (catalog/publication-lock rt)
+      (let [run (require-run rt (:id originating-run))]
+        (if-not (and (= "running" (life/status run))
+                     (= origin-attempt
+                        (spool/attr-get run :harness/attempt))
+                     (= origin-invocation
+                        (spool/attr-get run :harness/invocation))
+                     (guidance/native? run))
+          run
+          (let [record (attempt-record run)]
+            (when-not record
+              (spool/fail! "Native guidance run has no current attempt record"
+                           {:run-id (:id run)}))
+            (if-not (guidance/deadline-expired? run record)
+              run
+              (let [diagnostic
+                    (str "Native guidance handoff deadline expired for run "
+                         (:id run) " attempt " (get record "attempt")
+                         ". Repair the reviewed adapter/configuration or "
+                         "explicitly submit legacy work after settlement.")
+                    failure {"stage" "handoff"
+                             "code" "acknowledgement-timeout"
+                             "diagnostic" diagnostic}]
+                (weaver/update!
+                 rt (:id run)
+                 {:attributes
+                  (failure-attributes
+                   run record failure
+                   "native guidance handoff timed out")})))))))))
 
 (defn acknowledge!
   "Record or replay one exact adapter-handoff acknowledgement."
@@ -220,45 +240,50 @@
                 (= "failed" state)
                 (result receipt "ignored" state)
 
-                (contains? #{"pending" "fetched"} state)
+                (contains? #{"pending" "fetched" "acknowledged"} state)
                 (do
                   (weaver/update!
                    rt (:id run)
                    {:attributes
-                    (merge
-                     (update-record run record
-                                    (assoc record "state" "failed"
-                                           "failure" failure))
-                     {:harness/status "failed"
-                      :harness/substatus "bootstrap"
-                      :harness/error (get receipt "diagnostic")
-                      :harness/session-usable "false"
-                      :harness/stop-requested-at (life/now)
-                      :harness/stop-reason
-                      "native guidance bootstrap failed"})})
+                    (failure-attributes
+                     run record failure
+                     "native guidance bootstrap failed")})
                   (result receipt "recorded" "failed"))
-
-                (= "acknowledged" state)
-                (result receipt "ignored" state)
 
                 :else
                 (spool/fail! "Guidance failure has an invalid state"
                              {:run-id (:id run) :state state})))))))))
 
 (defn completion
-  "Return provider outcome plus guidance patch enforcing native acknowledgement."
+  "Return provider outcome plus guidance patch enforcing native acknowledgement.
+
+  A negative result while the run is still ready has no launched process and
+  needs no attempt receipt. Positive evidence and missing records on active
+  attempts remain invalid."
   [run outcome]
   (if-not (guidance/native? run)
     {:outcome outcome}
     (let [record (attempt-record run)
-          _ (when-not record
-              (spool/fail! "Native guidance completion has no attempt record"
-                           {:run-id (:id run)}))
-          accepted? (and (= "acknowledged" (get record "state"))
-                         (= "true" (spool/attr-get run
-                                                   :harness/native-attached)))]
-      (if accepted?
+          prelaunch-failure?
+          (and (= "ready" (life/status run))
+               (nil? (life/invocation run))
+               (= :failed (:status outcome))
+               (not (true? (:session-usable outcome)))
+               (nil? (:session-id outcome)))]
+      (cond
+        prelaunch-failure? {:outcome outcome}
+
+        (nil? record)
+        (spool/fail! "Native guidance completion has no attempt record"
+                     {:run-id (:id run)
+                      :status (life/status run)
+                      :outcome (:status outcome)})
+
+        (and (= "acknowledged" (get record "state"))
+             (= "true" (spool/attr-get run :harness/native-attached)))
         {:outcome outcome}
+
+        :else
         (let [diagnostic
               (str "Native guidance bootstrap was not acknowledged for run "
                    (:id run) " attempt "

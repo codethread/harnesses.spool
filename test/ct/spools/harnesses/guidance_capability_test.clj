@@ -85,11 +85,21 @@
     (with-profile
       harness
       (fn [{:keys [profile document request]}]
-        (binding [capability/*test-capability-profiles* [profile]
-                  capability/*test-preflight-runner*
-                  (fn [accepted _]
-                    (process-result accepted (result-json document)))]
-          (is (= document (capability/preflight! request))))))))
+        (let [serialized-request (atom nil)]
+          (binding [capability/*test-capability-profiles* [profile]
+                    capability/*test-preflight-runner*
+                    (fn [accepted request-json]
+                      (reset! serialized-request
+                              (strict-json/parse-object!
+                               request-json 65536 "serialized request"))
+                      (process-result accepted (result-json document)))]
+            (is (= document (capability/preflight! request)))
+            (is (= (assoc request
+                          "schema"
+                          "millstrand.agent-guidance-preflight/v1")
+                   @serialized-request))
+            (is (= "/usr/bin/true"
+                   (get @serialized-request "executable")))))))))
 
 (deftest malformed-changed-nonzero-and-legacy-required-evidence-fails-loudly
   (with-profile
@@ -103,6 +113,11 @@
                  (str "{\"schema\":\"millstrand.agent-guidance-preflight/v1\","
                       "\"result\":\"capable\",\"result\":\"capable\","
                       "\"capability\":{}}"))]
+               ["trailing-comma"
+                (process-result
+                 profile
+                 (let [json (result-json document)]
+                   (str (subs json 0 (dec (count json))) ",}")))]
                ["changed"
                 (process-result
                  profile
@@ -141,18 +156,51 @@
                                 (capability/preflight! request)))
           (is (false? @called?)))))))
 
-(deftest exact-preflight-command-has-a-hard-timeout
+(defn- actual-preflight-failure [profile request source]
+  (let [path (get-in profile [:preflight :path])
+        _ (spit path source)
+        profile (assoc-in profile [:preflight :sha256]
+                          (capability/file-sha256 path))
+        started (System/nanoTime)
+        failure (binding [capability/*test-capability-profiles* [profile]]
+                  (try
+                    (capability/preflight! request)
+                    nil
+                    (catch Throwable error error)))]
+    {:failure failure
+     :elapsed-millis (/ (- (System/nanoTime) started) 1000000.0)}))
+
+(deftest exact-preflight-command-bounds-process-and-pipe-lifetimes
   (with-profile
     "codex"
     (fn [{:keys [profile request]}]
-      (let [path (get-in profile [:preflight :path])
-            _ (spit path "setTimeout(() => {}, 10000);\n")
-            profile (assoc-in profile [:preflight :sha256]
-                              (capability/file-sha256 path))]
-        (binding [capability/*test-capability-profiles* [profile]]
-          (is (thrown-with-msg? clojure.lang.ExceptionInfo
-                                #"timed out"
-                                (capability/preflight! request))))))))
+      (doseq [[label source request]
+              [["sleeping root"
+                "setTimeout(() => {}, 10000);\n"
+                request]
+               ["blocked request input"
+                "setTimeout(() => {}, 10000);\n"
+                (assoc-in request ["env" "PADDING"]
+                          (str/join (repeat 64000 "x")))]
+               ["descendant holding pipes"
+                (str "const {spawn} = await import('node:child_process');\n"
+                     "spawn(process.execPath, "
+                     "['-e', 'setTimeout(() => {}, 10000)'], "
+                     "{stdio: ['ignore', 'inherit', 'inherit']});\n"
+                     "setTimeout(() => process.exit(0), 100);\n")
+                request]
+               ["flooded output"
+                (str "process.stdout.write('x'.repeat(200000));\n"
+                     "setTimeout(() => {}, 10000);\n")
+                request]]]
+        (testing label
+          (let [{:keys [failure elapsed-millis]}
+                (actual-preflight-failure profile request source)]
+            (is (instance? Throwable failure))
+            (is (< elapsed-millis 4500.0))
+            (if (= "flooded output" label)
+              (is (re-find #"output exceeded" (ex-message failure)))
+              (is (re-find #"timed out" (ex-message failure))))))))))
 
 (deftest untrusted-and-duplicate-approved-sources-are-rejected
   (with-profile

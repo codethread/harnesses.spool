@@ -426,6 +426,8 @@ files, startup-v1 metadata, package versions, branches, or helper claims.
 When profiles are eventually accepted, Harnesses runs the approved no-model
 preflight against the actual executable, cwd, workspace, environment, provider
 selectors, and resume settings before publication and again before each attempt.
+The canonical executable path remains an explicit field in the bounded private
+request.
 Evidence must match one approved preflight source and the complete approved
 adapter/executable/package/profile closure. Missing, changed, untrusted,
 duplicate, malformed, oversized, nonzero, or mismatched evidence fails loudly;
@@ -454,16 +456,22 @@ acknowledge --receipt JSON`, or failure with `agent guidance fail --receipt
 JSON`. Attempt states are `pending`, `fetched`, `acknowledged`, and `failed`;
 legacy attempts are `not-required`. Exact receipt replay is no-write, stale
 receipts cannot satisfy a newer attempt, and an unacknowledged native process
-exit is a bootstrap failure. Acknowledgement proves adapter handoff only—not
-atomic host ingestion, model obedience, or removal of historical transcript
-instructions.
+exit is a bootstrap failure. A later exact-current reconstruction failure may
+move an acknowledged attempt to failed without discarding its real attachment.
+Durable handoff deadlines are restored after execution reopens; obsolete timers
+cannot fail retries or completed work, and fetched interactive Pi remains exempt.
+Acknowledgement proves adapter handoff only—not atomic host ingestion, model
+obedience, or removal of historical transcript instructions.
 
 Native mode removes only Harnesses-generated Codex `developer_instructions` or
 Pi `--append-system-prompt` arguments. Competing raw provider prompt controls are
 rejected before publication; wrapper-level `--append-system-prompt` remains the
 supported input. Main task prompts, model/effort, native session/resume, aliases,
-and unrelated provider argv are preserved. Claude and Cursor retain their
-maintenance transports unchanged.
+and unrelated provider argv are preserved. Verified failures before launch may
+settle without inventing an attempt or custody, while unknown custody remains
+unsettled. Pre-reservation Pi continuations and retries remain legacy-only even
+when their rows contain current guidance templates. Claude and Cursor retain
+their maintenance transports unchanged.
 
 Provider finish and late custody settlement use the same fenced attachment when
 they observe usable native evidence. Hook-confirmed interactive Codex identity

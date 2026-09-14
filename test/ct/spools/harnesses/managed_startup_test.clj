@@ -651,6 +651,10 @@
                  (attr retried :harness/provisional-session-id)
                  :native-attached
                  (attr retried :harness/native-attached)
+                 :guidance-transport
+                 (attr retried :harness/guidance-transport)
+                 :guidance-template
+                 (attr retried :harness/guidance-context-template)
                  :performed (targets identity-strand "performed")
                  :launcher-before launcher-before
                  :launcher-after launcher-after
@@ -672,6 +676,8 @@
           (is (nil? (:reservation result)))
           (is (nil? (:provisional result)))
           (is (nil? (:native-attached result)))
+          (is (= "legacy" (:guidance-transport result)))
+          (is (map? (:guidance-template result)))
           (is (nil? (:bootstrap result)))
           (is (nil? (:retry-bootstrap result)))
           (is (not (contains? (:process-env result)

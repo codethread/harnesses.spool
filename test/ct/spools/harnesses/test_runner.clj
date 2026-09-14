@@ -7,6 +7,7 @@
             [ct.spools.harnesses.executors.agent-test]
             [ct.spools.harnesses.guidance-capability-test]
             [ct.spools.harnesses.guidance-continuation-test]
+            [ct.spools.harnesses.guidance-repair-test]
             [ct.spools.harnesses.guidance-test]
             [ct.spools.harnesses.lifecycle-test]
             [ct.spools.harnesses.managed-startup-test]
@@ -20,7 +21,8 @@
             [ct.spools.harnesses.reconciliation-test]
             [ct.spools.harnesses.review-git-test]
             [ct.spools.harnesses.reviewers-test]
-            [ct.spools.harnesses.spool-test]))
+            [ct.spools.harnesses.spool-test]
+            [ct.spools.harnesses.strict-json-test]))
 
 (def ^:private test-namespaces
   '[ct.spools.harnesses.agent-bin-test
@@ -28,6 +30,7 @@
     ct.spools.harnesses.executors.agent-test
     ct.spools.harnesses.guidance-capability-test
     ct.spools.harnesses.guidance-continuation-test
+    ct.spools.harnesses.guidance-repair-test
     ct.spools.harnesses.guidance-test
     ct.spools.harnesses.lifecycle-test
     ct.spools.harnesses.managed-startup-test
@@ -41,7 +44,8 @@
     ct.spools.harnesses.reconciliation-test
     ct.spools.harnesses.review-git-test
     ct.spools.harnesses.reviewers-test
-    ct.spools.harnesses.spool-test])
+    ct.spools.harnesses.spool-test
+    ct.spools.harnesses.strict-json-test])
 
 (defn -main
   "Run Harnesses tests, adding external process acceptance with `--e2e`."

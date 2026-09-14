@@ -19,7 +19,8 @@
             [millstrand.api.runtime.alpha :as runtime]
             [millstrand.api.spool.alpha :refer [attr-get fail! require-valid!]]
             [millstrand.api.weaver.alpha :as weaver])
-  (:import [java.util.concurrent Executors ThreadFactory TimeUnit]))
+  (:import [java.time Duration Instant]
+           [java.util.concurrent Executors ThreadFactory TimeUnit]))
 
 (def ^:private state-version 4)
 (def ^:private event-types
@@ -32,7 +33,8 @@
          ^:private launch-headless! ^:private full-run
          ^:private resolved-definition ^:private prepare-launch
          ^:private enforce-stop! ^:private schedule-inspection!
-         ^:private schedule-guidance-deadline! ^:private callback)
+         ^:private schedule-guidance-deadline!
+         ^:private recover-guidance-deadlines! ^:private callback)
 
 (s/def ::event
   (s/and map?
@@ -75,7 +77,8 @@
                        nil
                        (catch Throwable error
                          (reset! (:deferred-recovery opened) error)
-                         error))]
+                         error))
+            _ (recover-guidance-deadlines! runtime)]
         (cond-> {:opened :harness-execution
                  :claimed (schedule! runtime)}
           recovery (assoc :deferred-recovery (ex-message recovery))))
@@ -114,8 +117,8 @@
       (launcher/write! rt run (:argv launch-spec) (:env launch-spec)))
     (catch Exception e
       (harness/finish! rt (:id run) {:status :failed
-                                     :evidence {:settled false
-                                                :settlement "no-terminal-evidence"
+                                     :evidence {:settled true
+                                                :settlement "launch-not-started"
                                                 :failure-class "launch"}
                                      :error (str (ex-message e)
                                                  (when-let [data (ex-data e)]
@@ -146,7 +149,7 @@
             (when (some? (attr-get strand :harness/guidance-version))
               (guidance/bootstrap strand))))
          (when (guidance/native? strand)
-           (schedule-guidance-deadline! rt id))
+           (schedule-guidance-deadline! rt strand))
          strand
          (catch Throwable error
            (harness/finish!
@@ -259,7 +262,9 @@
             failures (:reconciliation-failures (state rt))]
         (doseq [run owned]
           (try
-            (let [run (guidance-receipts/expire! rt run)
+            (let [run (if (guidance/native? run)
+                        (guidance-receipts/expire! rt run)
+                        run)
                   record (custody/record-for "harness" run records)
                   durable (custody/durable-attributes "harness"
                                                       (:id run)
@@ -373,11 +378,35 @@
       (fail! "Harness execution resources are not open" {}))
     opened))
 
-(defn- schedule-guidance-deadline! [rt id]
-  (let [scheduler (:scheduler (state rt))]
-    (.schedule ^java.util.concurrent.ScheduledExecutorService scheduler
-               ^Runnable #(guidance-receipts/expire! rt (full-run rt id))
-               20 TimeUnit/SECONDS)))
+(defn- eligible-guidance-deadline? [run record]
+  (and (= "running" (life/status run))
+       (= "interactive" (attr-get run :harness/mode))
+       (guidance/native? run)
+       (contains? #{"pending" "fetched"} (get record "state"))
+       (not (and (= "pi" (attr-get run :harness/harness))
+                 (= "fetched" (get record "state"))))))
+
+(defn- schedule-guidance-deadline! [rt run]
+  (let [record (guidance/current-attempt run)]
+    (when (eligible-guidance-deadline? run record)
+      (let [now (Instant/now)]
+        (if (guidance/deadline-expired? run record now)
+          (do
+            (guidance-receipts/expire! rt run)
+            :expired)
+          (let [deadline (Instant/parse (get record "deadline-at"))
+                delay (max 1 (.toMillis (Duration/between now deadline)))
+                scheduler (:scheduler (state rt))]
+            (.schedule
+             ^java.util.concurrent.ScheduledExecutorService scheduler
+             ^Runnable #(guidance-receipts/expire! rt run)
+             delay TimeUnit/MILLISECONDS)
+            :scheduled))))))
+
+(defn- recover-guidance-deadlines! [rt]
+  (->> (weaver/list rt)
+       (keep #(schedule-guidance-deadline! rt %))
+       count))
 
 (defn- schedule-inspection! [rt]
   (let [{:keys [inspection-scheduled? scheduler]} (state rt)]

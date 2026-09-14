@@ -101,6 +101,11 @@
                    (spool/attr-get second-start :harness/attempt)]
                   :invocations-differ
                   (not= first-invocation second-invocation)
+                  :guidance-states
+                  (mapv #(or (get % "state") (get % :state))
+                        (or (spool/attr-get
+                             running :harness/guidance-attempts)
+                            []))
                   :second-provider-fenced
                   (= second-invocation
                      (spool/attr-get running :harness/provider-invocation))
@@ -121,6 +126,8 @@
        (is (= {:status "failed" :settled "true"} (:first result)))
        (is (= [1 2] (:attempts result)))
        (is (true? (:invocations-differ result)))
+       (is (= ["not-required" "not-required"]
+              (:guidance-states result)))
        (is (= "v2" (:second-callback-contract result)))
        (is (true? (:second-provider-fenced result)))
        (is (= ["live" "live"] (:custody-states result)))

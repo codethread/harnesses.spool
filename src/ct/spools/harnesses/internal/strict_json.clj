@@ -104,27 +104,36 @@
 (declare parse-value canonical-data)
 
 (defn- parse-array [^String source start]
-  (loop [index (skip-space source (inc start)) result []]
+  (loop [index (skip-space source (inc start))
+         result []
+         value-required? false]
     (when (>= index (.length source))
       (fail! "JSON array is unterminated" {}))
     (if (= \] (.charAt source index))
-      [result (inc index)]
+      (if value-required?
+        (fail! "JSON array has a trailing comma" {})
+        [result (inc index)])
       (let [[value next-index] (parse-value source index)
             delimiter-index (skip-space source next-index)]
         (when (>= delimiter-index (.length source))
           (fail! "JSON array is unterminated" {}))
         (case (.charAt source delimiter-index)
           \, (recur (skip-space source (inc delimiter-index))
-                    (conj result value))
+                    (conj result value)
+                    true)
           \] [(conj result value) (inc delimiter-index)]
           (fail! "JSON array has an invalid delimiter" {}))))))
 
 (defn- parse-object [^String source start]
-  (loop [index (skip-space source (inc start)) result {}]
+  (loop [index (skip-space source (inc start))
+         result {}
+         member-required? false]
     (when (>= index (.length source))
       (fail! "JSON object is unterminated" {}))
     (if (= \} (.charAt source index))
-      [result (inc index)]
+      (if member-required?
+        (fail! "JSON object has a trailing comma" {})
+        [result (inc index)])
       (do
         (when-not (= \" (.charAt source index))
           (fail! "JSON object keys must be strings" {}))
@@ -142,7 +151,9 @@
             (when (>= delimiter-index (.length source))
               (fail! "JSON object is unterminated" {}))
             (case (.charAt source delimiter-index)
-              \, (recur (skip-space source (inc delimiter-index)) next-result)
+              \, (recur (skip-space source (inc delimiter-index))
+                        next-result
+                        true)
               \} [next-result (inc delimiter-index)]
               (fail! "JSON object has an invalid delimiter" {:key key}))))))))
 
