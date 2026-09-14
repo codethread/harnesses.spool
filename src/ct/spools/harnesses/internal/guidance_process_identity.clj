@@ -8,8 +8,22 @@
   [_phase _identity]
   nil)
 
+(declare retain live? require-live!)
+
 (defn- start-instant [^ProcessHandle handle]
   (.orElse (.startInstant (.info handle)) nil))
+
+(defn- birth [^ProcessHandle handle]
+  {:pid (.pid handle)
+   :started-at (start-instant handle)})
+
+(defn- children [^ProcessHandle handle]
+  (with-open [children (.children handle)]
+    (mapv #(retain % "observed-child")
+          (iterator-seq (.iterator children)))))
+
+(defn- parent-birth [^ProcessHandle handle]
+  (some-> (.orElse (.parent handle) nil) birth))
 
 ;; The supported JDK's ProcessHandle implementation retains the native process
 ;; start time and supplies it to the native destroy operation. Keeping that same
@@ -30,6 +44,8 @@
      :handle handle
      :alive? #(.isAlive handle)
      :current-start #(start-instant handle)
+     :children #(children handle)
+     :parent-birth #(parent-birth handle)
      :destroy! #(.destroyForcibly handle)}))
 
 (defn retain-pid
@@ -39,6 +55,86 @@
     (fail! "Guidance process identity has an invalid PID"
            {:role role :pid pid}))
   (retain (.orElse (ProcessHandle/of (long pid)) nil) role))
+
+(defn- same-birth? [left right]
+  (and left right
+       (= (:pid left) (:pid right))
+       (= (:started-at left) (:started-at right))))
+
+(defn retain-children
+  "Retain only live direct children proven against the same spawning parent."
+  [parent role]
+  (require-live! parent "Guidance spawning parent is not live")
+  (let [retained
+        (->> ((:children parent))
+             (filter #(and (:started-at %)
+                           (live? %)
+                           (same-birth? parent ((:parent-birth %)))))
+             (mapv #(assoc % :role role)))]
+    (require-live! parent
+                   "Guidance spawning parent changed during child discovery")
+    retained))
+
+(defn- unique-child! [parent pid role]
+  (let [matches (filterv #(= pid (:pid %)) ((:children parent)))]
+    (when-not (= 1 (count matches))
+      (fail! "Guidance child process provenance is unavailable or ambiguous"
+             {:role role :pid pid :matches (count matches)
+              :parent-pid (:pid parent)}))
+    (assoc (first matches) :role role)))
+
+(defn retain-child
+  "Retain `pid` only when it remains the original child of live `parent`."
+  [parent pid role]
+  (when-not (and (integer? pid) (pos? pid))
+    (fail! "Guidance child process identity has an invalid PID"
+           {:role role :pid pid}))
+  (require-live! parent "Guidance spawning parent is not live")
+  (interleave! :before-child-acquisition parent)
+  (let [candidate (unique-child! parent pid role)]
+    (when-not (:started-at candidate)
+      (fail! "Guidance child process start identity is unavailable"
+             {:role role :pid pid :parent-pid (:pid parent)}))
+    (interleave! :after-child-acquisition candidate)
+    (require-live! parent "Guidance spawning parent changed during child acquisition")
+    (require-live! candidate "Guidance child changed during provenance validation")
+    (when-not (same-birth? parent ((:parent-birth candidate)))
+      (fail! "Guidance child process does not belong to its retained parent"
+             {:role role :pid pid :parent-pid (:pid parent)}))
+    (let [confirmed (unique-child! parent pid role)]
+      (when-not (and (same-birth? candidate confirmed)
+                     (same-birth? parent ((:parent-birth confirmed))))
+        (fail! "Guidance child process provenance changed during acquisition"
+               {:role role :pid pid :parent-pid (:pid parent)})))
+    candidate))
+
+(defn remember-child!
+  "Add a state-discovered child only after provenance succeeds.
+
+  On failure, retain independently proven direct children for cleanup without
+  granting the reported PID authority."
+  [ownership key parent-key pid role]
+  (if-let [retained (get @ownership key)]
+    (do
+      (when-not (= pid (:pid retained))
+        (fail! "Guidance preflight process identity changed"
+               {:role role :expected (:pid retained) :actual pid}))
+      (require-live!
+       retained "Guidance preflight retained child identity is not live"))
+    (let [parent (get @ownership parent-key)]
+      (try
+        (let [child (retain-child parent pid role)]
+          (swap! ownership assoc key child)
+          child)
+        (catch Throwable error
+          (try
+            (when-let [children (seq (retain-children
+                                      parent "proven-child-for-cleanup"))]
+              (swap! ownership update :proven-children
+                     (fnil into []) children))
+            (catch Throwable cleanup-error
+              (.addSuppressed error cleanup-error)))
+          (throw error))))))
 
 (defn live?
   "Return whether the retained birth-fenced identity is still live."

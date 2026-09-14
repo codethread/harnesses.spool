@@ -154,8 +154,8 @@
                       {:doc "Disposable loader-injection profile."
                        :parent :codex
                        :env {"PATH" (.getCanonicalPath fixture-dir)
-                             "DYLD_INSERT_LIBRARIES"
-                             "/tmp/unreviewed-constructor.dylib"}
+                             "OPENSSL_CONF"
+                             "/tmp/unreviewed-openssl.cnf"}
                        :attributes {}})
                      injection-error
                      (binding

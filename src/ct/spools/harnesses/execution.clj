@@ -35,9 +35,10 @@
 (def ^:dynamic ^:private *launch-state* nil)
 
 (declare schedule! inspect-owned! launch-in-flight?
-         ^:private finish-process! ^:private state
+         ^:private finish-process! ^:private state ^:private state-holder
          ^:private activate-state! ^:private deactivate-state!
-         ^:private ready-headless ^:private claim! ^:private release!
+         ^:private active-opened? ^:private same-attempt?
+         ^:private ready-headless ^:private claim!
          ^:private release-opened!
          ^:private launch-headless! ^:private full-run
          ^:private resolved-definition ^:private prepare-launch
@@ -83,12 +84,12 @@
     (try
       (harness/migrate-runs! runtime)
       (let [recovery (try
-                       (inspect-owned! runtime)
+                       (inspect-owned! runtime opened)
                        nil
                        (catch Throwable error
                          (reset! (:deferred-recovery opened) error)
                          error))
-            _ (recover-guidance-deadlines! runtime)]
+            _ (recover-guidance-deadlines! runtime opened)]
         (cond-> {:opened :harness-execution
                  :claimed (schedule! runtime)}
           recovery (assoc :deferred-recovery (ex-message recovery))))
@@ -256,6 +257,10 @@
             (harness/settle-outcome! rt id outcome evidence)
             (harness/finish! rt id (assoc outcome :evidence evidence))))))))
 
+(defn- launch-in-flight-opened? [opened run]
+  (and (contains? #{nil "pending"} (attr-get run :harness/process-handle))
+       (contains? @(:in-flight opened) (:id run))))
+
 (defn launch-in-flight?
   "Return whether this worker still owns an unfinished launch for `run`.
 
@@ -263,91 +268,146 @@
   listable custody record. It is scoped to the one run: an unrelated in-flight
   launch must never stop another run from being reconciled."
   [rt run]
-  (and (contains? #{nil "pending"} (attr-get run :harness/process-handle))
-       (contains? @(:in-flight (state rt)) (:id run))))
+  (launch-in-flight-opened? (state rt) run))
+
+(defn- same-attempt? [originating-run current]
+  (and (= (attr-get originating-run :harness/attempt)
+          (attr-get current :harness/attempt))
+       (= (attr-get originating-run :harness/invocation)
+          (attr-get current :harness/invocation))))
 
 (defn inspect-owned!
   "Inspect and advance headless runs backed by Mill process custody."
-  [rt]
-  (let [owned (runs/inspectable-headless rt #(launch-in-flight? rt %))]
-    (when (seq owned)
-      (let [records (custody/list-owned rt)
-            recur? (atom false)
-            transition-errors (atom [])
-            failures (:reconciliation-failures (state rt))]
-        (doseq [run owned]
-          (try
-            (let [run (if (guidance/native? run)
-                        (guidance-receipts/expire! rt run)
-                        run)
-                  record (custody/record-for "harness" run records)
-                  durable (custody/durable-attributes "harness"
-                                                      (:id run)
-                                                      (attr-get run :harness/attempt)
-                                                      record)]
-              (swap! failures dissoc (:id run))
-              (when (= "pending" (attr-get run :harness/process-handle))
-                (weaver/update! rt (:id run) {:attributes durable}))
-              (if (= :terminal (:phase record))
-                (finish-process! rt (full-run rt (:id run))
-                                 (resolved-definition rt (full-run rt (:id run)))
-                                 record)
-                (do
-                  (enforce-stop! rt run record)
-                  (reset! recur? true))))
-            (catch Throwable error
-              (let [id (:id run)
-                    message (str "process custody reconciliation failed: "
-                                 (ex-message error) " " (pr-str (ex-data error)))
-                    record (some #(when (= (:key %) (attr-get run :harness/process-key)) %)
-                                 records)
-                    signature [(:id run) (attr-get run :harness/process-key) message]
-                    repeated? (and (nil? record)
-                                   (life/terminal? run)
-                                   (not (life/settled? run))
-                                   (= signature (get @failures id)))
-                    transition-error
-                    (when-not repeated?
-                      (try
-                        (harness/finish!
-                         rt id
-                         (cond-> {:status :failed
-                                  :evidence
-                                  {:settled false
-                                   :settlement "no-terminal-evidence"
-                                   :failure-class "reconciliation"}
-                                  :error message}
-                           (some? (life/invocation run))
-                           (assoc :invocation (life/invocation run))))
-                        (swap! failures assoc id signature)
-                        nil
-                        (catch Throwable transition-error
-                          transition-error)))]
-                (release! rt id)
-                (when transition-error
-                  (when (and record
-                             (not= :terminal (:phase record))
-                             (= "running" (life/status (full-run rt id))))
-                    (reset! recur? true))
-                  (swap! transition-errors conj
-                         (ex-info "Unable to persist harness custody failure"
-                                  {:run-id id
-                                   :reconciliation-error {:run-id id
-                                                          :message (ex-message error)
-                                                          :data (ex-data error)}
-                                   :failure-transition-error
-                                   {:message (ex-message transition-error)
-                                    :data (ex-data transition-error)}}
-                                  transition-error)))))))
-        (when @recur?
-          (schedule-inspection! rt))
-        (when (seq @transition-errors)
-          (if (= 1 (count @transition-errors))
-            (throw (first @transition-errors))
-            (throw (ex-info "Unable to persist harness custody failures"
-                            {:failure-transition-errors
-                             (mapv ex-data @transition-errors)}
-                            (first @transition-errors)))))))))
+  ([rt]
+   (inspect-owned! rt (state rt)))
+  ([rt opened]
+   (when (active-opened? rt opened)
+     (let [owned (runs/inspectable-headless
+                  rt #(launch-in-flight-opened? opened %))]
+       (when (seq owned)
+         (let [records (custody/list-owned rt)
+               generation (:generation opened)
+               _ (guidance-deadline-hook!
+                  {:phase :headless-before-publication-lock
+                   :generation generation})
+               outcome
+               #_{:clj-kondo/ignore [:locking-suspicious-lock]}
+               #_{:splint/disable [lint/locking-object]}
+               (locking (catalog/publication-lock rt)
+                 (when (active-opened? rt opened)
+                   (let [recur? (atom false)
+                         transition-errors (atom [])
+                         failures (:reconciliation-failures opened)]
+                     (doseq [originating-run owned]
+                       (when-let [current (weaver/show rt (:id originating-run))]
+                         (when (and (same-attempt? originating-run current)
+                                    (= "headless"
+                                       (attr-get current :harness/mode))
+                                    (life/reserving? current)
+                                    (not= "ready" (life/status current))
+                                    (not (launch-in-flight-opened?
+                                          opened current)))
+                           (guidance-deadline-hook!
+                            {:phase :headless-after-reload
+                             :run-id (:id current)
+                             :generation generation})
+                           (try
+                             (let [run (if (guidance/native? current)
+                                         (guidance-receipts/expire! rt current)
+                                         current)
+                                   record (custody/record-for "harness" run records)
+                                   durable
+                                   (custody/durable-attributes
+                                    "harness" (:id run)
+                                    (attr-get run :harness/attempt) record)]
+                               (swap! failures dissoc (:id run))
+                               (when (= "pending"
+                                        (attr-get run :harness/process-handle))
+                                 (weaver/update! rt (:id run)
+                                                 {:attributes durable}))
+                               (if (= :terminal (:phase record))
+                                 (let [current (full-run rt (:id run))]
+                                   (finish-process!
+                                    rt current
+                                    (resolved-definition rt current) record))
+                                 (do
+                                   (enforce-stop! rt run record)
+                                   (reset! recur? true))))
+                             (catch Throwable error
+                               (let [id (:id current)
+                                     message
+                                     (str "process custody reconciliation failed: "
+                                          (ex-message error) " "
+                                          (pr-str (ex-data error)))
+                                     record
+                                     (some #(when (= (:key %)
+                                                     (attr-get
+                                                      current
+                                                      :harness/process-key))
+                                              %)
+                                           records)
+                                     signature
+                                     [id
+                                      (attr-get current :harness/process-key)
+                                      message]
+                                     repeated?
+                                     (and (nil? record)
+                                          (life/terminal? current)
+                                          (not (life/settled? current))
+                                          (= signature (get @failures id)))
+                                     transition-error
+                                     (when-not repeated?
+                                       (try
+                                         (harness/finish!
+                                          rt id
+                                          (cond->
+                                           {:status :failed
+                                            :evidence
+                                            {:settled false
+                                             :settlement "no-terminal-evidence"
+                                             :failure-class "reconciliation"}
+                                            :error message}
+                                            (some? (life/invocation current))
+                                            (assoc :invocation
+                                                   (life/invocation current))))
+                                         (swap! failures assoc id signature)
+                                         nil
+                                         (catch Throwable transition-error
+                                           transition-error)))]
+                                 (release-opened! opened id)
+                                 (when transition-error
+                                   (when (and record
+                                              (not= :terminal (:phase record))
+                                              (= "running"
+                                                 (life/status
+                                                  (full-run rt id))))
+                                     (reset! recur? true))
+                                   (swap!
+                                    transition-errors conj
+                                    (ex-info
+                                     "Unable to persist harness custody failure"
+                                     {:run-id id
+                                      :reconciliation-error
+                                      {:run-id id
+                                       :message (ex-message error)
+                                       :data (ex-data error)}
+                                      :failure-transition-error
+                                      {:message
+                                       (ex-message transition-error)
+                                       :data (ex-data transition-error)}}
+                                     transition-error)))))))))
+                     {:recur? @recur?
+                      :transition-errors @transition-errors})))]
+           (when (:recur? outcome)
+             (schedule-inspection! rt opened))
+           (when (seq (:transition-errors outcome))
+             (if (= 1 (count (:transition-errors outcome)))
+               (throw (first (:transition-errors outcome)))
+               (throw (ex-info
+                       "Unable to persist harness custody failures"
+                       {:failure-transition-errors
+                        (mapv ex-data (:transition-errors outcome))}
+                       (first (:transition-errors outcome))))))))))))
 
 (defn- daemon-thread-factory []
   (reify ThreadFactory
@@ -420,80 +480,81 @@
        (not (and (= "pi" (attr-get run :harness/harness))
                  (= "fetched" (get record "state"))))))
 
-(defn- active-generation [rt generation]
-  (let [opened @(:active (state-holder rt))]
-    (when (and opened
-               @(:open? opened)
-               (= generation (:generation opened)))
-      opened)))
+(defn- active-opened? [rt opened]
+  (and opened
+       @(:open? opened)
+       (identical? opened @(:active (state-holder rt)))))
 
-(defn- schedule-guidance-task! [rt originating-run generation delay-nanos]
+(defn- schedule-guidance-task! [rt originating-run opened delay-nanos]
   #_{:clj-kondo/ignore [:locking-suspicious-lock]}
   #_{:splint/disable [lint/locking-object]}
   (locking (catalog/publication-lock rt)
-    (when-let [opened (active-generation rt generation)]
+    (when (active-opened? rt opened)
       #_{:splint/disable [lint/locking-object]}
       (locking (:open? opened)
-        (when (and @(:open? opened)
-                   (identical? opened (active-generation rt generation)))
+        (when (active-opened? rt opened)
           (.schedule
            ^java.util.concurrent.ScheduledExecutorService (:scheduler opened)
-           ^Runnable #(arm-guidance-deadline! rt originating-run generation)
+           ^Runnable #(arm-guidance-deadline! rt originating-run opened)
            (max 1 delay-nanos)
            TimeUnit/NANOSECONDS)
           :scheduled)))))
 
-(defn- same-guidance-attempt? [originating-run current]
-  (and (= (attr-get originating-run :harness/attempt)
-          (attr-get current :harness/attempt))
-       (= (attr-get originating-run :harness/invocation)
-          (attr-get current :harness/invocation))))
+(defn- arm-guidance-deadline! [rt originating-run opened]
+  (let [generation (:generation opened)]
+    (guidance-deadline-hook!
+     {:phase :before-publication-lock
+      :run-id (:id originating-run)
+      :generation generation})
+    #_{:clj-kondo/ignore [:locking-suspicious-lock]}
+    #_{:splint/disable [lint/locking-object]}
+    (locking (catalog/publication-lock rt)
+      (when (active-opened? rt opened)
+        (let [current (full-run rt (:id originating-run))
+              _ (guidance-deadline-hook!
+                 {:phase :after-reload
+                  :run-id (:id originating-run)
+                  :generation generation})
+              record (guidance/current-attempt current)]
+          (when (and (same-attempt? originating-run current)
+                     (eligible-guidance-deadline? current record))
+            (let [now (Instant/now)]
+              (if (guidance/deadline-expired? current record now)
+                (do
+                  (guidance-receipts/expire! rt current)
+                  :expired)
+                (let [deadline (Instant/parse (get record "deadline-at"))
+                      delay-nanos
+                      (.toNanos (java.time.Duration/between now deadline))]
+                  (schedule-guidance-task! rt originating-run opened
+                                           delay-nanos))))))))))
 
-(defn- arm-guidance-deadline! [rt originating-run generation]
-  (guidance-deadline-hook!
-   {:phase :before-publication-lock
-    :run-id (:id originating-run)
-    :generation generation})
-  #_{:clj-kondo/ignore [:locking-suspicious-lock]}
-  #_{:splint/disable [lint/locking-object]}
-  (locking (catalog/publication-lock rt)
-    (when (active-generation rt generation)
-      (let [current (full-run rt (:id originating-run))
-            _ (guidance-deadline-hook!
-               {:phase :after-reload
-                :run-id (:id originating-run)
-                :generation generation})
-            record (guidance/current-attempt current)]
-        (when (and (same-guidance-attempt? originating-run current)
-                   (eligible-guidance-deadline? current record))
-          (let [now (Instant/now)]
-            (if (guidance/deadline-expired? current record now)
-              (do
-                (guidance-receipts/expire! rt originating-run)
-                :expired)
-              (let [deadline (Instant/parse (get record "deadline-at"))
-                    delay-nanos (.toNanos (java.time.Duration/between
-                                           now deadline))]
-                (schedule-guidance-task! rt originating-run generation
-                                         delay-nanos)))))))))
+(defn- schedule-guidance-deadline!
+  ([rt run]
+   (schedule-guidance-deadline! rt (state rt) run))
+  ([rt opened run]
+   (arm-guidance-deadline! rt run opened)))
 
-(defn- schedule-guidance-deadline! [rt run]
-  (when-let [opened @(:active (state-holder rt))]
-    (arm-guidance-deadline! rt run (:generation opened))))
-
-(defn- recover-guidance-deadlines! [rt]
+(defn- recover-guidance-deadlines! [rt opened]
   (->> (weaver/list rt)
-       (keep #(schedule-guidance-deadline! rt %))
+       (keep #(schedule-guidance-deadline! rt opened %))
        count))
 
-(defn- schedule-inspection! [rt]
-  (let [{:keys [inspection-scheduled? scheduler]} (state rt)]
-    (when (compare-and-set! inspection-scheduled? false true)
-      (.schedule ^java.util.concurrent.ScheduledExecutorService scheduler
-                 ^Runnable #(do
-                              (reset! inspection-scheduled? false)
-                              (inspect-owned! rt))
-                 100 TimeUnit/MILLISECONDS))))
+(defn- schedule-inspection!
+  ([rt]
+   (schedule-inspection! rt (state rt)))
+  ([rt opened]
+   #_{:clj-kondo/ignore [:locking-suspicious-lock]}
+   #_{:splint/disable [lint/locking-object]}
+   (locking (catalog/publication-lock rt)
+     (when (active-opened? rt opened)
+       (let [{:keys [inspection-scheduled? scheduler]} opened]
+         (when (compare-and-set! inspection-scheduled? false true)
+           (.schedule ^java.util.concurrent.ScheduledExecutorService scheduler
+                      ^Runnable #(do
+                                   (reset! inspection-scheduled? false)
+                                   (inspect-owned! rt opened))
+                      100 TimeUnit/MILLISECONDS)))))))
 
 (defn- callback [symbol]
   (or (requiring-resolve symbol)
@@ -522,9 +583,6 @@
 
 (defn- release-opened! [opened id]
   (swap! (:in-flight opened) disj id))
-
-(defn- release! [rt id]
-  (release-opened! (state rt) id))
 
 (defn- full-run [rt id]
   (or (weaver/show rt id) (fail! "Harness run not found" {:id id})))
@@ -711,7 +769,7 @@
             (finish-process! rt (full-run rt id) definition record)
             (do
               (enforce-stop! rt (full-run rt id) record)
-              (inspect-owned! rt)))
+              (inspect-owned! rt (or *launch-state* (state rt)))))
           invocation)
         (catch Exception e
           (if (life/terminal? (full-run rt id))
@@ -760,7 +818,7 @@
       (let [opened (or *launch-state* (state rt))]
         (release-opened! opened id)
         (when (identical? opened @(:active (state-holder rt)))
-          (inspect-owned! rt)
+          (inspect-owned! rt opened)
           (schedule! rt))))))
 
 (lifecycle/defresource harness-execution-runtime

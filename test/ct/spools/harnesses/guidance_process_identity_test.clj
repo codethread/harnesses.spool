@@ -1,23 +1,31 @@
 (ns ct.spools.harnesses.guidance-process-identity-test
   "Deterministic birth-identity reuse interleavings for preflight cleanup."
   (:require [clojure.test :refer [deftest is testing]]
+            [ct.spools.harnesses.internal.guidance-process]
             [ct.spools.harnesses.internal.guidance-process-identity :as identity])
   (:import [java.time Instant]))
 
-(defn- fake-identity [role pid started-at]
-  (let [state (atom {:alive true
-                     :current-start started-at
-                     :signals 0})]
-    {:identity {:role role
-                :pid pid
-                :started-at started-at
-                :handle nil
-                :alive? #(true? (:alive @state))
-                :current-start #(:current-start @state)
-                :destroy! #(do (swap! state update :signals inc)
-                               (swap! state assoc :alive false)
-                               true)}
-     :state state}))
+(defn- fake-identity
+  ([role pid started-at]
+   (fake-identity role pid started-at nil))
+  ([role pid started-at parent-birth]
+   (let [state (atom {:alive true
+                      :current-start started-at
+                      :children []
+                      :parent-birth parent-birth
+                      :signals 0})]
+     {:identity {:role role
+                 :pid pid
+                 :started-at started-at
+                 :handle nil
+                 :alive? #(true? (:alive @state))
+                 :current-start #(:current-start @state)
+                 :children #(:children @state)
+                 :parent-birth #(:parent-birth @state)
+                 :destroy! #(do (swap! state update :signals inc)
+                                (swap! state assoc :alive false)
+                                true)}
+      :state state})))
 
 (defn- with-interleave [hook f]
   (with-redefs-fn
@@ -30,6 +38,110 @@
 
 (defn- remaining [deadline]
   (- deadline (System/nanoTime)))
+
+(deftest first-child-acquisition-requires-stable-original-parent-provenance
+  (let [parent-start (Instant/parse "2026-09-14T00:00:00Z")
+        child-start (.plusMillis parent-start 10)
+        replacement-start (.plusSeconds child-start 1)
+        {parent :identity parent-state :state}
+        (fake-identity "parent" 40 parent-start)
+        {original :identity original-state :state}
+        (fake-identity "original" 41 child-start
+                       {:pid 40 :started-at parent-start})
+        {replacement :identity replacement-state :state}
+        (fake-identity "replacement" 41 replacement-start
+                       {:pid 99 :started-at parent-start})]
+    (testing "an exited original child cannot be replaced at first acquisition"
+      (swap! parent-state assoc :children [])
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo
+           #"provenance is unavailable"
+           (identity/retain-child parent 41 "anchor"))))
+    (testing "matching PID and group numbers do not replace parent provenance"
+      (swap! parent-state assoc :children [replacement])
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo
+           #"does not belong"
+           (identity/retain-child parent 41 "anchor"))))
+    (testing "missing birth or parent evidence is rejected"
+      (let [{missing-birth :identity}
+            (fake-identity "missing-birth" 41 nil
+                           {:pid 40 :started-at parent-start})
+            {missing-parent :identity}
+            (fake-identity "missing-parent" 41 child-start)]
+        (swap! parent-state assoc :children [missing-birth])
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo
+             #"start identity is unavailable"
+             (identity/retain-child parent 41 "helper")))
+        (swap! parent-state assoc :children [missing-parent])
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo
+             #"does not belong"
+             (identity/retain-child parent 41 "helper")))))
+    (testing "changed and ambiguous first acquisitions grant no authority"
+      (swap! parent-state assoc :children [original])
+      (with-interleave
+        (fn [phase observed]
+          (when (and (= :after-child-acquisition phase)
+                     (= 41 (:pid observed))
+                     (= child-start (:started-at observed)))
+            (swap! parent-state assoc :children [replacement])))
+        #(is (thrown-with-msg?
+              clojure.lang.ExceptionInfo
+              #"provenance changed"
+              (identity/retain-child parent 41 "anchor"))))
+      (swap! parent-state assoc :children [original original])
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo
+           #"ambiguous"
+           (identity/retain-child parent 41 "anchor"))))
+    (doseq [state [original-state replacement-state]]
+      (is (zero? (:signals @state))))))
+
+(deftest state-pid-is-not-added-before-child-provenance-succeeds
+  (let [parent-start (Instant/parse "2026-09-14T00:00:00Z")
+        child-start (.plusMillis parent-start 10)
+        replacement-start (.plusSeconds parent-start 1)
+        {parent :identity parent-state :state}
+        (fake-identity "supervisor" 40 parent-start)
+        {original :identity original-state :state}
+        (fake-identity "original" 41 child-start
+                       {:pid 40 :started-at parent-start})
+        {replacement :identity replacement-state :state}
+        (fake-identity "replacement" 42 replacement-start
+                       {:pid 99 :started-at parent-start})]
+    (testing "a wrong state PID retains only independently proven cleanup"
+      (let [ownership (atom {:supervisor parent})]
+        (swap! parent-state assoc :children [original])
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo
+             #"provenance is unavailable"
+             (identity/remember-child! ownership :anchor :supervisor 42
+                                       "ownership-anchor")))
+        (is (nil? (:anchor @ownership)))
+        (is (= [(select-keys original [:pid :started-at])]
+               (mapv #(select-keys % [:pid :started-at])
+                     (:proven-children @ownership))))
+        (let [executor (java.util.concurrent.Executors/newSingleThreadExecutor)
+              cleanup-owned!
+              (deref (ns-resolve 'ct.spools.harnesses.internal.guidance-process
+                                 'cleanup-owned!))]
+          (is (= #{40 41}
+                 (set (cleanup-owned! ownership executor [] nil nil nil nil
+                                      (+ (System/nanoTime) 1000000000))))))))
+    (testing "a replacement with wrong parent provenance gains no authority"
+      (swap! parent-state assoc :alive true)
+      (let [ownership (atom {:supervisor parent})]
+        (swap! parent-state assoc :children [replacement])
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo
+             #"does not belong"
+             (identity/remember-child! ownership :anchor :supervisor 42
+                                       "ownership-anchor")))
+        (is (= #{:supervisor} (set (keys @ownership))))))
+    (is (= 1 (:signals @original-state)))
+    (is (zero? (:signals @replacement-state)))))
 
 (deftest reuse-between-enumeration-and-correlation-is-not-authority
   (let [start (Instant/parse "2026-09-14T00:00:00Z")

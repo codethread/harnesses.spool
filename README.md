@@ -443,10 +443,11 @@ reviewed interpreter, preflight entrypoint, direct and transitive imports,
 package or module selectors, helper subprocesses, and ownership scanner that the
 profile needs. A mandatory Darwin resolver policy binds cwd and PATH exactly,
 with absent and empty selectors remaining distinct. It requires explicit absence
-of NODE_OPTIONS, NODE_PATH, DYLD loader/library redirection, LD_PRELOAD, and
-LD_LIBRARY_PATH; listing those unsafe inputs or their artifacts never authorizes
-them. Missing policy keys, incomplete, duplicate, noncanonical, or changed
-artifacts fail before the first process starts. The same closure is checked again
+of NODE_OPTIONS, NODE_PATH, OPENSSL_CONF, DYLD loader/library redirection,
+LD_PRELOAD, and LD_LIBRARY_PATH; listing those unsafe inputs or their artifacts
+never authorizes them. Missing policy keys and incomplete, duplicate,
+noncanonical, or changed artifacts fail before the first process starts. The
+same closure is checked again
 before helper release, after completion, and before every cleanup scanner.
 
 The local profile must also contain exact reviewed evidence that its closure
@@ -459,12 +460,17 @@ malformed output, nonzero exit, or drain failure still retires and joins the
 scanner and all safely retained identities.
 
 Numerical PID and PGID rows are discovery evidence only. Harnesses retains each
-actual process handle plus its start identity, confirms group membership while
-the original anchor is live, and signals and joins only that same birth-fenced
-identity. It never reacquires a PID for authority or adopts a replacement group
-after anchor disappearance. Input, execution, capture, cleanup, and worker joins
-share one monotonic 3,000 ms budget with 400 ms reserved for cleanup; unrelated
-processes are never selected by command pattern.
+actual process handle plus its start identity. Anchor and helper handles become
+authoritative only after stable direct-child provenance is established against
+the already retained live spawning parent, then confirmed against the expected
+process group before their gates open. It signals and joins only those same
+birth-fenced identities. It never reacquires a PID for authority or adopts a
+replacement child or group after parent or anchor disappearance. Incomplete
+state can add only independently parent-proven handles to bounded cleanup.
+Input, execution, capture, cleanup, and worker joins share one monotonic
+3,000 ms budget with 400 ms reserved for cleanup; unrelated processes are never
+selected by
+command pattern.
 Evidence must match one approved preflight source and the complete approved
 adapter/executable/package/profile/ownership closure. Missing, changed, untrusted,
 duplicate, malformed, oversized, nonzero, or mismatched evidence fails loudly;
@@ -503,9 +509,11 @@ deadlines are restored after execution reopens. Nanosecond scheduling and locked
 early-callback rearming retain the persisted deadline and exact
 attempt/invocation plus execution-resource generation. Reload, validation,
 expiry/rearm, generation activation, and retirement serialize under the
-publication lock; retirement detaches its generation before performing shutdown
-waits. Obsolete timers cannot fail retries or completed work, rearm after
-shutdown, or reset deadlines. Fetched
+publication lock. Headless custody inspections carry their originating opened
+state through reload, attempt/invocation checks, expiry, reconciliation, and
+rearming. Retirement detaches its generation before performing shutdown waits.
+Obsolete callbacks cannot fail retries or completed work, write after close,
+adopt a reopened generation, rearm after shutdown, or reset deadlines. Fetched
 interactive Pi remains exempt. Acknowledgement proves adapter handoff only—not
 atomic host ingestion, model
 obedience, or removal of historical transcript instructions.

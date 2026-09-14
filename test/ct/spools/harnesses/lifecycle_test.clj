@@ -376,6 +376,7 @@
                                       {:id id
                                        :attributes
                                        {:harness/status "running"
+                                        :harness/mode "headless"
                                         :harness/settled "false"
                                         :harness/attempt 1
                                         :harness/process-owner "agent-harness/run"
@@ -399,12 +400,15 @@
                   (try
                     (with-redefs-fn
                       {#'runs/inspectable-headless (fn [_ _] running)
+                       #'weaver/show
+                       (fn [_ id] (some #(when (= id (:id %)) %) running))
                        #'custody/list-owned (constantly records)
                        #'execution/schedule-inspection!
-                       (fn [_] (swap! schedule-count inc))}
+                       (fn [& _] (swap! schedule-count inc))}
                       #(execution/inspect-owned! rt))
                     (with-redefs [runs/inspectable-headless
                                   (fn [_ _] [terminal])
+                                  weaver/show (fn [_ _] terminal)
                                   custody/list-owned (constantly [])
                                   harnesses/finish!
                                   (fn [_ _ _] (swap! finish-count inc))]

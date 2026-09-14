@@ -5,7 +5,8 @@
             [clojure.test :refer [deftest is testing]]
             [ct.spools.harnesses.internal.guidance-capability :as capability]
             [ct.spools.harnesses.internal.guidance-closure :as closure]
-            [ct.spools.harnesses.internal.strict-json :as strict-json]))
+            [ct.spools.harnesses.internal.strict-json :as strict-json])
+  (:import [java.lang ProcessBuilder$Redirect]))
 
 (defn- capability-document []
   {"schema" "millstrand.agent-guidance-capability/v1"
@@ -73,7 +74,7 @@
         _ (spit selector selector-source)
         _ (spit entrypoint (result-source document marker))
         environment (dissoc (into {} (System/getenv))
-                            "NODE_OPTIONS" "NODE_PATH")
+                            "NODE_OPTIONS" "NODE_PATH" "OPENSSL_CONF")
         interpreter (capability/resolve-executable "node" environment)
         profile
         (finalize-profile
@@ -163,6 +164,31 @@
                                     (.exitValue process))})))
     library))
 
+(defn- openssl-configuration! [root library]
+  (let [configuration (io/file root "openssl.cnf")]
+    (spit configuration
+          (str "nodejs_conf = nodejs_init\n"
+               "[nodejs_init]\n"
+               "providers = providers\n"
+               "[providers]\n"
+               "fixture = fixture_provider\n"
+               "[fixture_provider]\n"
+               "module = " (.getCanonicalPath library) "\n"
+               "activate = 1\n"))
+    configuration))
+
+(defn- run-openssl-control! [interpreter environment]
+  (let [builder (doto (ProcessBuilder. ^java.util.List [interpreter "-e" ""])
+                  (.redirectOutput ProcessBuilder$Redirect/DISCARD)
+                  (.redirectError ProcessBuilder$Redirect/DISCARD))
+        _ (doto (.environment builder)
+            (.clear)
+            (.putAll environment))
+        process (.start builder)]
+    (when-not (.waitFor process 5 java.util.concurrent.TimeUnit/SECONDS)
+      (.destroyForcibly process)
+      (throw (ex-info "OpenSSL constructor positive control timed out" {})))))
+
 (defn- run-constructor-control! [interpreter environment]
   (let [builder (ProcessBuilder. ^java.util.List [interpreter "-e" ""])
         _ (doto (.environment builder)
@@ -209,6 +235,81 @@
                                (assoc-in request ["env" "NODE_OPTIONS"]
                                          "--require=changed.cjs")))))
         (is (= "ran\n" (marker-content marker)))))))
+
+(deftest openssl-configuration-is-rejected-before-any-reviewed-execution
+  (with-closure
+    (fn [{:keys [profile request marker]}]
+      (let [root (io/file (get request "cwd"))
+            constructor-marker (io/file root "openssl-constructor-ran.log")
+            scanner-marker (io/file root "scanner-ran.log")
+            scanner (io/file root "scanner.sh")
+            _ (spit scanner
+                    (str "#!/bin/sh\n"
+                         "printf 'scanner\\n' >> " (pr-str (str scanner-marker))
+                         "\nexec /bin/ps \"$@\"\n"))
+            _ (.setExecutable scanner true)
+            profile
+            (finalize-profile
+             (update-in
+              profile [:executable-closure :artifacts]
+              (fn [artifacts]
+                (conj
+                 (mapv #(if (= "ownership-scanner" (:role %))
+                          (closure/artifact "ownership-scanner" scanner)
+                          %)
+                       artifacts)
+                 (closure/artifact "subprocess" "/bin/ps")))))
+            library (compile-constructor! root)
+            configuration (openssl-configuration! root library)
+            configured-environment
+            (assoc (get request "env")
+                   "OPENSSL_CONF" (.getCanonicalPath configuration)
+                   "GUIDANCE_CONSTRUCTOR_MARKER"
+                   (.getCanonicalPath constructor-marker))]
+        (run-openssl-control!
+         (closure/artifact-path profile "interpreter") configured-environment)
+        (is (= "constructor\n" (marker-content constructor-marker)))
+        (.delete constructor-marker)
+        (doseq [[label rejected environment]
+                [["present" profile configured-environment]
+                 ["omitted policy key"
+                  (finalize-profile
+                   (update-in profile
+                              [:executable-closure :resolver-policy
+                               :environment]
+                              dissoc "OPENSSL_CONF"))
+                  (get request "env")]
+                 ["omitted evidence key"
+                  (finalize-profile
+                   (update-in profile
+                              [:executable-closure :resolution-inputs
+                               :environment]
+                              dissoc "OPENSSL_CONF"))
+                  (get request "env")]
+                 ["attempted manifest authorization"
+                  (finalize-profile
+                   (-> profile
+                       (assoc-in [:executable-closure :resolution-inputs
+                                  :environment "OPENSSL_CONF"]
+                                 (.getCanonicalPath configuration))
+                       (update-in [:executable-closure :artifacts]
+                                  conj (closure/artifact "selector"
+                                                         configuration))))
+                  configured-environment]]]
+          (testing label
+            (is (thrown? clojure.lang.ExceptionInfo
+                         (preflight rejected
+                                    (assoc request "env" environment))))
+            (is (= "" (marker-content constructor-marker)))
+            (is (= "" (marker-content scanner-marker)))
+            (is (= "" (marker-content marker)))))
+        (is (re-find #"unsupported dynamic resolution inputs"
+                     (ex-message
+                      (failure profile
+                               (assoc-in request ["env" "OPENSSL_CONF"] "")))))
+        (is (= "" (marker-content constructor-marker)))
+        (is (= "" (marker-content scanner-marker)))
+        (is (= "" (marker-content marker)))))))
 
 (deftest loader-injection-is-rejected-before-constructor-or-helper-execution
   (with-closure

@@ -199,7 +199,7 @@
      (def profile-environment
        (-> (into {} (System/getenv))
            (assoc "PATH" (.getCanonicalPath fixture-dir))
-           (dissoc "NODE_OPTIONS" "NODE_PATH")))
+           (dissoc "NODE_OPTIONS" "NODE_PATH" "OPENSSL_CONF")))
      (def profile
        (let [candidate
              {:harness "codex"

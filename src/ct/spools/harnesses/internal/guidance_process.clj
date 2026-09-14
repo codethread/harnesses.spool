@@ -203,13 +203,6 @@
           :when (.isDone future)]
     (await-future! future deadline phase)))
 
-(defn- remember-identity! [ownership key pid role]
-  (if-let [retained (get @ownership key)]
-    (when-not (= pid (:pid retained))
-      (fail! "Guidance preflight process identity changed"
-             {:role role :expected (:pid retained) :actual pid}))
-    (swap! ownership assoc key (identity/retain-pid pid role))))
-
 (defn- await-owned! [state-path token futures deadline ownership]
   (loop []
     (inspect-futures! futures deadline)
@@ -219,19 +212,15 @@
                            (validate-state! token))]
       (let [phase (get state "phase")
             anchor-pid (get state "anchorPid")]
-        (remember-identity! ownership :anchor anchor-pid "ownership-anchor")
+        (identity/remember-child! ownership :anchor :supervisor anchor-pid
+                                  "ownership-anchor")
         (case phase
           "ownership-failed"
           (fail! "Guidance preflight could not establish private process ownership"
                  {:anchor-pid anchor-pid})
           "owned"
           (if (= anchor-pid (get state "pgid"))
-            (do
-              (identity/require-live!
-               (:anchor @ownership)
-               "Guidance preflight ownership anchor is not live")
-              (swap! ownership assoc :pgid anchor-pid)
-              state)
+            state
             (fail! "Guidance preflight process group identity is invalid" state))
           (do (Thread/sleep 1) (recur))))
       (do (Thread/sleep 1) (recur)))))
@@ -259,10 +248,8 @@
         (let [helper-pid (get state "helperPid")]
           (when-not (valid-pid? helper-pid)
             (fail! "Guidance preflight helper recorded an invalid PID" state))
-          (remember-identity! ownership :helper helper-pid "preflight-helper")
-          (identity/require-live!
-           (:helper @ownership)
-           "Guidance preflight helper identity is not live")
+          (identity/remember-child! ownership :helper :anchor helper-pid
+                                    "preflight-helper")
           state)
         "finished"
         (fail! "Guidance preflight helper ran before identity retention" {})
@@ -306,9 +293,17 @@
 
 (defn- cleanup-owned!
   [ownership executor streams profile process-environment root scanner deadline]
-  (let [{:keys [anchor helper supervisor pgid]} @ownership
+  (let [{:keys [anchor helper supervisor pgid proven-children]} @ownership
         errors (atom [])
-        discovered (atom [])]
+        discovered (atom [])
+        independently-proven (atom (vec proven-children))]
+    (when-not pgid
+      (doseq [parent [anchor supervisor]
+              :when (identity/live? parent)]
+        (attempt-cleanup!
+         errors #(swap! independently-proven into
+                        (identity/retain-children
+                         parent "proven-child-for-cleanup")))))
     (when pgid
       (if (identity/live? anchor)
         (try
@@ -330,7 +325,8 @@
          (ex-info "Guidance ownership anchor identity disappeared before cleanup"
                   {:anchor-pid (:pid anchor) :pgid pgid}))))
     (let [identities (distinct-identities
-                      (concat @discovered [helper anchor supervisor]))]
+                      (concat @discovered @independently-proven
+                              [helper anchor supervisor]))]
       (doseq [retained identities]
         (attempt-cleanup! errors #(identity/signal! retained)))
       (doseq [stream streams]
@@ -428,7 +424,13 @@
                        (.getInputStream process)
                        (.getErrorStream process)]]
           (try
-            (await-owned! state-path token futures execution-deadline ownership)
+            (let [owned (await-owned! state-path token futures
+                                      execution-deadline ownership)
+                  pgid (get owned "pgid")
+                  rows (scan/scan! reviewed-profile process-environment root
+                                   scanner execution-deadline remaining-nanos)]
+              (identity/correlate! (:anchor @ownership) [] rows pgid)
+              (swap! ownership assoc :pgid pgid))
             (when-not (.isAlive process)
               (fail! "Guidance preflight supervisor failed"
                      {:exit-code (.exitValue process)}))
@@ -438,6 +440,10 @@
             (write-signal! go-path token)
             (await-helper-started! state-path token futures
                                    execution-deadline ownership)
+            (let [{:keys [anchor helper pgid]} @ownership
+                  rows (scan/scan! reviewed-profile process-environment root
+                                   scanner execution-deadline remaining-nanos)]
+              (identity/correlate! anchor [helper] rows pgid))
             (closure/verify! reviewed-profile process-environment budget!)
             (write-signal! helper-path token)
             (let [finished (await-helper! state-path token futures

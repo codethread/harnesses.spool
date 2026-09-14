@@ -47,8 +47,8 @@
                               [(assoc fractional-record "deadline-at"
                                       fractional-deadline)]}})
                            _ (execution/open-execution! {:runtime rt})
-                           generation (:generation (execution-state rt))
-                           early-result (arm! rt fractional generation)
+                           opened (execution-state rt)
+                           early-result (arm! rt fractional opened)
                            _ (Thread/sleep 300)
                            fractional-after
                            (weaver/show rt (:id fractional))
@@ -71,10 +71,10 @@
                                       (str (.plusMillis
                                             (java.time.Instant/now) 180)))]}})
                            _ (execution/open-execution! {:runtime rt})
-                           old-generation (:generation (execution-state rt))
+                           old-opened (execution-state rt)
                            _ (execution/close-execution! {:runtime rt})
                            old-callback-result
-                           (arm! rt reopened old-generation)
+                           (arm! rt reopened old-opened)
                            _ (Thread/sleep 250)
                            while-closed (weaver/show rt (:id reopened))
                            _ (execution/open-execution! {:runtime rt})
@@ -142,8 +142,8 @@
                                         (str (.plusMillis
                                               (java.time.Instant/now) 250)))]}})
                              _ (execution/open-execution! {:runtime rt})
-                             generation (:generation (execution-state rt))
-                             _ (arm! rt acknowledged generation)
+                             opened (execution-state rt)
+                             _ (arm! rt acknowledged opened)
                              bundle
                              (harnesses/managed-startup!
                               rt {:harness "codex"
@@ -177,7 +177,7 @@
                                 [(assoc completed-record "deadline-at"
                                         (str (.plusMillis
                                               (java.time.Instant/now) 250)))]}})
-                             _ (arm! rt completed generation)
+                             _ (arm! rt completed opened)
                              completed
                              (harnesses/finish!
                               rt (:id completed)
@@ -226,7 +226,7 @@
                              retry-start
                              (harnesses/begin-attempt! rt (:id retried))
                              retry-before (weaver/show rt (:id retried))
-                             stale-result (arm! rt retried-origin generation)
+                             stale-result (arm! rt retried-origin opened)
                              retry-after (weaver/show rt (:id retried))
                              _ (execution/close-execution! {:runtime rt})]
                          {:acknowledged

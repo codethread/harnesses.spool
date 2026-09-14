@@ -82,7 +82,7 @@
         entrypoint (io/file scripts "managed-guidance-preflight.mjs")
         scanner (io/file root "scanner.sh")
         environment (-> (into {} (System/getenv))
-                        (dissoc "NODE_OPTIONS" "NODE_PATH"
+                        (dissoc "NODE_OPTIONS" "NODE_PATH" "OPENSSL_CONF"
                                 "DYLD_INSERT_LIBRARIES"))
         interpreter (capability/resolve-executable "node" environment)
         _ (spit entrypoint (helper-source root))

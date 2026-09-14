@@ -40,6 +40,7 @@
   {"PATH" "bound"
    "NODE_OPTIONS" "absent"
    "NODE_PATH" "absent"
+   "OPENSSL_CONF" "absent"
    "DYLD_INSERT_LIBRARIES" "absent"
    "DYLD_LIBRARY_PATH" "absent"
    "DYLD_FRAMEWORK_PATH" "absent"
@@ -49,7 +50,7 @@
    "LD_LIBRARY_PATH" "absent"})
 
 (def ^:private unsafe-environment-pattern
-  #"^(?:DYLD_.+|LD_PRELOAD|LD_LIBRARY_PATH)$")
+  #"^(?:DYLD_.+|LD_PRELOAD|LD_LIBRARY_PATH|OPENSSL_CONF)$")
 
 (defn- closed-keys! [value required label]
   (when-not (and (map? value) (= required (set (keys value))))
