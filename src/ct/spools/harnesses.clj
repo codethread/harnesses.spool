@@ -163,6 +163,7 @@
    #_{:splint/disable [lint/locking-object]}
    (locking (catalog/publication-lock rt)
      (let [run (runs/require-run rt id)
+           _ (guidance/validate-representation! run)
            interactive? (= "interactive" (attr-get run :harness/mode))
            attempt (inc (or (attr-get run :harness/attempt) 0))
            invocation (str (UUID/randomUUID))]

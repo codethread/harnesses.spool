@@ -4,6 +4,7 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [ct.spools.harnesses.internal.guidance-closure :as closure]
+            [ct.spools.harnesses.internal.guidance-deadline :as deadline]
             [ct.spools.harnesses.internal.guidance-process-cleanup :as cleanup]
             [ct.spools.harnesses.internal.guidance-process-identity :as identity]
             [ct.spools.harnesses.internal.guidance-process-scan :as scan]
@@ -20,9 +21,6 @@
 
 (def ^:private capture-limit (* 64 1024))
 (def ^:private state-limit (* 8 1024))
-(def ^:private timeout-millis 3000)
-(def ^:private cleanup-millis 400)
-
 (def ^:private supervisor-source
   (str/join
    "\n"
@@ -109,8 +107,7 @@
   (- deadline (System/nanoTime)))
 
 (defn- timed-out! [phase]
-  (fail! "Guidance preflight timed out"
-         {:timeout-millis timeout-millis :phase phase}))
+  (deadline/timed-out! phase))
 
 (defn- await-future! [^Future future deadline phase]
   (let [remaining (remaining-nanos deadline)]
@@ -283,135 +280,150 @@
 
 (defn run!
   "Run the exact preflight helper inside a private, identity-fenced process group."
-  [profile request-json]
-  (let [{:keys [path]} (:preflight profile)
-        process-environment (:effective-environment profile)
-        reviewed-profile (dissoc profile :effective-environment)
-        script (io/file path)
-        scripts-dir (.getParentFile script)
-        root (.getParentFile scripts-dir)]
-    (when-not (and (= "scripts" (.getName scripts-dir))
-                   (= "managed-guidance-preflight.mjs" (.getName script)))
-      (fail! "Guidance preflight must use scripts/managed-guidance-preflight.mjs"
-             {:path path}))
-    (let [deadline (+ (System/nanoTime)
-                      (.toNanos TimeUnit/MILLISECONDS timeout-millis))
-          execution-deadline (- deadline
-                                (.toNanos TimeUnit/MILLISECONDS cleanup-millis))
-          directory (private-directory!)
-          supervisor-path (.resolve directory "supervisor.mjs")
-          anchor-path (.resolve directory "anchor.mjs")
-          gate-path (.resolve directory "helper-gate.mjs")
-          state-path (.resolve directory "state.json")
-          boot-path (.resolve directory "boot.ready")
-          go-path (.resolve directory "go.ready")
-          helper-path (.resolve directory "helper.ready")
-          token (str (UUID/randomUUID))
-          ownership (atom {})
-          executor (Executors/newFixedThreadPool 3 (daemon-thread-factory))
-          budget! #(when-not (pos? (remaining-nanos execution-deadline))
-                     (timed-out! "closure-verification"))
-          interpreter (closure/artifact-path reviewed-profile "interpreter")
-          scanner (closure/artifact-path reviewed-profile "ownership-scanner")
-          entrypoint (closure/artifact-path reviewed-profile "entrypoint")]
-      (try
-        (closure/verify! reviewed-profile process-environment budget!)
-        (write-file! supervisor-path supervisor-source)
-        (write-file! anchor-path anchor-source)
-        (write-file! gate-path helper-gate-source)
-        (let [builder
-              (doto
-               (ProcessBuilder.
-                ^java.util.List
-                [interpreter (str supervisor-path) (str anchor-path)
-                 (str gate-path) (.getCanonicalPath root) scanner entrypoint
-                 (str state-path) (str boot-path) (str go-path)
-                 (str helper-path) token])
-                (.directory root))
-              _ (doto (.environment builder)
-                  (.clear)
-                  (.putAll process-environment))
-              process (.start builder)
-              _ (swap! ownership assoc
-                       :supervisor
-                       (identity/retain (.toHandle process) "supervisor"))
-              input (.submit
-                     executor
-                     ^Callable
-                     #(with-open [stream (.getOutputStream process)]
-                        (.write stream
-                                (.getBytes ^String request-json
-                                           StandardCharsets/UTF_8))))
-              stdout (.submit executor
-                              ^Callable #(capture! (.getInputStream process)))
-              stderr (.submit executor
-                              ^Callable #(capture! (.getErrorStream process)))
-              futures [["request-input" input]
-                       ["stdout-drain" stdout]
-                       ["stderr-drain" stderr]]
-              streams [(.getOutputStream process)
-                       (.getInputStream process)
-                       (.getErrorStream process)]]
-          (try
-            (let [owned (await-owned! state-path token futures
-                                      execution-deadline ownership)
-                  pgid (get owned "pgid")
-                  rows (scan/scan! reviewed-profile process-environment root
-                                   scanner execution-deadline remaining-nanos)]
-              (identity/correlate! (:anchor @ownership) [] rows pgid)
-              (swap! ownership assoc :pgid pgid))
-            (when-not (.isAlive process)
-              (fail! "Guidance preflight supervisor failed"
-                     {:exit-code (.exitValue process)}))
-            (identity/require-live!
-             (:anchor @ownership)
-             "Guidance preflight ownership anchor is not live")
-            (write-signal! go-path token)
-            (await-helper-started! state-path token futures
-                                   execution-deadline ownership)
-            (let [{:keys [anchor helper pgid]} @ownership
-                  rows (scan/scan! reviewed-profile process-environment root
-                                   scanner execution-deadline remaining-nanos)]
-              (identity/correlate! anchor [helper] rows pgid))
-            (closure/verify! reviewed-profile process-environment budget!)
-            (write-signal! helper-path token)
-            (let [finished (await-helper! state-path token futures
-                                          execution-deadline ownership)]
-              (release-supervisor! process execution-deadline)
-              (await-future! input execution-deadline "request-input")
-              (let [stdout-bytes (await-future! stdout execution-deadline
-                                                "stdout-drain")
-                    stderr-bytes (await-future! stderr execution-deadline
-                                                "stderr-drain")
-                    closure-check
-                    (.submit executor
-                             ^Callable
-                             #(closure/verify! reviewed-profile
-                                               process-environment budget!))]
-                {:source (:preflight reviewed-profile)
-                 :reviewed-closure-sha256
-                 (await-future! closure-check execution-deadline
-                                "closure-recheck")
-                 :exit-code (or (get finished "exitCode") 1)
-                 :stdout (decode-utf8 stdout-bytes
-                                      "Guidance preflight stdout")
-                 :stderr (decode-utf8 stderr-bytes
-                                      "Guidance preflight stderr")
-                 :owned-pids {:supervisor-pid
-                              (:pid (:supervisor @ownership))
-                              :anchor-pid (:pid (:anchor @ownership))
-                              :helper-pid (:pid (:helper @ownership))}}))
-            (finally
-              (try
-                (cleanup/cleanup-owned!
-                 ownership executor streams reviewed-profile
-                 process-environment root scanner deadline remaining-nanos)
-                (finally
-                  (when (.isAlive process)
-                    (.destroyForcibly process))
-                  (doseq [stream streams]
-                    (try (.close stream) (catch Exception _ nil)))
-                  (.shutdownNow executor))))))
-        (finally
-          (.shutdownNow executor)
-          (delete-directory! directory))))))
+  ([profile request-json]
+   (run! profile request-json (deadline/start) (fn [result] result)))
+  ([profile request-json budget validate-result!]
+   (deadline/check! budget "process-setup")
+   (let [{:keys [path]} (:preflight profile)
+         process-environment (:effective-environment profile)
+         reviewed-profile (dissoc profile :effective-environment)
+         script (io/file path)
+         scripts-dir (.getParentFile script)
+         root (.getParentFile scripts-dir)]
+     (when-not (and (= "scripts" (.getName scripts-dir))
+                    (= "managed-guidance-preflight.mjs" (.getName script)))
+       (fail! "Guidance preflight must use scripts/managed-guidance-preflight.mjs"
+              {:path path}))
+     (deadline/check! budget "process-profile-validation")
+     (let [operation-deadline (deadline/deadline budget)
+           execution-deadline (deadline/work-deadline budget)
+           directory (private-directory!)
+           supervisor-path (.resolve directory "supervisor.mjs")
+           anchor-path (.resolve directory "anchor.mjs")
+           gate-path (.resolve directory "helper-gate.mjs")
+           state-path (.resolve directory "state.json")
+           boot-path (.resolve directory "boot.ready")
+           go-path (.resolve directory "go.ready")
+           helper-path (.resolve directory "helper.ready")
+           token (str (UUID/randomUUID))
+           ownership (atom {})
+           executor (Executors/newFixedThreadPool 3 (daemon-thread-factory))
+           budget! #(deadline/check! budget "closure-verification")
+           interpreter (closure/artifact-path reviewed-profile "interpreter")
+           scanner (closure/artifact-path reviewed-profile "ownership-scanner")
+           entrypoint (closure/artifact-path reviewed-profile "entrypoint")]
+       (try
+         (deadline/check! budget "private-directory")
+         (deadline/bounded!
+          budget "process-closure-verification"
+          #(closure/verify! reviewed-profile process-environment budget!))
+         (write-file! supervisor-path supervisor-source)
+         (write-file! anchor-path anchor-source)
+         (write-file! gate-path helper-gate-source)
+         (let [builder
+               (doto
+                (ProcessBuilder.
+                 ^java.util.List
+                 [interpreter (str supervisor-path) (str anchor-path)
+                  (str gate-path) (.getCanonicalPath root) scanner entrypoint
+                  (str state-path) (str boot-path) (str go-path)
+                  (str helper-path) token])
+                 (.directory root))
+               _ (doto (.environment builder)
+                   (.clear)
+                   (.putAll process-environment))
+               _ (deadline/check! budget "supervisor-start")
+               process (.start builder)
+               _ (swap! ownership assoc
+                        :supervisor
+                        (identity/retain (.toHandle process) "supervisor"))
+               input (.submit
+                      executor
+                      ^Callable
+                      #(with-open [stream (.getOutputStream process)]
+                         (.write stream
+                                 (.getBytes ^String request-json
+                                            StandardCharsets/UTF_8))))
+               stdout (.submit executor
+                               ^Callable #(capture! (.getInputStream process)))
+               stderr (.submit executor
+                               ^Callable #(capture! (.getErrorStream process)))
+               futures [["request-input" input]
+                        ["stdout-drain" stdout]
+                        ["stderr-drain" stderr]]
+               streams [(.getOutputStream process)
+                        (.getInputStream process)
+                        (.getErrorStream process)]]
+           (try
+             (deadline/check! budget "supervisor-start")
+             (let [owned (await-owned! state-path token futures
+                                       execution-deadline ownership)
+                   pgid (get owned "pgid")
+                   rows (scan/scan! reviewed-profile process-environment root
+                                    scanner execution-deadline remaining-nanos)]
+               (identity/correlate! (:anchor @ownership) [] rows pgid)
+               (swap! ownership assoc :pgid pgid))
+             (when-not (.isAlive process)
+               (fail! "Guidance preflight supervisor failed"
+                      {:exit-code (.exitValue process)}))
+             (identity/require-live!
+              (:anchor @ownership)
+              "Guidance preflight ownership anchor is not live")
+             (deadline/check! budget "helper-start")
+             (write-signal! go-path token)
+             (await-helper-started! state-path token futures
+                                    execution-deadline ownership)
+             (let [{:keys [anchor helper pgid]} @ownership
+                   rows (scan/scan! reviewed-profile process-environment root
+                                    scanner execution-deadline remaining-nanos)]
+               (identity/correlate! anchor [helper] rows pgid))
+             (deadline/bounded!
+              budget "helper-release-closure-verification"
+              #(closure/verify! reviewed-profile process-environment budget!))
+             (deadline/check! budget "helper-execution-release")
+             (write-signal! helper-path token)
+             (let [finished (await-helper! state-path token futures
+                                           execution-deadline ownership)]
+               (deadline/check! budget "process-completion")
+               (release-supervisor! process execution-deadline)
+               (await-future! input execution-deadline "request-input")
+               (let [stdout-bytes (await-future! stdout execution-deadline
+                                                 "stdout-drain")
+                     stderr-bytes (await-future! stderr execution-deadline
+                                                 "stderr-drain")
+                     closure-check
+                     (.submit executor
+                              ^Callable
+                              #(closure/verify! reviewed-profile
+                                                process-environment budget!))
+                     process-result
+                     {:source (:preflight reviewed-profile)
+                      :reviewed-closure-sha256
+                      (await-future! closure-check execution-deadline
+                                     "closure-recheck")
+                      :exit-code (or (get finished "exitCode") 1)
+                      :stdout (decode-utf8 stdout-bytes
+                                           "Guidance preflight stdout")
+                      :stderr (decode-utf8 stderr-bytes
+                                           "Guidance preflight stderr")
+                      :owned-pids {:supervisor-pid
+                                   (:pid (:supervisor @ownership))
+                                   :anchor-pid (:pid (:anchor @ownership))
+                                   :helper-pid (:pid (:helper @ownership))}}]
+                 (deadline/check! budget "result-validation")
+                 (validate-result! process-result)))
+             (finally
+               (try
+                 (cleanup/cleanup-owned!
+                  ownership executor streams reviewed-profile
+                  process-environment root scanner operation-deadline
+                  remaining-nanos)
+                 (finally
+                   (when (.isAlive process)
+                     (.destroyForcibly process))
+                   (doseq [stream streams]
+                     (try (.close stream) (catch Exception _ nil)))
+                   (.shutdownNow executor))))))
+         (finally
+           (.shutdownNow executor)
+           (delete-directory! directory)))))))

@@ -4,6 +4,7 @@
             [clojure.string :as str]
             [ct.spools.harnesses.internal.guidance-capability :as capability]
             [ct.spools.harnesses.internal.guidance-prompt-controls :as prompt-controls]
+            [ct.spools.harnesses.internal.guidance-representation :as representation]
             [ct.spools.harnesses.internal.lifecycle :as life]
             [ct.spools.harnesses.internal.strict-json :as strict-json]
             [millstrand.api.spool.alpha :as spool])
@@ -30,11 +31,6 @@
   #{"legacy" "native-v1"})
 
 (def ^:private managed-harnesses #{"codex" "pi"})
-(def ^:private guidance-attribute-keys
-  #{:harness/guidance-version :harness/guidance-transport
-    :harness/guidance-capability :harness/guidance-capability-sha256
-    :harness/guidance-context-template :harness/guidance-context
-    :harness/guidance-bundle-sha256 :harness/guidance-attempts})
 (def ^:private bootstrap-keys
   #{"schema" "transport" "run-id" "attempt" "invocation" "harness"
     "bundle-sha256" "capability-sha256"})
@@ -221,29 +217,15 @@
                :harness/guidance-capability-sha256
                (:capability-sha256 selection))))))
 
+(defn validate-representation!
+  "Return the complete durable guidance representation for one run."
+  [run]
+  (representation/validate! run))
+
 (defn transport
   "Return and validate a run's selected transport; absent old metadata is legacy."
   [run]
-  (let [present (filter #(some? (spool/attr-get run %))
-                        guidance-attribute-keys)]
-    (if (empty? present)
-      "legacy"
-      (let [version (spool/attr-get run :harness/guidance-version)
-            selected (spool/attr-get run :harness/guidance-transport)
-            required (cond-> (disj guidance-attribute-keys
-                                   :harness/guidance-capability
-                                   :harness/guidance-capability-sha256)
-                       (= selected "native-v1")
-                       (conj :harness/guidance-capability
-                             :harness/guidance-capability-sha256))
-            missing (remove #(some? (spool/attr-get run %)) required)]
-        (when-not (and (= guidance-version version)
-                       (contains? transports selected)
-                       (empty? missing))
-          (spool/fail! "Harness run has corrupt partial guidance metadata"
-                       {:run-id (:id run) :version version
-                        :transport selected :missing (vec missing)}))
-        selected))))
+  (:transport (validate-representation! run)))
 
 (defn native?
   "Return whether `run` has a complete native-v1 selection."
@@ -253,17 +235,7 @@
 (defn attempt-records
   "Return guidance attempt records with normalized string keys."
   [run]
-  (mapv (fn [record]
-          (into {}
-                (map (fn [[key value]]
-                       [(name key)
-                        (if (and (= "failure" (name key)) (map? value))
-                          (into {} (map (fn [[failure-key failure-value]]
-                                          [(name failure-key) failure-value]))
-                                value)
-                          value)]))
-                record))
-        (or (spool/attr-get run :harness/guidance-attempts) [])))
+  (:attempts (validate-representation! run)))
 
 (defn current-attempt
   "Return the guidance record for the run's current durable launch fence."
@@ -331,35 +303,36 @@
 (defn begin-attempt-patch
   "Return a fenced guidance-attempt patch, rechecking native capability first."
   [rt run attempt invocation]
-  (if-not (some? (spool/attr-get run :harness/guidance-version))
-    {}
-    (let [selected (transport run)
-          selection (when (= "native-v1" selected)
-                      (execution-selection! rt run selected))
-          attempts (attempt-records run)
-          now (Instant/now)
-          patch
-          {:harness/guidance-attempts
-           (conj attempts
-                 (cond-> {"attempt" attempt
-                          "invocation" invocation
-                          "transport" selected
-                          "state" (if (= "native-v1" selected)
-                                    "pending"
-                                    "not-required")
-                          "started-at" (str now)}
-                   (= "native-v1" selected)
-                   (assoc "bundle-sha256"
-                          (spool/attr-get run :harness/guidance-bundle-sha256)
-                          "capability-sha256"
-                          (spool/attr-get run
-                                          :harness/guidance-capability-sha256)
-                          "deadline-at"
-                          (str (.plusSeconds
-                                now acknowledgement-deadline-seconds)))))}]
-      (if selection
-        (with-meta patch {::launch-plan (:launch-plan selection)})
-        patch))))
+  (let [{:keys [versioned? transport attempts]}
+        (validate-representation! run)]
+    (if-not versioned?
+      {}
+      (let [selected transport
+            selection (when (= "native-v1" selected)
+                        (execution-selection! rt run selected))
+            now (Instant/now)
+            patch
+            {:harness/guidance-attempts
+             (conj attempts
+                   (cond-> {"attempt" attempt
+                            "invocation" invocation
+                            "transport" selected
+                            "state" (if (= "native-v1" selected)
+                                      "pending"
+                                      "not-required")
+                            "started-at" (str now)}
+                     (= "native-v1" selected)
+                     (assoc "bundle-sha256"
+                            (spool/attr-get run :harness/guidance-bundle-sha256)
+                            "capability-sha256"
+                            (spool/attr-get run
+                                            :harness/guidance-capability-sha256)
+                            "deadline-at"
+                            (str (.plusSeconds
+                                  now acknowledgement-deadline-seconds)))))}]
+        (if selection
+          (with-meta patch {::launch-plan (:launch-plan selection)})
+          patch)))))
 
 (defn carry-launch-plan
   "Carry a private attempt launch plan in process-local result metadata."

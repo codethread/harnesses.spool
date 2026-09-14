@@ -3,6 +3,7 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [ct.spools.harnesses.internal.guidance-closure :as closure]
+            [ct.spools.harnesses.internal.guidance-deadline :as deadline]
             [ct.spools.harnesses.internal.guidance-process :as guidance-process]
             [ct.spools.harnesses.internal.strict-json :as strict-json]
             [millstrand.api.spool.alpha :refer [fail!]]))
@@ -72,9 +73,6 @@
 
 (defn- profiles []
   (or *test-capability-profiles* production-capability-profiles))
-
-(defn- preflight-runner []
-  (or *test-preflight-runner* guidance-process/run!))
 
 (defn- closed-keys! [value required label]
   (when-not (= required (set (keys value)))
@@ -260,12 +258,34 @@
                {:executable executable}))
       capability)))
 
+(defn- verify-profile! [budget profile environment phase]
+  (deadline/bounded!
+   budget phase
+   #(closure/verify!
+     profile environment
+     (fn [] (deadline/check! budget phase)))))
+
+(defn- validate-operation-result!
+  [budget profile harness executable environment process-result]
+  (verify-profile! budget profile environment
+                   "post-execution-closure-verification")
+  (deadline/bounded!
+   budget "result-validation"
+   #(validate-result! profile harness executable process-result)))
+
 (defn preflight!
-  "Run and admit one exact native capability before managed publication."
+  "Run and admit one exact native capability before managed publication.
+
+  One monotonic budget begins at entry and covers all validation, hashing,
+  closure checks, process work, result validation, and cleanup."
   [request]
-  (let [harness (get request "harness")
+  (let [budget (deadline/start)
+        runner *test-preflight-runner*
+        harness (get request "harness")
         executable (get request "executable")
+        _ (deadline/check! budget "profile-selection")
         matching (filterv #(= harness (:harness %)) (profiles))]
+    (deadline/check! budget "profile-selection")
     (when (empty? matching)
       (fail! "Native guidance is disabled: no accepted production capability exists; submit with --guidance-transport legacy"
              {:harness harness :production-allowlist-empty
@@ -274,19 +294,43 @@
       (fail! "Native guidance has duplicate accepted preflight sources"
              {:harness harness :profiles (count matching)}))
     (let [profile (first matching)
-          wire-request (validate-request!
-                        (assoc request "schema" preflight-schema))
-          _ (validate-capability! (:capability profile) harness)
-          _ (when-not (= (file-sha256 executable)
+          wire-request
+          (deadline/bounded!
+           budget "request-validation"
+           #(validate-request! (assoc request "schema" preflight-schema)))
+          _ (deadline/bounded!
+             budget "profile-validation"
+             #(validate-capability! (:capability profile) harness))
+          _ (deadline/check! budget "executable-hashing")
+          executable-sha
+          (deadline/bounded! budget "executable-hashing"
+                             #(file-sha256 executable))
+          _ (when-not (= executable-sha
                          (get-in profile [:capability "executable-sha256"]))
               (fail! "Provider executable does not match guidance capability evidence"
                      {:executable executable}))
-          _ (closure/verify! profile (get wire-request "env"))
-          request-json (strict-json/canonical-json wire-request)
-          _ (when (> (strict-json/utf8-bytes request-json) metadata-limit)
-              (fail! "Guidance preflight request exceeds 64 KiB" {}))
-          process-result ((preflight-runner)
-                          (assoc profile
-                                 :effective-environment (get wire-request "env"))
-                          request-json)]
-      (validate-result! profile harness executable process-result))))
+          environment (get wire-request "env")
+          _ (verify-profile! budget profile environment
+                             "admission-closure-verification")
+          request-json
+          (deadline/bounded!
+           budget "request-serialization"
+           #(let [json (strict-json/canonical-json wire-request)]
+              (when (> (strict-json/utf8-bytes json) metadata-limit)
+                (fail! "Guidance preflight request exceeds 64 KiB" {}))
+              json))
+          operation-profile (assoc profile :effective-environment environment)
+          validate-result
+          #(validate-operation-result! budget profile harness executable
+                                       environment %)
+          capability
+          (if runner
+            (let [process-result
+                  (deadline/bounded!
+                   budget "process-execution"
+                   #(runner operation-profile request-json))]
+              (validate-result process-result))
+            (guidance-process/run! operation-profile request-json
+                                   budget validate-result))]
+      (deadline/check! budget "capability-admission")
+      capability)))

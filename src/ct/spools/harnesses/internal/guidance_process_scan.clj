@@ -2,6 +2,7 @@
   "Bounded concurrent process-group scanner for native preflight cleanup."
   (:require [clojure.string :as str]
             [ct.spools.harnesses.internal.guidance-closure :as closure]
+            [ct.spools.harnesses.internal.guidance-deadline :as admission-deadline]
             [ct.spools.harnesses.internal.guidance-process-identity :as identity]
             [millstrand.api.spool.alpha :refer [fail!]])
   (:import [java.io ByteArrayOutputStream]
@@ -152,9 +153,12 @@
   "Run one reviewed cleanup scanner with independent bounded drains."
   [profile process-environment root scanner deadline remaining-nanos]
   (let [scan-deadline (scanner-deadline deadline)
+        budget {:work-deadline scan-deadline :deadline deadline}
         budget! #(when-not (pos? (remaining-nanos scan-deadline))
                    (timed-out! "closure-verification"))]
-    (closure/verify! profile process-environment budget!)
+    (admission-deadline/bounded!
+     budget "cleanup-closure-verification"
+     #(closure/verify! profile process-environment budget!))
     (let [builder (doto (ProcessBuilder. ^java.util.List
                          [scanner "-axo" "pid=,pgid="])
                     (.directory root))
