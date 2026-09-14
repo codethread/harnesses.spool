@@ -2,6 +2,7 @@
   "Durable run publication, reservation, and continuation helpers."
   (:require [clojure.string :as str]
             [ct.spools.harnesses.internal.lifecycle :as life]
+            [ct.spools.harnesses.internal.managed-legacy :as legacy]
             [ct.spools.harnesses.internal.managed-startup :as managed]
             [ct.spools.harnesses.internal.registry :as registry]
             [millstrand.api.graph.alpha :as graph]
@@ -104,10 +105,19 @@
 (defn commit-run!
   "Commit one run strand, then publish it once every binding is durable."
   [rt {:keys [title alias harness mode generated env overrides effective
-              literal-extra-argv cwd session-id prompt resumes after target
-              root-targets context request-id fingerprint logical-id by-identity]}]
+              literal-extra-argv cwd session-id requested-session-id prompt
+              resumes after target root-targets context request-id fingerprint
+              logical-id by-identity]
+       :as request}]
   (when resumes
-    (require-continuation-head! rt resumes))
+    (let [predecessor (require-run rt resumes)
+          requested-session-id
+          (if (contains? request :requested-session-id)
+            requested-session-id
+            session-id)]
+      (legacy/validate-continuation-request!
+       rt predecessor harness requested-session-id)
+      (require-continuation-head! rt resumes)))
   (when after
     (require-continuation-head! rt after))
   (let [run (require-valid!
@@ -318,9 +328,11 @@
              {:harness/context
               (bind-invocation-markers context-template (:id run) identity-id)})
            (when identity-binding
-             {:identity/id identity-id
-              :identity/prompt (:prompt identity-binding)
-              :identity/reservation-id (:reservation-id identity-binding)
-              :harness/provisional-session-id session-id
-              :harness/native-attached
-              (if (:native-attached identity-binding) "true" "false")}))))
+             (merge
+              {:identity/id identity-id
+               :identity/prompt (:prompt identity-binding)}
+              (when-not (:legacy-pi identity-binding)
+                {:identity/reservation-id (:reservation-id identity-binding)
+                 :harness/provisional-session-id session-id
+                 :harness/native-attached
+                 (if (:native-attached identity-binding) "true" "false")}))))))

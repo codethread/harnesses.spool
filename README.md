@@ -404,6 +404,32 @@ retry of that continuation retain the attached identity, session, cwd, provider
 settings, and frozen guidance without consulting a changed or disabled alias;
 incompatible retry replacements fail before writes.
 
+A managed Codex/Pi run accepted before reservation-backed startup has no
+`identity/reservation-id`, `harness/native-attached`, or
+`harness/provisional-session-id`. Positive completion or usable session evidence
+after a Weaver upgrade validates that the original unreserved identity belongs
+to the provider and performed the run. It also requires a durable positive
+attempt and an exact nonblank invocation fence before preserving that evidence.
+Every positive legacy outcome—completion or usable-session evidence—must supply
+its nonblank observed session ID. Pi must exactly match its durable binding;
+Codex may differ but remains eligible only for explicit repair. A failed outcome with no usable session
+carries no optional identity attachment; its exact-invocation custody settlement
+remains recordable even if the historical identity is missing or damaged. A genuine prelaunch failure remains recordable
+without an attempt. A damaged current run still has startup-v1 representation
+and is rejected by the strict reservation checks; it is never treated as legacy.
+
+A legacy Pi run may continue only when its stored session exactly matches one
+unique unreserved Pi identity and the `performed` provenance is intact. A raw
+continuation request must explicitly retain both the resolved Pi provider and
+that exact session before any child or provenance write. Reservation-backed
+Codex/Pi continuations enforce the same explicit provider/session intent before
+commit. That continuation and an in-place retry retain the identity, session,
+frozen settings, and legacy
+launcher transport without claiming startup-v1 bootstrap or attachment evidence. A legacy Codex binding cannot prove that its provisional identity names
+the observed session, so Codex native resume remains unavailable until explicit
+repair. Fresh `--after` work uses a new reservation. Cancellation settlement says
+only that custody is settled; it never invents successful completion.
+
 One completed legacy Codex mismatch can be repaired only with all three recorded
 values supplied explicitly:
 
