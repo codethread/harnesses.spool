@@ -17,14 +17,14 @@
    :deps/root "spools/kanban"}
   codethread/devflow
   {:git/url "https://github.com/codethread/devflow.spool.git"
-   :git/sha "99313b48f14ab0892cb90264d100dce4ff2a25e0"
+   :git/sha "3d880109f68e84e9c0d019e34d6ec434daf7c8d8"
    :deps/root "."}
   codethread/devflow-kanban-adapter
   {:git/url "https://github.com/codethread/devflow.spool.git"
-   :git/sha "99313b48f14ab0892cb90264d100dce4ff2a25e0"
+   :git/sha "3d880109f68e84e9c0d019e34d6ec434daf7c8d8"
    :deps/root "kanban-adapter"}
   codethread/config
   {:git/url "https://github.com/codethread/codethread.spool.git"
-   :git/sha "45a49d538b1073f35d5e3b32c1baa7d2309be483"
+   :git/sha "6c7a22cb4311076e172470a65298a089a85b52ef"
    :deps/root "spools/config"}
   ct.spools/harnesses {:local/root ".."}}}
