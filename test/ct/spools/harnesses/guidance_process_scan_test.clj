@@ -235,6 +235,34 @@
         (is (false? (process-for-root? root)))
         (is (zero? (thread-count "guidance-admission-worker")))))))
 
+(deftest delayed-scanner-liveness-cannot-block-revocation-or-signal-late
+  (with-scanner-profile
+    :stalled
+    (fn [{:keys [root profile]}]
+      (let [original-live? identity/live?
+            delayed? (atom false)
+            {:keys [error elapsed-millis]}
+            (with-redefs [identity/live?
+                          (fn [retained]
+                            (when (and (contains? #{"direct-ownership-scanner"
+                                                    "ownership-scanner"}
+                                                  (:role retained))
+                                       (compare-and-set! delayed? false true))
+                              (try
+                                (Thread/sleep 3100)
+                                (catch InterruptedException _ nil)))
+                            (original-live? retained))]
+              (run-profile profile))
+            anchor-pid (pid-from (io/file root "anchor.pid"))
+            helper-pid (pid-from (io/file root "helper.pid"))]
+        (is @delayed?)
+        (is (re-find #"scan timed out" (ex-message error)))
+        (is (< elapsed-millis 3000.0))
+        (is (not (alive-pid? anchor-pid)))
+        (is (not (alive-pid? helper-pid)))
+        (is (false? (process-for-root? root)))
+        (is (zero? (thread-count "guidance-admission-worker")))))))
+
 (deftest scanner-failures-remain-bounded-and-clean-retained-identities
   (doseq [[mode message]
           [[:stdout-overflow #"exceeded its byte limit"]

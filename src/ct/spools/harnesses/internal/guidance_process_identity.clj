@@ -36,15 +36,17 @@
 
   This custody does not depend on supplementary start-time observation. The
   retained JDK handle itself remains bound to the process instance it created."
-  [^ProcessHandle handle role]
-  (when-not handle
-    (fail! "Guidance directly created process handle is missing" {:role role}))
-  {:role role
-   :pid (.pid handle)
-   :direct? true
-   :handle handle
-   :alive? #(.isAlive handle)
-   :destroy! #(.destroyForcibly handle)})
+  ([^ProcessHandle handle role]
+   (retain-direct handle role #(.destroyForcibly handle)))
+  ([^ProcessHandle handle role destroy!]
+   (when-not handle
+     (fail! "Guidance directly created process handle is missing" {:role role}))
+   {:role role
+    :pid (.pid handle)
+    :direct? true
+    :handle handle
+    :alive? #(.isAlive handle)
+    :destroy! destroy!}))
 
 (defn retain
   "Retain one actual process handle and its immutable start identity."
@@ -168,9 +170,9 @@
               :parent-pid (:pid parent)}))
     (first @matches)))
 
-(defn retain-child
-  "Retain `pid` only when it remains the original child of live `parent`."
-  [parent pid role]
+(defn retain-child!
+  "Retain `pid` and publish it immediately after complete provenance proof."
+  [parent pid role confirmed!]
   (when-not (and (integer? pid) (pos? pid))
     (fail! "Guidance child process identity has an invalid PID"
            {:role role :pid pid}))
@@ -191,7 +193,13 @@
                      (same-birth? parent ((:parent-birth confirmed))))
         (fail! "Guidance child process provenance changed during acquisition"
                {:role role :pid pid :parent-pid (:pid parent)})))
+    (confirmed! candidate)
     candidate))
+
+(defn retain-child
+  "Retain `pid` only when it remains the original child of live `parent`."
+  [parent pid role]
+  (retain-child! parent pid role (constantly nil)))
 
 (defn remember-child!
   "Add a state-discovered child only after provenance succeeds.
@@ -208,9 +216,7 @@
        retained "Guidance preflight retained child identity is not live"))
     (let [parent (get @ownership parent-key)]
       (try
-        (let [child (retain-child parent pid role)]
-          (swap! ownership assoc key child)
-          child)
+        (retain-child! parent pid role #(swap! ownership assoc key %))
         (catch Throwable error
           (let [{:keys [errors]}
                 (retain-children!
@@ -345,24 +351,25 @@
     (throw-errors! errors)
     confirmed))
 
-(defn- signal-authorized! [identity]
-  (when (live? identity)
-    (let [signalled? ((:destroy! identity))]
-      (interleave! :after-signal identity)
-      (when-not signalled?
-        (fail! "Guidance retained process could not be signalled"
-               {:role (:role identity) :pid (:pid identity)}))
-      identity)))
+(defn- signal-original! [identity]
+  (let [signalled? ((:destroy! identity))]
+    (interleave! :after-signal identity)
+    (when-not signalled?
+      (fail! "Guidance retained process could not be signalled"
+             {:role (:role identity) :pid (:pid identity)}))
+    identity))
 
 (defn signal!
-  "Signal the retained birth only while optional operation authority is live."
+  "Probe a retained birth, then signal its original handle under live authority."
   ([identity]
    (interleave! :before-signal identity)
-   (signal-authorized! identity))
+   (when (live? identity)
+     (signal-original! identity)))
   ([identity operation-authority]
    (interleave! :before-signal identity)
-   (authority/run! operation-authority "cleanup-signal"
-                   #(signal-authorized! identity))))
+   (when (live? identity)
+     (authority/run! operation-authority "cleanup-signal"
+                     #(signal-original! identity)))))
 
 (defn join!
   "Wait for the same retained identity without resolving its PID again."

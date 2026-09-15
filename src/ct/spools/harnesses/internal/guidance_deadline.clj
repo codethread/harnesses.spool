@@ -71,17 +71,14 @@
 (defn- await! [^Future future budget phase]
   (let [remaining (remaining-nanos (work-deadline budget))]
     (when-not (pos? remaining)
-      (.cancel future true)
       (timed-out! phase))
     (try
       (.get future remaining TimeUnit/NANOSECONDS)
       (catch TimeoutException _
-        (.cancel future true)
         (timed-out! phase))
       (catch ExecutionException error
         (throw (.getCause error)))
       (catch InterruptedException _
-        (.cancel future true)
         (.interrupt (Thread/currentThread))
         (fail! "Guidance preflight was interrupted" {:phase phase})))))
 

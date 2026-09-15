@@ -75,13 +75,14 @@
        (contains? #{"acknowledged" "failed"} (get record "state"))))
 
 (defn- validate-time-order! [run record started-at]
-  (when-let [value (get record "deadline-at")]
-    (let [deadline (parse-instant! value "Guidance attempt deadline")]
+  (when (contains? record "deadline-at")
+    (let [deadline (parse-instant! (get record "deadline-at")
+                                   "Guidance attempt deadline")]
       (when-not (= deadline (.plusSeconds started-at handoff-seconds))
         (spool/fail! "Guidance attempt deadline is not its 20 second fence" {}))
-      (when-let [acknowledged-value (get record "acknowledged-at")]
+      (when (contains? record "acknowledged-at")
         (let [acknowledged-at
-              (parse-instant! acknowledged-value
+              (parse-instant! (get record "acknowledged-at")
                               "Guidance attempt acknowledgement")]
           (when (or (.isBefore acknowledged-at started-at)
                     (and (.isAfter acknowledged-at deadline)
@@ -132,7 +133,13 @@
           (spool/fail! "Native guidance attempt digests are malformed" {}))
         (validate-time-order! run record started-at)
         (when (= "failed" state)
-          (valid-failure! (get record "failure"))))
+          (let [failure (get record "failure")]
+            (valid-failure! failure)
+            (when (and (not (contains? record "deadline-at"))
+                       (not= "preflight" (get failure "stage")))
+              (spool/fail!
+               "Only no-launch preflight failure may omit its deadline"
+               {})))))
 
       (spool/fail! "Guidance attempt transport is invalid"
                    {:transport transport}))

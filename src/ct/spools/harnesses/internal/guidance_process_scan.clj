@@ -16,6 +16,7 @@
 (def ^:private scanner-millis 175)
 (def ^:private scanner-join-millis 75)
 (def ^:private scanner-retirement-millis 20)
+(def ^:private direct-fallback-millis 60)
 
 (defn- timed-out! [phase]
   (fail! "Guidance preflight process ownership scan timed out"
@@ -112,6 +113,20 @@
 (defn- cleanup-scanner!
   [process scanner-identity executor streams deadline remaining-nanos]
   (let [errors (atom [])]
+    (when-let [retained @scanner-identity]
+      (attempt-cleanup!
+       errors
+       (fn []
+         (let [fallback-start
+               (- deadline (.toNanos TimeUnit/MILLISECONDS
+                                     direct-fallback-millis))]
+           (admission-deadline/owned!
+            {:work-deadline
+             (- fallback-start
+                (.toNanos TimeUnit/MILLISECONDS scanner-retirement-millis))
+             :deadline fallback-start}
+            "ownership-scanner-retirement"
+            #(identity/signal! retained %))))))
     (attempt-cleanup!
      errors
      (fn []
@@ -120,14 +135,9 @@
          (- deadline (.toNanos TimeUnit/MILLISECONDS
                                scanner-retirement-millis))
          :deadline deadline}
-        "ownership-scanner-retirement"
-        (fn [operation-authority]
-          (if-let [retained @scanner-identity]
-            (identity/signal! retained operation-authority)
-            (when (.isAlive process)
-              (authority/run! operation-authority
-                              "ownership-scanner-signal"
-                              #(.destroyForcibly process))))))))
+        "direct-ownership-scanner-retirement"
+        #(authority/run! % "direct-ownership-scanner-signal"
+                         (fn [] (.destroyForcibly process))))))
     (attempt-cleanup!
      errors
      #(let [remaining (remaining-nanos deadline)]
@@ -211,7 +221,8 @@
                         _ (reset! process started)
                         direct (identity/retain-direct
                                 (.toHandle started)
-                                "direct-ownership-scanner")]
+                                "direct-ownership-scanner"
+                                (fn [] (.destroyForcibly started)))]
                     (reset! scanner-identity direct)
                     started))))
              handle (.toHandle scanner-process)

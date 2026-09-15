@@ -21,6 +21,7 @@
             [ct.spools.harnesses.guidance-provider-transport-test]
             [ct.spools.harnesses.guidance-protocol-repair-test]
             [ct.spools.harnesses.guidance-repair-test]
+            [ct.spools.harnesses.guidance-representation-deadline-test]
             [ct.spools.harnesses.guidance-representation-test]
             [ct.spools.harnesses.guidance-test]
             [ct.spools.harnesses.lifecycle-test]
@@ -63,6 +64,7 @@
     ct.spools.harnesses.guidance-provider-transport-test
     ct.spools.harnesses.guidance-protocol-repair-test
     ct.spools.harnesses.guidance-repair-test
+    ct.spools.harnesses.guidance-representation-deadline-test
     ct.spools.harnesses.guidance-representation-test
     ct.spools.harnesses.guidance-test
     ct.spools.harnesses.lifecycle-test

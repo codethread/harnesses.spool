@@ -8,6 +8,7 @@
             [ct.spools.harnesses.internal.guidance-deadline :as deadline]
             [ct.spools.harnesses.internal.guidance-process-cleanup :as cleanup]
             [ct.spools.harnesses.internal.guidance-process-identity :as identity]
+            [ct.spools.harnesses.internal.guidance-process-retirement :as retirement]
             [ct.spools.harnesses.internal.guidance-process-scan :as scan]
             [ct.spools.harnesses.internal.strict-json :as strict-json]
             [millstrand.api.spool.alpha :refer [fail!]])
@@ -17,8 +18,7 @@
            [java.nio.file Files Path StandardCopyOption]
            [java.nio.file.attribute PosixFilePermissions]
            [java.util UUID]
-           [java.util.concurrent Callable Executors Future ThreadFactory
-            TimeUnit]))
+           [java.util.concurrent Callable Executors Future ThreadFactory]))
 
 (def ^:private capture-limit (* 64 1024))
 (def ^:private state-limit (* 8 1024))
@@ -210,14 +210,6 @@
           (do (Thread/sleep 1) (recur))))
       (do (Thread/sleep 1) (recur)))))
 
-(defn- release-supervisor! [process deadline]
-  (when (.isAlive process)
-    (.destroyForcibly process))
-  (let [remaining (remaining-nanos deadline)]
-    (when-not (and (pos? remaining)
-                   (.waitFor process remaining TimeUnit/NANOSECONDS))
-      (timed-out! "supervisor-retirement"))))
-
 (defn- await-helper-started! [state-path token futures deadline]
   (loop []
     (inspect-futures! futures deadline)
@@ -265,19 +257,28 @@
 
 (defn- retain-child-bounded!
   [budget ownership key parent-key pid role]
-  (let [candidate-ownership (atom @ownership)]
-    (try
-      (let [child
-            (deadline/bounded!
-             budget (str role "-identity")
-             #(identity/remember-child! candidate-ownership key parent-key
-                                        pid role))]
-        (reset! ownership @candidate-ownership)
-        child)
-      (catch Throwable error
-        (swap! ownership update :proven-children
-               (fnil into []) (:proven-children @candidate-ownership))
-        (throw error)))))
+  (deadline/owned!
+   budget (str role "-identity")
+   (fn [operation-authority]
+     (let [parent (get @ownership parent-key)]
+       (try
+         (identity/retain-child!
+          parent pid role
+          #(authority/run!
+            operation-authority (str role "-promotion")
+            (fn [] (swap! ownership assoc key %))))
+         (catch Throwable error
+           (let [{:keys [errors]}
+                 (identity/retain-children!
+                  parent "proven-child-for-cleanup"
+                  #(authority/run!
+                    operation-authority "cleanup-child-promotion"
+                    (fn []
+                      (swap! ownership update :proven-children
+                             (fnil conj []) %))))]
+             (doseq [cleanup-error errors]
+               (.addSuppressed error cleanup-error)))
+           (throw error)))))))
 
 (defn run!
   "Run the exact preflight helper inside a private, identity-fenced process group."
@@ -352,7 +353,8 @@
                            _ (reset! process started)
                            handle (.toHandle started)
                            direct (identity/retain-direct
-                                   handle "direct-supervisor")]
+                                   handle "direct-supervisor"
+                                   (fn [] (.destroyForcibly started)))]
                        (swap! ownership assoc :direct-supervisor direct)
                        started))))
                 supervisor-handle (.toHandle supervisor-process)
@@ -427,9 +429,10 @@
             (let [finished (await-helper! state-path token futures
                                           execution-deadline ownership)]
               (deadline/check! budget "process-completion")
-              (deadline/bounded!
+              (deadline/owned!
                budget "supervisor-retirement"
-               #(release-supervisor! supervisor-process execution-deadline))
+               #(retirement/release-process!
+                 supervisor-process % execution-deadline remaining-nanos))
               (deadline/await-future! input execution-deadline "request-input")
               (let [stdout-bytes (deadline/await-future!
                                   stdout execution-deadline "stdout-drain")
@@ -469,11 +472,11 @@
             (cleanup/attempt-operation! failure #(.close stream)))
           (when @executor
             (.shutdownNow ^java.util.concurrent.ExecutorService @executor))
-          (when (and @process (.isAlive ^Process @process))
-            (.destroyForcibly ^Process @process)
-            (let [remaining (remaining-nanos operation-deadline)]
-              (when (pos? remaining)
-                (.waitFor ^Process @process remaining TimeUnit/NANOSECONDS))))
+          (when @process
+            (cleanup/attempt-operation!
+             failure
+             #(retirement/finalize! @process operation-deadline
+                                    remaining-nanos)))
           (when @directory
             (cleanup/attempt-operation!
              failure #(delete-directory! @directory)))
