@@ -19,13 +19,16 @@
                 (assoc-in [:attributes :harness/attempt] 1)
                 (assoc-in [:attributes :harness/invocation] "invocation"))
         record (first (guidance/attempt-records run))
+        pi-run (-> (fixture/run "pi" "native-v1")
+                   fixture/with-pending-attempt
+                   (assoc-in [:attributes :harness/mode] "interactive")
+                   (assoc-in [:attributes :harness/guidance-attempts 0 "mode"]
+                             "interactive"))
+        pi-record (assoc (first (guidance/attempt-records pi-run))
+                         "state" "fetched")
         after (Instant/parse "2026-09-14T00:00:01Z")]
     (is (true? (guidance/deadline-expired? run record after)))
-    (is (false? (guidance/deadline-expired?
-                 (-> (fixture/run "pi" "native-v1")
-                     fixture/with-pending-attempt
-                     (assoc-in [:attributes :harness/mode] "interactive"))
-                 (assoc record "state" "fetched") after)))
+    (is (false? (guidance/deadline-expired? pi-run pi-record after)))
     (is (true? (guidance/deadline-expired?
                 (-> (fixture/run "pi" "native-v1")
                     fixture/with-pending-attempt)

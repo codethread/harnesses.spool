@@ -23,6 +23,7 @@
 (defn- acknowledged-run [harness mode acknowledged-at]
   (-> (fixture/with-pending-attempt (fixture/run harness "native-v1"))
       (assoc-in [:attributes :harness/mode] mode)
+      (assoc-in [:attributes :harness/guidance-attempts 0 "mode"] mode)
       (update-record #(assoc % "state" "acknowledged"
                              "acknowledged-at" acknowledged-at))))
 
@@ -36,6 +37,11 @@
                      "failure" {"stage" stage
                                 "code" "fixture"
                                 "diagnostic" "fixture failure"})
+        (not include-deadline?)
+        (assoc "no-launch"
+               {"attempt" (get % "attempt")
+                "invocation" (get % "invocation")
+                "authority" "harness-admission/v1"})
         (not include-deadline?) (dissoc "deadline-at")
         include-acknowledgement?
         (assoc "acknowledged-at" "2026-09-13T23:59:50Z")))))
@@ -68,11 +74,51 @@
   (is (corrupt? (update-record (failed-run "rendering" true true)
                                #(assoc % "acknowledged-at" nil)))))
 
+(deftest omitted-deadline-requires-scoped-no-launch-provenance
+  (let [valid (failed-run "preflight" false false)]
+    (doseq [run [(update-record valid #(dissoc % "no-launch"))
+                 (update-record valid #(assoc-in % ["no-launch" "attempt"] 2))
+                 (update-record valid #(assoc-in % ["no-launch" "invocation"]
+                                                 "other-invocation"))
+                 (update-record valid #(assoc-in % ["no-launch" "authority"]
+                                                 "process-exit"))
+                 (update-record valid #(assoc-in % ["no-launch" "settled"]
+                                                 true))]]
+      (is (corrupt? (assoc-in run [:attributes :harness/settlement]
+                              "process-exit"))))))
+
 (deftest fetched-interactive-pi-retains-only-delayed-acknowledgement-exemption
   (let [late "2026-09-14T00:00:01Z"]
     (is (not (corrupt? (acknowledged-run "pi" "interactive" late))))
     (is (corrupt? (acknowledged-run "pi" "headless" late)))
     (is (corrupt? (acknowledged-run "codex" "interactive" late)))))
+
+(deftest historical-pi-acknowledgement-keeps-its-own-origin
+  (let [pi-history
+        (-> (acknowledged-run "pi" "interactive" "2026-09-14T00:00:01Z")
+            (update-record #(assoc %
+                                   "state" "failed"
+                                   "failure" {"stage" "rendering"
+                                              "code" "fixture"
+                                              "diagnostic" "retryable"})))
+        codex-retry
+        (-> pi-history
+            (assoc-in [:attributes :harness/harness] "codex")
+            (assoc-in [:attributes :harness/mode] "headless")
+            (assoc-in [:attributes :harness/guidance-transport] "legacy")
+            (assoc-in [:attributes :harness/attempt] 2)
+            (assoc-in [:attributes :harness/invocation] nil)
+            (update :attributes dissoc
+                    :harness/guidance-capability
+                    :harness/guidance-capability-sha256)
+            (update-in [:attributes :harness/guidance-attempts]
+                       conj {"attempt" 2
+                             "invocation" "codex-retry"
+                             "transport" "legacy"
+                             "state" "not-required"
+                             "started-at" "2026-09-14T00:00:02Z"}))]
+    (is (= "legacy"
+           (:transport (guidance/validate-representation! codex-retry))))))
 
 (deftest legacy-retry-selection-still-validates-native-history
   (let [selected-legacy
@@ -126,31 +172,38 @@
                                 (catch clojure.lang.ExceptionInfo failure
                                   failure))))
                            (.await entered)
-                           (reset!
-                            before
-                            (weaver/update!
-                             rt (:id run)
-                             {:attributes
-                              {:harness/attempt 1
-                               :harness/invocation nil
-                               :harness/guidance-attempts
-                               [{"attempt" 1
-                                 "invocation" "retired-native"
-                                 "transport" "native-v1"
-                                 "state" "pending"
-                                 "started-at" "2026-09-14T00:00:00Z"
-                                 "deadline-at" nil
-                                 "bundle-sha256"
-                                 (apply str (repeat 64 "a"))
-                                 "capability-sha256"
-                                 (apply str (repeat 64 "b"))}]}})))
+                           (weaver/update!
+                            rt (:id run)
+                            {:attributes
+                             {:harness/attempt 1
+                              :harness/invocation nil
+                              :harness/native-attached "true"
+                              :harness/settled "true"
+                              :harness/settlement "process-exit"
+                              :harness/guidance-attempts
+                              [{"attempt" 1
+                                "invocation" "retired-native"
+                                "transport" "native-v1"
+                                "harness" "codex"
+                                "mode" "headless"
+                                "state" "failed"
+                                "started-at" "2026-09-14T00:00:00Z"
+                                "failure" {"stage" "preflight"
+                                           "code" "fixture"
+                                           "diagnostic" "attached failure"}
+                                "bundle-sha256"
+                                (apply str (repeat 64 "a"))
+                                "capability-sha256"
+                                (apply str (repeat 64 "b"))}]}})
+                           (reset! before (weaver/list rt)))
                          (deref @worker 1000
                                 (ex-info "admission did not finish" {})))
-                       after (weaver/show rt (:id run))]
+                       after (weaver/list rt)
+                       current (weaver/show rt (:id run))]
                    {:message (ex-message error)
                     :no-write (= @before after)
                     :selection-calls @selection-calls
-                    :status (attr after :harness/status)}))))]
+                    :status (attr current :harness/status)}))))]
         (is (re-find #"corrupt partial guidance metadata" (:message result)))
         (is (true? (:no-write result)))
         (is (zero? (:selection-calls result)))

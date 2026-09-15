@@ -93,6 +93,8 @@
   {"attempt" number
    "invocation" (str "invocation-" number)
    "transport" "native-v1"
+   "harness" "codex"
+   "mode" "headless"
    "state" "pending"
    "started-at" "2026-09-14T00:00:00Z"
    "deadline-at" "2026-09-14T00:00:20Z"
@@ -113,6 +115,8 @@
         (cond-> {"attempt" 1
                  "invocation" "invocation-1"
                  "transport" "native-v1"
+                 "harness" harness
+                 "mode" "headless"
                  "state" state
                  "started-at" "2026-09-14T00:00:00Z"
                  "deadline-at" "2026-09-14T00:00:20Z"
@@ -266,8 +270,12 @@
 
 (deftest only-fetched-interactive-pi-allows-delayed-first-turn-acknowledgement
   (let [expired-at (java.time.Instant/parse "2026-09-14T00:00:21Z")
-        fetched-pi (assoc-in (active-native-run "pi" "fetched")
-                             [:attributes :harness/mode] "interactive")
+        with-mode #(-> %1
+                       (assoc-in [:attributes :harness/mode] %2)
+                       (assoc-in [:attributes :harness/guidance-attempts 0
+                                  "mode"] %2))
+        fetched-pi (with-mode (active-native-run "pi" "fetched")
+                     "interactive")
         expired? #(guidance/deadline-expired?
                    % (guidance/current-attempt %) expired-at)]
     (is (false? (expired? fetched-pi)))
@@ -275,12 +283,10 @@
                 (assoc-in fetched-pi
                           [:attributes :harness/guidance-attempts 0 "state"]
                           "pending"))))
+    (is (true? (expired? (with-mode fetched-pi "headless"))))
     (is (true? (expired?
-                (assoc-in fetched-pi [:attributes :harness/mode]
-                          "headless"))))
-    (is (true? (expired?
-                (assoc-in (active-native-run "codex" "fetched")
-                          [:attributes :harness/mode] "interactive"))))
+                (with-mode (active-native-run "codex" "fetched")
+                  "interactive"))))
     (let [late-ack
           (fn [run]
             (-> run
@@ -290,13 +296,10 @@
                            "acknowledged-at"]
                           "2026-09-14T00:00:21Z")))]
       (is (not (corrupt? (late-ack fetched-pi))))
+      (is (corrupt? (late-ack (with-mode fetched-pi "headless"))))
       (is (corrupt? (late-ack
-                     (assoc-in fetched-pi [:attributes :harness/mode]
-                               "headless"))))
-      (is (corrupt? (late-ack
-                     (assoc-in (active-native-run "codex" "fetched")
-                               [:attributes :harness/mode]
-                               "interactive")))))))
+                     (with-mode (active-native-run "codex" "fetched")
+                       "interactive")))))))
 
 (deftest corrupt-durable-rows-reject-before-all-start-side-effects
   (guidance-test/with-guidance-world

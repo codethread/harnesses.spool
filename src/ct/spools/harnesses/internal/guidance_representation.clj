@@ -26,11 +26,13 @@
 (def ^:private base-attempt-keys
   #{"attempt" "invocation" "transport" "state" "started-at"})
 (def ^:private native-attempt-keys
-  #{"bundle-sha256" "capability-sha256"})
+  #{"bundle-sha256" "capability-sha256" "harness" "mode"})
 (def ^:private deadline-key #{"deadline-at"})
 (def ^:private acknowledgement-key #{"acknowledged-at"})
 (def ^:private failure-key #{"failure"})
+(def ^:private no-launch-key #{"no-launch"})
 (def ^:private failure-keys #{"stage" "code" "diagnostic"})
+(def ^:private no-launch-keys #{"attempt" "invocation" "authority"})
 (def ^:private handoff-seconds 20)
 (def ^:private validation-context-key ::validation-context)
 
@@ -69,12 +71,22 @@
                  (nonblank? (get failure "diagnostic")))
     (spool/fail! "Guidance attempt failure is malformed" {})))
 
-(defn- delayed-pi-acknowledgement? [run record]
-  (and (= "pi" (attribute run :harness/harness))
-       (= "interactive" (attribute run :harness/mode))
+(defn- valid-no-launch! [record]
+  (let [provenance (get record "no-launch")]
+    (when-not (and (map? provenance)
+                   (closed? provenance no-launch-keys)
+                   (= (get record "attempt") (get provenance "attempt"))
+                   (= (get record "invocation")
+                      (get provenance "invocation"))
+                   (= "harness-admission/v1" (get provenance "authority")))
+      (spool/fail! "Guidance no-launch provenance is malformed" {}))))
+
+(defn- delayed-pi-acknowledgement? [record]
+  (and (= "pi" (get record "harness"))
+       (= "interactive" (get record "mode"))
        (contains? #{"acknowledged" "failed"} (get record "state"))))
 
-(defn- validate-time-order! [run record started-at]
+(defn- validate-time-order! [record started-at]
   (when (contains? record "deadline-at")
     (let [deadline (parse-instant! (get record "deadline-at")
                                    "Guidance attempt deadline")]
@@ -86,7 +98,7 @@
                               "Guidance attempt acknowledgement")]
           (when (or (.isBefore acknowledged-at started-at)
                     (and (.isAfter acknowledged-at deadline)
-                         (not (delayed-pi-acknowledgement? run record))))
+                         (not (delayed-pi-acknowledgement? record))))
             (spool/fail!
              "Guidance attempt acknowledgement is outside its handoff window"
              {})))))))
@@ -96,13 +108,13 @@
     (case state
       ("pending" "fetched") [(into base deadline-key)]
       "acknowledged" [(into base (into deadline-key acknowledgement-key))]
-      "failed" [(into base failure-key)
+      "failed" [(into base (into no-launch-key failure-key))
                 (into base (into deadline-key failure-key))
                 (into base (into deadline-key
                                  (into acknowledgement-key failure-key)))]
       [])))
 
-(defn- validate-attempt! [run raw-record]
+(defn- validate-attempt! [raw-record]
   (when-not (map? raw-record)
     (spool/fail! "Guidance attempt must be an object" {}))
   (let [record (strict-json/canonical-data raw-record)
@@ -131,24 +143,29 @@
         (when-not (and (sha? (get record "bundle-sha256"))
                        (sha? (get record "capability-sha256")))
           (spool/fail! "Native guidance attempt digests are malformed" {}))
-        (validate-time-order! run record started-at)
+        (when-not (and (contains? #{"codex" "pi"} (get record "harness"))
+                       (contains? #{"headless" "interactive"}
+                                  (get record "mode")))
+          (spool/fail! "Native guidance attempt origin is malformed" {}))
+        (validate-time-order! record started-at)
         (when (= "failed" state)
           (let [failure (get record "failure")]
             (valid-failure! failure)
-            (when (and (not (contains? record "deadline-at"))
-                       (not= "preflight" (get failure "stage")))
-              (spool/fail!
-               "Only no-launch preflight failure may omit its deadline"
-               {})))))
+            (when-not (contains? record "deadline-at")
+              (when-not (= "preflight" (get failure "stage"))
+                (spool/fail!
+                 "Only no-launch preflight failure may omit its deadline"
+                 {}))
+              (valid-no-launch! record)))))
 
       (spool/fail! "Guidance attempt transport is invalid"
                    {:transport transport}))
     record))
 
-(defn- validate-attempts! [run raw-attempts]
+(defn- validate-attempts! [raw-attempts]
   (when-not (vector? raw-attempts)
     (spool/fail! "Guidance attempts must be a vector" {}))
-  (let [attempts (mapv #(validate-attempt! run %) raw-attempts)
+  (let [attempts (mapv validate-attempt! raw-attempts)
         numbers (mapv #(get % "attempt") attempts)
         invocations (mapv #(get % "invocation") attempts)]
     (when-not (and (= numbers (vec (sort numbers)))
@@ -233,11 +250,14 @@
                          {}))
           (when (= "native-v1" (get current "transport"))
             (when-not (and
+                       (= (attribute run :harness/harness)
+                          (get current "harness"))
+                       (= (attribute run :harness/mode) (get current "mode"))
                        (= (:harness/guidance-bundle-sha256 representation)
                           (get current "bundle-sha256"))
                        (= (:harness/guidance-capability-sha256 representation)
                           (get current "capability-sha256")))
-              (spool/fail! "Guidance current native digests do not match"
+              (spool/fail! "Guidance current native selection does not match"
                            {}))))))))
 
 (defn- validate-versioned! [run representation present]
@@ -255,7 +275,7 @@
                          {}))
         bundle-digest (:harness/guidance-bundle-sha256 representation)
         attempts (validate-attempts!
-                  run (:harness/guidance-attempts representation))]
+                  (:harness/guidance-attempts representation))]
     (when-not (and (sha? bundle-digest)
                    (= bundle-digest
                       (context/bundle-sha256 (:id run) workspace context)))

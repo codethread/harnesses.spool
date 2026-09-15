@@ -443,7 +443,7 @@
                              pi-capability-sha
                              :harness/started-at "2026-09-13T23:59:40Z"
                              :harness/guidance-attempts
-                             [(assoc record
+                             [(assoc (assoc record "harness" "pi")
                                      "started-at" "2026-09-13T23:59:40Z"
                                      "deadline-at" "2026-09-14T00:00:00Z"
                                      "capability-sha256" pi-capability-sha)]}}))

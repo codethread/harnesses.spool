@@ -93,6 +93,8 @@
      [{"attempt" 1
        "invocation" invocation
        "transport" "native-v1"
+       "harness" (:harness/harness attributes)
+       "mode" (:harness/mode attributes)
        "state" "pending"
        "started-at" started-at
        "deadline-at" "2026-09-14T00:00:00Z"

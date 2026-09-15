@@ -16,6 +16,7 @@
             [ct.spools.harnesses.guidance-headless-deadline-test]
             [ct.spools.harnesses.guidance-process-cleanup-test]
             [ct.spools.harnesses.guidance-process-deadline-test]
+            [ct.spools.harnesses.guidance-process-gate-test]
             [ct.spools.harnesses.guidance-process-identity-test]
             [ct.spools.harnesses.guidance-process-scan-test]
             [ct.spools.harnesses.guidance-provider-transport-test]
@@ -59,6 +60,7 @@
     ct.spools.harnesses.guidance-headless-deadline-test
     ct.spools.harnesses.guidance-process-cleanup-test
     ct.spools.harnesses.guidance-process-deadline-test
+    ct.spools.harnesses.guidance-process-gate-test
     ct.spools.harnesses.guidance-process-identity-test
     ct.spools.harnesses.guidance-process-scan-test
     ct.spools.harnesses.guidance-provider-transport-test

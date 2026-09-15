@@ -220,12 +220,17 @@
            {"attempt" attempt
             "invocation" invocation
             "transport" "native-v1"
+            "harness" (spool/attr-get run :harness/harness)
+            "mode" (spool/attr-get run :harness/mode)
             "bundle-sha256"
             (spool/attr-get run :harness/guidance-bundle-sha256)
             "capability-sha256"
             (spool/attr-get run :harness/guidance-capability-sha256)
             "state" "failed"
             "started-at" now
+            "no-launch" {"attempt" attempt
+                         "invocation" invocation
+                         "authority" "harness-admission/v1"}
             "failure" {"stage" "preflight"
                        "code" (or (:code (ex-data error))
                                   "capability-mismatch")
@@ -282,7 +287,9 @@
                                       "not-required")
                             "started-at" (str now)}
                      (= "native-v1" selected)
-                     (assoc "bundle-sha256"
+                     (assoc "harness" (spool/attr-get run :harness/harness)
+                            "mode" (spool/attr-get run :harness/mode)
+                            "bundle-sha256"
                             (spool/attr-get run :harness/guidance-bundle-sha256)
                             "capability-sha256"
                             (spool/attr-get run
@@ -313,8 +320,8 @@
   ([run record now]
    (and (= "native-v1" (transport run))
         (contains? #{"pending" "fetched"} (get record "state"))
-        (not (and (= "pi" (spool/attr-get run :harness/harness))
-                  (= "interactive" (spool/attr-get run :harness/mode))
+        (not (and (= "pi" (get record "harness"))
+                  (= "interactive" (get record "mode"))
                   (= "fetched" (get record "state"))))
         (let [deadline (get record "deadline-at")]
           (when-not (and (string? deadline) (not (str/blank? deadline)))

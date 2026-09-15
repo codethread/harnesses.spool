@@ -93,9 +93,8 @@
 (defn owned!
   "Run cancellable work with revocable operation-local authority.
 
-  Timeout revokes authority before cancellation. Revocation waits for an
-  authorized side effect to leave its gate, and the worker retires before the
-  caller may continue."
+  Failure revokes authority before cancellation. Owned custody cleanup starts
+  before worker retirement, so retirement cannot consume the cleanup reserve."
   [budget phase operation]
   (check! budget phase)
   (let [operation-authority (authority/create (work-deadline budget))
@@ -112,6 +111,11 @@
       (finally
         (authority/revoke! operation-authority)
         (.cancel future true)
+        (when (and @failure (:on-revoked budget))
+          (try
+            ((:on-revoked budget))
+            (catch Throwable cleanup-error
+              (.addSuppressed ^Throwable @failure cleanup-error))))
         (try
           (retire! executor budget)
           (catch Throwable cleanup-error

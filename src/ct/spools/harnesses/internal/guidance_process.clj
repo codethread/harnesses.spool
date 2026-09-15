@@ -7,6 +7,7 @@
             [ct.spools.harnesses.internal.guidance-closure :as closure]
             [ct.spools.harnesses.internal.guidance-deadline :as deadline]
             [ct.spools.harnesses.internal.guidance-process-cleanup :as cleanup]
+            [ct.spools.harnesses.internal.guidance-process-gate :as gate]
             [ct.spools.harnesses.internal.guidance-process-identity :as identity]
             [ct.spools.harnesses.internal.guidance-process-retirement :as retirement]
             [ct.spools.harnesses.internal.guidance-process-scan :as scan]
@@ -15,7 +16,7 @@
   (:import [java.io ByteArrayOutputStream]
            [java.nio.charset CharacterCodingException CodingErrorAction
             StandardCharsets]
-           [java.nio.file Files Path StandardCopyOption]
+           [java.nio.file Files Path]
            [java.nio.file.attribute PosixFilePermissions]
            [java.util UUID]
            [java.util.concurrent Callable Executors Future ThreadFactory]))
@@ -158,17 +159,6 @@
                (make-array java.nio.file.OpenOption 0))
   path)
 
-(defn- write-signal! [^Path path value]
-  (let [temporary (.resolveSibling path
-                                   (str (.getFileName path) ".tmp-"
-                                        (UUID/randomUUID)))]
-    (write-file! temporary value)
-    (Files/move temporary path
-                (into-array java.nio.file.CopyOption
-                            [StandardCopyOption/ATOMIC_MOVE
-                             StandardCopyOption/REPLACE_EXISTING]))
-    path))
-
 (defn- state-document [^Path state-path]
   (when (Files/exists state-path (make-array java.nio.file.LinkOption 0))
     (strict-json/parse-object! (Files/readString state-path)
@@ -299,10 +289,19 @@
          process (atom nil)
          streams (atom [])
          ownership (atom {})
-         budget! #(deadline/check! budget "closure-verification")
          interpreter (closure/artifact-path reviewed-profile "interpreter")
          scanner (closure/artifact-path reviewed-profile "ownership-scanner")
-         entrypoint (closure/artifact-path reviewed-profile "entrypoint")]
+         entrypoint (closure/artifact-path reviewed-profile "entrypoint")
+         cleanup-started? (atom false)
+         cleanup-process!
+         #(when (and @process
+                     (compare-and-set! cleanup-started? false true))
+            (cleanup/cleanup-owned!
+             ownership @executor @streams reviewed-profile
+             process-environment root scanner operation-deadline
+             remaining-nanos))
+         budget (assoc budget :on-revoked cleanup-process!)
+         budget! #(deadline/check! budget "closure-verification")]
      (when-not (and (= "scripts" (.getName scripts-dir))
                     (= "managed-guidance-preflight.mjs" (.getName script)))
        (fail! "Guidance preflight must use scripts/managed-guidance-preflight.mjs"
@@ -365,8 +364,8 @@
                 _ (swap! ownership #(-> %
                                         (assoc :supervisor supervisor)
                                         (dissoc :direct-supervisor)))
-                _ (deadline/check! budget "supervisor-release")
-                _ (write-signal! supervisor-ready-path token)
+                _ (gate/publish! budget supervisor-ready-path token
+                                 "supervisor-release")
                 input-stream (.getOutputStream supervisor-process)
                 _ (swap! streams conj input-stream)
                 output-stream (.getInputStream supervisor-process)
@@ -408,8 +407,7 @@
              #(identity/require-live!
                (:anchor @ownership)
                "Guidance preflight ownership anchor is not live"))
-            (deadline/check! budget "helper-start")
-            (write-signal! go-path token)
+            (gate/publish! budget go-path token "helper-start")
             (let [started (await-helper-started! state-path token futures
                                                  execution-deadline)
                   helper (retain-child-bounded!
@@ -424,8 +422,8 @@
             (deadline/bounded!
              budget "helper-release-closure-verification"
              #(closure/verify! reviewed-profile process-environment budget!))
-            (deadline/check! budget "helper-execution-release")
-            (write-signal! helper-path token)
+            (gate/publish! budget helper-path token
+                           "helper-execution-release")
             (let [finished (await-helper! state-path token futures
                                           execution-deadline ownership)]
               (deadline/check! budget "process-completion")
@@ -462,12 +460,7 @@
       (fn []
         (let [failure (atom nil)]
           (when @process
-            (cleanup/attempt-operation!
-             failure
-             #(cleanup/cleanup-owned!
-               ownership @executor @streams reviewed-profile
-               process-environment root scanner operation-deadline
-               remaining-nanos)))
+            (cleanup/attempt-operation! failure cleanup-process!))
           (doseq [stream @streams]
             (cleanup/attempt-operation! failure #(.close stream)))
           (when @executor
