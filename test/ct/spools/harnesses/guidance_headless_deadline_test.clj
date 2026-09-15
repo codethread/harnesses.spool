@@ -50,12 +50,10 @@
                                  deadline-instant
                                  (.plusMillis (java.time.Instant/now) millis)
                                  deadline (str deadline-instant)
-                                 record
-                                 (cond-> record
-                                   (neg? millis)
-                                   (assoc "started-at"
-                                          (str (.minusSeconds
-                                                deadline-instant 1))))
+                                 started-at (str (.minusSeconds
+                                                  deadline-instant 20))
+                                 record (assoc record "started-at" started-at
+                                               "deadline-at" deadline)
                                  process-key
                                  (str (:id created) "/attempt-"
                                       (:attempt started))]
@@ -63,8 +61,8 @@
                               (weaver/update!
                                rt (:id created)
                                {:attributes
-                                {:harness/guidance-attempts
-                                 [(assoc record "deadline-at" deadline)]
+                                {:harness/started-at started-at
+                                 :harness/guidance-attempts [record]
                                  :harness/process-owner "agent-harness/run"
                                  :harness/process-key process-key
                                  :harness/process-handle "fixture-handle"}})

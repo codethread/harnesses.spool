@@ -3,6 +3,7 @@
   (:refer-clojure :exclude [run!])
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
+            [ct.spools.harnesses.internal.guidance-authority :as authority]
             [ct.spools.harnesses.internal.guidance-closure :as closure]
             [ct.spools.harnesses.internal.guidance-deadline :as deadline]
             [ct.spools.harnesses.internal.guidance-process-cleanup :as cleanup]
@@ -278,27 +279,6 @@
                (fnil into []) (:proven-children @candidate-ownership))
         (throw error)))))
 
-(defn- cleanup-error! [failure operation]
-  (try
-    (operation)
-    (catch Throwable error
-      (if-let [initiating @failure]
-        (.addSuppressed ^Throwable initiating error)
-        (reset! failure error)))))
-
-(defn- complete-owned! [operation cleanup]
-  (let [result (atom nil)
-        failure (atom nil)]
-    (try
-      (reset! result (operation))
-      (catch Throwable error
-        (reset! failure error))
-      (finally
-        (cleanup-error! failure cleanup)))
-    (if-let [error @failure]
-      (throw error)
-      @result)))
-
 (defn run!
   "Run the exact preflight helper inside a private, identity-fenced process group."
   ([profile request-json]
@@ -326,7 +306,7 @@
                     (= "managed-guidance-preflight.mjs" (.getName script)))
        (fail! "Guidance preflight must use scripts/managed-guidance-preflight.mjs"
               {:path path}))
-     (complete-owned!
+     (cleanup/complete!
       (fn []
         (deadline/check! budget "process-profile-validation")
         (let [private-path (private-directory!)
@@ -363,15 +343,18 @@
                     (.clear)
                     (.putAll process-environment))
                 supervisor-process
-                (deadline/bounded!
+                (deadline/owned!
                  budget "supervisor-start"
-                 #(let [started (.start builder)
-                        _ (reset! process started)
-                        handle (.toHandle started)
-                        direct (identity/retain-direct
-                                handle "direct-supervisor")]
-                    (swap! ownership assoc :direct-supervisor direct)
-                    started))
+                 (fn [operation-authority]
+                   (authority/run!
+                    operation-authority "supervisor-start"
+                    #(let [started (.start builder)
+                           _ (reset! process started)
+                           handle (.toHandle started)
+                           direct (identity/retain-direct
+                                   handle "direct-supervisor")]
+                       (swap! ownership assoc :direct-supervisor direct)
+                       started))))
                 supervisor-handle (.toHandle supervisor-process)
                 supervisor
                 (deadline/bounded!
@@ -476,14 +459,14 @@
       (fn []
         (let [failure (atom nil)]
           (when @process
-            (cleanup-error!
+            (cleanup/attempt-operation!
              failure
              #(cleanup/cleanup-owned!
                ownership @executor @streams reviewed-profile
                process-environment root scanner operation-deadline
                remaining-nanos)))
           (doseq [stream @streams]
-            (cleanup-error! failure #(.close stream)))
+            (cleanup/attempt-operation! failure #(.close stream)))
           (when @executor
             (.shutdownNow ^java.util.concurrent.ExecutorService @executor))
           (when (and @process (.isAlive ^Process @process))
@@ -492,6 +475,7 @@
               (when (pos? remaining)
                 (.waitFor ^Process @process remaining TimeUnit/NANOSECONDS))))
           (when @directory
-            (cleanup-error! failure #(delete-directory! @directory)))
+            (cleanup/attempt-operation!
+             failure #(delete-directory! @directory)))
           (when-let [error @failure]
             (throw error))))))))

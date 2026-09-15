@@ -1,6 +1,7 @@
 (ns ct.spools.harnesses.internal.guidance-process-scan
   "Bounded concurrent process-group scanner for native preflight cleanup."
   (:require [clojure.string :as str]
+            [ct.spools.harnesses.internal.guidance-authority :as authority]
             [ct.spools.harnesses.internal.guidance-closure :as closure]
             [ct.spools.harnesses.internal.guidance-deadline :as admission-deadline]
             [ct.spools.harnesses.internal.guidance-process-identity :as identity]
@@ -14,6 +15,7 @@
 (def ^:private scanner-capture-limit (* 256 1024))
 (def ^:private scanner-millis 175)
 (def ^:private scanner-join-millis 75)
+(def ^:private scanner-retirement-millis 20)
 
 (defn- timed-out! [phase]
   (fail! "Guidance preflight process ownership scan timed out"
@@ -112,11 +114,20 @@
   (let [errors (atom [])]
     (attempt-cleanup!
      errors
-     #(if-let [retained @scanner-identity]
-        (when (identity/live? retained)
-          (identity/signal! retained))
-        (when (.isAlive process)
-          (.destroyForcibly process))))
+     (fn []
+       (admission-deadline/owned!
+        {:work-deadline
+         (- deadline (.toNanos TimeUnit/MILLISECONDS
+                               scanner-retirement-millis))
+         :deadline deadline}
+        "ownership-scanner-retirement"
+        (fn [operation-authority]
+          (if-let [retained @scanner-identity]
+            (identity/signal! retained operation-authority)
+            (when (.isAlive process)
+              (authority/run! operation-authority
+                              "ownership-scanner-signal"
+                              #(.destroyForcibly process))))))))
     (attempt-cleanup!
      errors
      #(let [remaining (remaining-nanos deadline)]
@@ -191,15 +202,18 @@
                  (.clear)
                  (.putAll process-environment))
              scanner-process
-             (admission-deadline/bounded!
+             (admission-deadline/owned!
               budget "ownership-scanner-start"
-              #(let [started (.start builder)
-                     _ (reset! process started)
-                     direct (identity/retain-direct
-                             (.toHandle started)
-                             "direct-ownership-scanner")]
-                 (reset! scanner-identity direct)
-                 started))
+              (fn [operation-authority]
+                (authority/run!
+                 operation-authority "ownership-scanner-start"
+                 #(let [started (.start builder)
+                        _ (reset! process started)
+                        direct (identity/retain-direct
+                                (.toHandle started)
+                                "direct-ownership-scanner")]
+                    (reset! scanner-identity direct)
+                    started))))
              handle (.toHandle scanner-process)
              retained
              (admission-deadline/bounded!

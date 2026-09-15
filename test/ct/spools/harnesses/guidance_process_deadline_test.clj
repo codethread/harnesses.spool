@@ -41,6 +41,40 @@
                           identity)))]
     (assoc result :direct-supervisor @direct-supervisor)))
 
+(deftest timed-out-owned-operation-cannot-signal-after-cancellation
+  (let [now (System/nanoTime)
+        budget {:started-at now
+                :work-deadline (+ now 80000000)
+                :deadline (+ now 300000000)}
+        entered (promise)
+        signals (atom 0)
+        retained {:pid 81
+                  :direct? true
+                  :alive? (constantly true)
+                  :destroy! #(do (swap! signals inc) true)}
+        error
+        (with-redefs-fn
+          {(ns-resolve
+            'ct.spools.harnesses.internal.guidance-process-identity
+            'interleave!)
+           (fn [phase _]
+             (when (= :before-signal phase)
+               (deliver entered true)
+               (try
+                 (Thread/sleep 1000)
+                 (catch InterruptedException _ nil))))}
+          #(try
+             (deadline/owned!
+              budget "late-signal"
+              (fn [operation-authority]
+                (identity/signal! retained operation-authority)))
+             nil
+             (catch Throwable failure failure)))]
+    (is (deref entered 100 false))
+    (is (re-find #"Guidance preflight timed out" (ex-message error)))
+    (is (zero? @signals))
+    (is (zero? (worker-count "guidance-admission-worker")))))
+
 (deftest supervisor-identity-is-bounded-and-direct-process-custody-survives
   (with-profile
     (fn [{:keys [profile]}]

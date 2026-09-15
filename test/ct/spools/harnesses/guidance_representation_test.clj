@@ -71,6 +71,7 @@
                  :harness/guidance-attempts []
                  :harness/harness harness
                  :identity/id identity-id
+                 :identity/prompt (get template "identity-instruction")
                  :harness/mode "headless"
                  :harness/cwd workspace
                  :harness/env {}}
@@ -104,6 +105,28 @@
    "transport" "legacy"
    "state" "not-required"
    "started-at" "2026-09-14T00:00:00Z"})
+
+(defn- active-native-run [harness state]
+  (let [run (valid-run harness "native-v1")
+        attributes (:attributes run)
+        record
+        (cond-> {"attempt" 1
+                 "invocation" "invocation-1"
+                 "transport" "native-v1"
+                 "state" state
+                 "started-at" "2026-09-14T00:00:00Z"
+                 "deadline-at" "2026-09-14T00:00:20Z"
+                 "bundle-sha256"
+                 (:harness/guidance-bundle-sha256 attributes)
+                 "capability-sha256"
+                 (:harness/guidance-capability-sha256 attributes)}
+          (= "acknowledged" state)
+          (assoc "acknowledged-at" "2026-09-14T00:00:10Z"))]
+    (update run :attributes assoc
+            :harness/attempt 1
+            :harness/invocation "invocation-1"
+            :harness/started-at "2026-09-14T00:00:00Z"
+            :harness/guidance-attempts [record])))
 
 (deftest complete-shared-discriminator-accepts-only-valid-representations
   (testing "wholly absent historical metadata remains legacy"
@@ -181,8 +204,11 @@
                        [:attributes :harness/guidance-capability :schema]
                        "collision")))))
     (testing (str harness " validates every historical attempt transport")
-      (let [legacy (valid-run harness "legacy")
-            valid-history [(pending-attempt 1) (legacy-attempt 2)]]
+      (let [valid-history [(pending-attempt 1) (legacy-attempt 2)]
+            legacy (update (valid-run harness "legacy") :attributes assoc
+                           :harness/attempt 2
+                           :harness/invocation "invocation-2"
+                           :harness/started-at "2026-09-14T00:00:00Z")]
         (is (= valid-history
                (:attempts
                 (guidance/validate-representation!
@@ -202,6 +228,75 @@
           (is (corrupt?
                (assoc-in legacy [:attributes :harness/guidance-attempts]
                          attempts))))))))
+
+(deftest active-attempt-selection-and-deadline-are-closed
+  (doseq [harness ["codex" "pi"]]
+    (let [run (active-native-run harness "pending")
+          record (get-in run [:attributes :harness/guidance-attempts 0])]
+      (is (= "native-v1" (:transport
+                          (guidance/validate-representation! run))))
+      (doseq [corrupt
+              [(assoc-in run [:attributes :identity/prompt] "changed")
+               (assoc-in run [:attributes :harness/attempt] 2)
+               (assoc-in run [:attributes :harness/invocation] "other")
+               (assoc-in run [:attributes :harness/started-at]
+                         "2026-09-14T00:00:01Z")
+               (assoc-in run
+                         [:attributes :harness/guidance-attempts 0
+                          "transport"]
+                         "legacy")
+               (assoc-in run
+                         [:attributes :harness/guidance-attempts 0
+                          "deadline-at"]
+                         "2026-09-14T00:00:21Z")
+               (assoc-in run
+                         [:attributes :harness/guidance-attempts 0
+                          "bundle-sha256"]
+                         sha-a)
+               (assoc-in run
+                         [:attributes :harness/guidance-attempts 0
+                          "capability-sha256"]
+                         sha-b)
+               (-> run
+                   (assoc-in [:attributes :harness/attempt] 2)
+                   (assoc-in [:attributes :harness/invocation] "invocation-1")
+                   (assoc-in [:attributes :harness/guidance-attempts]
+                             [record (assoc record "attempt" 2)]))]]
+        (is (corrupt? corrupt))))))
+
+(deftest only-fetched-interactive-pi-allows-delayed-first-turn-acknowledgement
+  (let [expired-at (java.time.Instant/parse "2026-09-14T00:00:21Z")
+        fetched-pi (assoc-in (active-native-run "pi" "fetched")
+                             [:attributes :harness/mode] "interactive")
+        expired? #(guidance/deadline-expired?
+                   % (guidance/current-attempt %) expired-at)]
+    (is (false? (expired? fetched-pi)))
+    (is (true? (expired?
+                (assoc-in fetched-pi
+                          [:attributes :harness/guidance-attempts 0 "state"]
+                          "pending"))))
+    (is (true? (expired?
+                (assoc-in fetched-pi [:attributes :harness/mode]
+                          "headless"))))
+    (is (true? (expired?
+                (assoc-in (active-native-run "codex" "fetched")
+                          [:attributes :harness/mode] "interactive"))))
+    (let [late-ack
+          (fn [run]
+            (-> run
+                (assoc-in [:attributes :harness/guidance-attempts 0 "state"]
+                          "acknowledged")
+                (assoc-in [:attributes :harness/guidance-attempts 0
+                           "acknowledged-at"]
+                          "2026-09-14T00:00:21Z")))]
+      (is (not (corrupt? (late-ack fetched-pi))))
+      (is (corrupt? (late-ack
+                     (assoc-in fetched-pi [:attributes :harness/mode]
+                               "headless"))))
+      (is (corrupt? (late-ack
+                     (assoc-in (active-native-run "codex" "fetched")
+                               [:attributes :harness/mode]
+                               "interactive")))))))
 
 (deftest corrupt-durable-rows-reject-before-all-start-side-effects
   (guidance-test/with-guidance-world

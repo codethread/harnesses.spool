@@ -39,13 +39,18 @@
                            (guidance/current-attempt (:strand fractional-start))
                            fractional-deadline
                            (str (.plusNanos (java.time.Instant/now) 150500000))
+                           fractional-started-at
+                           (str (.minusSeconds
+                                 (java.time.Instant/parse fractional-deadline) 20))
                            fractional
                            (weaver/update!
                             rt (:id fractional)
                             {:attributes
-                             {:harness/guidance-attempts
-                              [(assoc fractional-record "deadline-at"
-                                      fractional-deadline)]}})
+                             {:harness/started-at fractional-started-at
+                              :harness/guidance-attempts
+                              [(assoc fractional-record
+                                      "started-at" fractional-started-at
+                                      "deadline-at" fractional-deadline)]}})
                            _ (execution/open-execution! {:runtime rt})
                            opened (execution-state rt)
                            early-result (arm! rt fractional opened)
@@ -62,14 +67,20 @@
                            (harnesses/begin-attempt! rt (:id reopened))
                            reopened-record
                            (guidance/current-attempt (:strand reopened-start))
+                           reopened-deadline
+                           (str (.plusMillis (java.time.Instant/now) 180))
+                           reopened-started-at
+                           (str (.minusSeconds
+                                 (java.time.Instant/parse reopened-deadline) 20))
                            reopened
                            (weaver/update!
                             rt (:id reopened)
                             {:attributes
-                             {:harness/guidance-attempts
-                              [(assoc reopened-record "deadline-at"
-                                      (str (.plusMillis
-                                            (java.time.Instant/now) 180)))]}})
+                             {:harness/started-at reopened-started-at
+                              :harness/guidance-attempts
+                              [(assoc reopened-record
+                                      "started-at" reopened-started-at
+                                      "deadline-at" reopened-deadline)]}})
                            _ (execution/open-execution! {:runtime rt})
                            old-opened (execution-state rt)
                            _ (execution/close-execution! {:runtime rt})
@@ -135,14 +146,21 @@
                              acknowledged-record
                              (guidance/current-attempt
                               (:strand acknowledged-start))
+                             acknowledged-deadline
+                             (str (.plusMillis (java.time.Instant/now) 250))
+                             acknowledged-started-at
+                             (str (.minusSeconds
+                                   (java.time.Instant/parse
+                                    acknowledged-deadline) 20))
                              acknowledged
                              (weaver/update!
                               rt (:id acknowledged)
                               {:attributes
-                               {:harness/guidance-attempts
-                                [(assoc acknowledged-record "deadline-at"
-                                        (str (.plusMillis
-                                              (java.time.Instant/now) 250)))]}})
+                               {:harness/started-at acknowledged-started-at
+                                :harness/guidance-attempts
+                                [(assoc acknowledged-record
+                                        "started-at" acknowledged-started-at
+                                        "deadline-at" acknowledged-deadline)]}})
                              _ (execution/open-execution! {:runtime rt})
                              opened (execution-state rt)
                              _ (arm! rt acknowledged opened)
@@ -171,14 +189,21 @@
                              (harnesses/begin-attempt! rt (:id completed))
                              completed-record
                              (guidance/current-attempt (:strand completed-start))
+                             completed-deadline
+                             (str (.plusMillis (java.time.Instant/now) 250))
+                             completed-started-at
+                             (str (.minusSeconds
+                                   (java.time.Instant/parse completed-deadline)
+                                   20))
                              completed
                              (weaver/update!
                               rt (:id completed)
                               {:attributes
-                               {:harness/guidance-attempts
-                                [(assoc completed-record "deadline-at"
-                                        (str (.plusMillis
-                                              (java.time.Instant/now) 250)))]}})
+                               {:harness/started-at completed-started-at
+                                :harness/guidance-attempts
+                                [(assoc completed-record
+                                        "started-at" completed-started-at
+                                        "deadline-at" completed-deadline)]}})
                              _ (arm! rt completed opened)
                              completed
                              (harnesses/finish!
@@ -285,13 +310,19 @@
                                    (guidance/current-attempt (:strand started))
                                    deadline
                                    (str (.plusMillis
-                                         (java.time.Instant/now) millis))]
+                                         (java.time.Instant/now) millis))
+                                   started-at
+                                   (str (.minusSeconds
+                                         (java.time.Instant/parse deadline) 20))]
                                {:run
                                 (weaver/update!
                                  rt (:id created)
                                  {:attributes
-                                  {:harness/guidance-attempts
-                                   [(assoc record "deadline-at" deadline)]}})
+                                  {:harness/started-at started-at
+                                   :harness/guidance-attempts
+                                   [(assoc record
+                                           "started-at" started-at
+                                           "deadline-at" deadline)]}})
                                 :deadline deadline}))
                            expiry (prepare-run 400)
                            expiry-entered

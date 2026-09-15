@@ -300,6 +300,33 @@
           (stop-handle! process))
         (stop! sentinel)))))
 
+(deftest descendant-enumeration-failure-preserves-earlier-proven-custody
+  (let [root-birth {:pid 8101 :started-at :root-birth}
+        signals (atom [])
+        child {:pid 8102
+               :started-at :child-birth
+               :alive? (constantly true)
+               :current-start (constantly :child-birth)
+               :parent-birth (constantly root-birth)
+               :visit-children! (fn [_])
+               :destroy! #(do (swap! signals conj 8102) true)}
+        root (merge root-birth
+                    {:alive? (constantly true)
+                     :current-start (constantly :root-birth)
+                     :visit-children!
+                     (fn [visit!]
+                       (visit! child)
+                       (throw (ex-info "later descendant enumeration failed" {})))
+                     :destroy! #(do (swap! signals conj 8101) true)})
+        error
+        (failure
+         #(with-redefs [identity/join! (fn [retained _ _] retained)]
+            (cleanup/cleanup-owned!
+             (atom {:proven-children [root]}) nil [] nil nil nil nil
+             (+ (System/nanoTime) 1000000000) remaining)))]
+    (is (re-find #"later descendant enumeration failed" (ex-message error)))
+    (is (= #{8101 8102} (set @signals)))))
+
 (deftest parent-proven-descendants-are-signalled-before-shared-deadline-joins
   (let [node (capability/resolve-executable "node" (System/getenv))
         parent

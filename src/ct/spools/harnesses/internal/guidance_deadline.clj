@@ -1,6 +1,7 @@
 (ns ct.spools.harnesses.internal.guidance-deadline
   "One monotonic work and cleanup budget for native guidance admission."
-  (:require [millstrand.api.spool.alpha :refer [fail!]])
+  (:require [ct.spools.harnesses.internal.guidance-authority :as authority]
+            [millstrand.api.spool.alpha :refer [fail!]])
   (:import [java.util.concurrent Callable ExecutionException Executors Future
             ThreadFactory TimeUnit TimeoutException]))
 
@@ -92,15 +93,17 @@
                                       TimeUnit/NANOSECONDS))
       (timed-out! "verification-worker-retirement"))))
 
-(defn bounded!
-  "Run potentially blocking work in one cancellable owned worker.
+(defn owned!
+  "Run cancellable work with revocable operation-local authority.
 
-  Timeout cancels and joins the worker before returning control. An initiating
-  failure remains primary; a retirement failure is attached as suppressed."
+  Timeout revokes authority before cancellation. Revocation waits for an
+  authorized side effect to leave its gate, and the worker retires before the
+  caller may continue."
   [budget phase operation]
   (check! budget phase)
-  (let [executor (Executors/newSingleThreadExecutor (daemon-thread-factory))
-        future (.submit executor ^Callable operation)
+  (let [operation-authority (authority/create (work-deadline budget))
+        executor (Executors/newSingleThreadExecutor (daemon-thread-factory))
+        future (.submit executor ^Callable #(operation operation-authority))
         result (atom nil)
         failure (atom nil)]
     (try
@@ -110,6 +113,7 @@
         (catch Throwable error
           (reset! failure error)))
       (finally
+        (authority/revoke! operation-authority)
         (.cancel future true)
         (try
           (retire! executor budget)
@@ -120,3 +124,8 @@
     (if-let [error @failure]
       (throw error)
       @result)))
+
+(defn bounded!
+  "Run potentially blocking work in one cancellable owned worker."
+  [budget phase operation]
+  (owned! budget phase (fn [_] (operation))))

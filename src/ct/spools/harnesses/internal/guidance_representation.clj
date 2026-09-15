@@ -31,6 +31,7 @@
 (def ^:private acknowledgement-key #{"acknowledged-at"})
 (def ^:private failure-key #{"failure"})
 (def ^:private failure-keys #{"stage" "code" "diagnostic"})
+(def ^:private handoff-seconds 20)
 (def ^:private validation-context-key ::validation-context)
 
 (defn attach-context
@@ -38,6 +39,9 @@
   [run canonical-workspace]
   (vary-meta run assoc validation-context-key
              {:canonical-workspace canonical-workspace}))
+
+(defn- attribute [run key]
+  (get (:attributes run) key))
 
 (defn- nonblank? [value]
   (and (string? value) (not (str/blank? value))))
@@ -65,17 +69,23 @@
                  (nonblank? (get failure "diagnostic")))
     (spool/fail! "Guidance attempt failure is malformed" {})))
 
-(defn- validate-time-order! [record started-at]
+(defn- delayed-pi-acknowledgement? [run record]
+  (and (= "pi" (attribute run :harness/harness))
+       (= "interactive" (attribute run :harness/mode))
+       (contains? #{"acknowledged" "failed"} (get record "state"))))
+
+(defn- validate-time-order! [run record started-at]
   (when-let [value (get record "deadline-at")]
     (let [deadline (parse-instant! value "Guidance attempt deadline")]
-      (when-not (.isAfter deadline started-at)
-        (spool/fail! "Guidance attempt deadline does not follow its start" {}))
+      (when-not (= deadline (.plusSeconds started-at handoff-seconds))
+        (spool/fail! "Guidance attempt deadline is not its 20 second fence" {}))
       (when-let [acknowledged-value (get record "acknowledged-at")]
         (let [acknowledged-at
               (parse-instant! acknowledged-value
                               "Guidance attempt acknowledgement")]
           (when (or (.isBefore acknowledged-at started-at)
-                    (.isAfter acknowledged-at deadline))
+                    (and (.isAfter acknowledged-at deadline)
+                         (not (delayed-pi-acknowledgement? run record))))
             (spool/fail!
              "Guidance attempt acknowledgement is outside its handoff window"
              {})))))))
@@ -91,7 +101,7 @@
                                  (into acknowledgement-key failure-key)))]
       [])))
 
-(defn- validate-attempt! [raw-record]
+(defn- validate-attempt! [run raw-record]
   (when-not (map? raw-record)
     (spool/fail! "Guidance attempt must be an object" {}))
   (let [record (strict-json/canonical-data raw-record)
@@ -120,7 +130,7 @@
         (when-not (and (sha? (get record "bundle-sha256"))
                        (sha? (get record "capability-sha256")))
           (spool/fail! "Native guidance attempt digests are malformed" {}))
-        (validate-time-order! record started-at)
+        (validate-time-order! run record started-at)
         (when (= "failed" state)
           (valid-failure! (get record "failure"))))
 
@@ -128,19 +138,19 @@
                    {:transport transport}))
     record))
 
-(defn- validate-attempts! [raw-attempts]
+(defn- validate-attempts! [run raw-attempts]
   (when-not (vector? raw-attempts)
     (spool/fail! "Guidance attempts must be a vector" {}))
-  (let [attempts (mapv validate-attempt! raw-attempts)
-        numbers (mapv #(get % "attempt") attempts)]
+  (let [attempts (mapv #(validate-attempt! run %) raw-attempts)
+        numbers (mapv #(get % "attempt") attempts)
+        invocations (mapv #(get % "invocation") attempts)]
     (when-not (and (= numbers (vec (sort numbers)))
                    (= (count numbers) (count (distinct numbers))))
       (spool/fail! "Guidance attempts are unordered or duplicated"
                    {:attempts numbers}))
+    (when-not (= (count invocations) (count (distinct invocations)))
+      (spool/fail! "Guidance attempt invocations are duplicated" {}))
     attempts))
-
-(defn- attribute [run key]
-  (get (:attributes run) key))
 
 (defn- values [run]
   (into {} (map (fn [key] [key (attribute run key)])) attribute-keys))
@@ -192,6 +202,37 @@
       (spool/fail! "Frozen managed guidance exceeds its host limit" {}))
     capability-document))
 
+(defn- validate-current!
+  [run representation attempts]
+  (let [attempt (attribute run :harness/attempt)
+        invocation (attribute run :harness/invocation)
+        current (peek attempts)]
+    (if-not current
+      (when (or attempt invocation)
+        (spool/fail! "Guidance current attempt has no history" {}))
+      (do
+        (when-not (= attempt (get current "attempt"))
+          (spool/fail! "Guidance current attempt does not name its history" {}))
+        (when invocation
+          (when-not (= invocation (get current "invocation"))
+            (spool/fail! "Guidance current invocation does not name its history"
+                         {}))
+          (when-not (= (attribute run :harness/started-at)
+                       (get current "started-at"))
+            (spool/fail! "Guidance current start timestamp does not match" {}))
+          (when-not (= (:harness/guidance-transport representation)
+                       (get current "transport"))
+            (spool/fail! "Guidance current transport does not match selection"
+                         {}))
+          (when (= "native-v1" (get current "transport"))
+            (when-not (and
+                       (= (:harness/guidance-bundle-sha256 representation)
+                          (get current "bundle-sha256"))
+                       (= (:harness/guidance-capability-sha256 representation)
+                          (get current "capability-sha256")))
+              (spool/fail! "Guidance current native digests do not match"
+                           {}))))))))
+
 (defn- validate-versioned! [run representation present]
   (require-common! representation present)
   (let [transport (:harness/guidance-transport representation)
@@ -201,9 +242,13 @@
          (:id run) (attribute run :identity/id)
          (:harness/guidance-context-template representation)
          (:harness/guidance-context representation))
+        _ (when-not (= (attribute run :identity/prompt)
+                       (get template "identity-instruction"))
+            (spool/fail! "Frozen guidance identity does not match the run"
+                         {}))
         bundle-digest (:harness/guidance-bundle-sha256 representation)
         attempts (validate-attempts!
-                  (:harness/guidance-attempts representation))]
+                  run (:harness/guidance-attempts representation))]
     (when-not (and (sha? bundle-digest)
                    (= bundle-digest
                       (context/bundle-sha256 (:id run) workspace context)))
@@ -220,6 +265,7 @@
               nil)
             "native-v1"
             (validate-native! run representation present workspace context))]
+      (validate-current! run representation attempts)
       {:versioned? true
        :transport transport
        :template template

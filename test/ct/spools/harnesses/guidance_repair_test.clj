@@ -1,14 +1,11 @@
 (ns ct.spools.harnesses.guidance-repair-test
-  "Concurrency, prelaunch, and recovery regressions for native guidance."
   (:require [clojure.test :refer [deftest is]]
             [ct.spools.harnesses.guidance-fixture :as guidance-fixture]
             [ct.spools.harnesses.guidance-test :as guidance-test]
             [millstrand.test.alpha :as test-alpha]))
-
 (defn- eval-guidance-world [ctx body]
   (test-alpha/repl! ctx (list 'do guidance-test/lifecycle-setup
                               guidance-fixture/interactive-selection body)))
-
 (deftest acknowledged-reconstruction-failure-is-sticky-and-preserves-attachment
   (guidance-test/with-guidance-world
     (fn [ctx]
@@ -173,7 +170,6 @@
         (is (= 1 (count (:performed result))))
         (is (= "ignored" (:completed-failure result)))
         (is (true? (:completed-no-write result)))))))
-
 (deftest expiry-reloads-and-fences-every-transition
   (guidance-test/with-guidance-world
     (fn [ctx]
@@ -193,11 +189,12 @@
                             (weaver/update!
                              rt (:id run)
                              {:attributes
-                              {:harness/guidance-attempts
+                              {:harness/started-at "2026-09-13T23:59:40Z"
+                               :harness/guidance-attempts
                                (mapv #(if (= record %)
                                         (assoc %
                                                "started-at"
-                                               "2026-09-13T23:59:59Z"
+                                               "2026-09-13T23:59:40Z"
                                                "deadline-at" deadline)
                                         %)
                                      (guidance/attempt-records run))}})))
@@ -285,7 +282,6 @@
                (:expired result)))
         (is (= 2 (:retry-attempt result)))
         (is (true? (:retry-no-write result)))))))
-
 (deftest prelaunch-failure-and-persisted-interactive-deadline-recovery
   (guidance-test/with-guidance-world
     (fn [ctx]
@@ -341,6 +337,8 @@
                              :cwd "/tmp" :guidance-transport "native-v1"})
                         malformed-start
                         (begin-native-interactive-fixture! rt (:id malformed))
+                        malformed-record
+                        (guidance/current-attempt (:strand malformed-start))
                         _ (weaver/update!
                            rt (:id malformed)
                            {:attributes {:harness/guidance-attempts []}})
@@ -355,6 +353,10 @@
                           (catch clojure.lang.ExceptionInfo error
                             (ex-message error)))
                         malformed-after (weaver/show rt (:id malformed))
+                        _ (weaver/update!
+                           rt (:id malformed)
+                           {:attributes
+                            {:harness/guidance-attempts [malformed-record]}})
                         recoverable
                         (create-native-interactive-fixture!
                          rt {:harness :native-codex :mode :interactive
@@ -363,14 +365,19 @@
                         (begin-native-interactive-fixture! rt (:id recoverable))
                         deadline
                         (str (.plusMillis (java.time.Instant/now) 1000))
+                        started-at (str (.minusSeconds
+                                         (java.time.Instant/parse deadline) 20))
                         record
                         (guidance/current-attempt (:strand recoverable-start))
                         recoverable
                         (weaver/update!
                          rt (:id recoverable)
                          {:attributes
-                          {:harness/guidance-attempts
-                           [(assoc record "deadline-at" deadline)]}})
+                          {:harness/started-at started-at
+                           :harness/guidance-attempts
+                           [(assoc record
+                                   "started-at" started-at
+                                   "deadline-at" deadline)]}})
                         _ (execution/open-execution! {:runtime rt})
                         _ (execution/close-execution! {:runtime rt})
                         fetched-codex
@@ -396,9 +403,10 @@
                           (weaver/update!
                            rt (:id current)
                            {:attributes
-                            {:harness/guidance-attempts
+                            {:harness/started-at "2026-09-13T23:59:40Z"
+                             :harness/guidance-attempts
                              [(assoc record
-                                     "started-at" "2026-09-13T23:59:59Z"
+                                     "started-at" "2026-09-13T23:59:40Z"
                                      "deadline-at" "2026-09-14T00:00:00Z")]}}))
                         fetched-pi
                         (create-native-interactive-fixture!
@@ -433,9 +441,10 @@
                            {:attributes
                             {:harness/guidance-capability-sha256
                              pi-capability-sha
+                             :harness/started-at "2026-09-13T23:59:40Z"
                              :harness/guidance-attempts
                              [(assoc record
-                                     "started-at" "2026-09-13T23:59:59Z"
+                                     "started-at" "2026-09-13T23:59:40Z"
                                      "deadline-at" "2026-09-14T00:00:00Z"
                                      "capability-sha256" pi-capability-sha)]}}))
                         _ (Thread/sleep 1100)
@@ -480,7 +489,8 @@
         (is (true? (:positive-no-write result)))
         (is (= ["failed" "false" "no-terminal-evidence"]
                (:unknown result)))
-        (is (re-find #"no attempt record" (:malformed-error result)))
+        (is (re-find #"corrupt partial guidance metadata"
+                     (:malformed-error result)))
         (is (true? (:malformed-no-write result)))
         (is (= ["failed" "bootstrap"
                 "native guidance handoff timed out"]

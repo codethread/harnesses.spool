@@ -209,7 +209,8 @@
 (defn preflight-failure-patch
   "Return a terminal no-launch patch for execution-time native preflight failure."
   [run attempt invocation error]
-  (let [diagnostic
+  (let [now (life/now)
+        diagnostic
         (str "Native guidance preflight failed for run " (:id run)
              " attempt " attempt ": " (ex-message error)
              ". Repair or approve the reviewed adapter/configuration, or "
@@ -224,14 +225,14 @@
             "capability-sha256"
             (spool/attr-get run :harness/guidance-capability-sha256)
             "state" "failed"
-            "started-at" (life/now)
+            "started-at" now
             "failure" {"stage" "preflight"
                        "code" (or (:code (ex-data error))
                                   "capability-mismatch")
                        "diagnostic" diagnostic}})
      :harness/attempt attempt
      :harness/invocation invocation
-     :harness/started-at (life/now)
+     :harness/started-at now
      :harness/status "failed"
      :harness/substatus "bootstrap"
      :harness/settled "true"

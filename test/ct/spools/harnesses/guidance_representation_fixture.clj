@@ -80,14 +80,21 @@
 (defn with-pending-attempt
   "Add one valid pending native attempt to `run`."
   [run]
-  (let [attributes (:attributes run)]
-    (assoc-in
-     run [:attributes :harness/guidance-attempts]
+  (let [attributes (:attributes run)
+        started-at "2026-09-13T23:59:40Z"
+        invocation "invocation"]
+    (update
+     run :attributes
+     assoc
+     :harness/attempt 1
+     :harness/invocation invocation
+     :harness/started-at started-at
+     :harness/guidance-attempts
      [{"attempt" 1
-       "invocation" "invocation"
+       "invocation" invocation
        "transport" "native-v1"
        "state" "pending"
-       "started-at" "2026-09-13T23:59:40Z"
+       "started-at" started-at
        "deadline-at" "2026-09-14T00:00:00Z"
        "bundle-sha256" (:harness/guidance-bundle-sha256 attributes)
        "capability-sha256"

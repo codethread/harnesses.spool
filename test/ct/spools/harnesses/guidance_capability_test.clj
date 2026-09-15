@@ -281,9 +281,8 @@
                        :harness/session-id "native-session-1"
                        :harness/prompt "fixture task"
                        :harness/published "true"
-                       :harness/attempt 1
-                       :harness/invocation "invocation-1"
                        :identity/id "steady-fair-lynx"
+                       :identity/prompt "Use the retained identity."
                        :identity/reservation-id "reservation-1"}
                        (= "pi" harness)
                        (assoc :harness/provisional-session-id
@@ -294,7 +293,12 @@
                          rt run 1 "invocation-1")
                   started (guidance/carry-launch-plan patch {:strand run})
                   plan (guidance/launch-plan started)
-                  running (update run :attributes merge patch)
+                  started-at (get (peek (:harness/guidance-attempts patch))
+                                  "started-at")
+                  running (update run :attributes merge patch
+                                  {:harness/attempt 1
+                                   :harness/invocation "invocation-1"
+                                   :harness/started-at started-at})
                   provider-argv
                   [harness "resume" "native-session-1"
                    "--model" "fixture-model" "--effort" "high"

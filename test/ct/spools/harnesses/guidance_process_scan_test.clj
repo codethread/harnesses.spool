@@ -6,6 +6,7 @@
             [ct.spools.harnesses.internal.guidance-capability :as capability]
             [ct.spools.harnesses.internal.guidance-closure :as closure]
             [ct.spools.harnesses.internal.guidance-process :as process]
+            [ct.spools.harnesses.internal.guidance-process-identity :as identity]
             [ct.spools.harnesses.internal.strict-json :as strict-json])
   (:import [java.lang ProcessHandle]
            [java.util.concurrent TimeUnit]))
@@ -212,6 +213,27 @@
                 (is (false? (process-for-root? root))))
               (finally
                 (stop! unrelated)))))))))
+
+(deftest scanner-birth-observation-shares-the-admission-deadline
+  (with-scanner-profile
+    :finite-flood
+    (fn [{:keys [root profile]}]
+      (let [original-retain identity/retain
+            {:keys [error elapsed-millis]}
+            (with-redefs [identity/retain
+                          (fn [handle role]
+                            (when (= "ownership-scanner" role)
+                              (Thread/sleep 3100))
+                            (original-retain handle role))]
+              (run-profile profile))
+            anchor-pid (pid-from (io/file root "anchor.pid"))
+            helper-pid (pid-from (io/file root "helper.pid"))]
+        (is (re-find #"Guidance preflight timed out" (ex-message error)))
+        (is (< elapsed-millis 3000.0))
+        (is (not (alive-pid? anchor-pid)))
+        (is (not (alive-pid? helper-pid)))
+        (is (false? (process-for-root? root)))
+        (is (zero? (thread-count "guidance-admission-worker")))))))
 
 (deftest scanner-failures-remain-bounded-and-clean-retained-identities
   (doseq [[mode message]

@@ -1,6 +1,7 @@
 (ns ct.spools.harnesses.internal.guidance-process-identity
   "Retained birth-fenced identities for native preflight processes."
-  (:require [millstrand.api.spool.alpha :refer [fail!]])
+  (:require [ct.spools.harnesses.internal.guidance-authority :as authority]
+            [millstrand.api.spool.alpha :refer [fail!]])
   (:import [java.lang ProcessHandle]))
 
 (defn ^:dynamic ^:private interleave!
@@ -344,10 +345,7 @@
     (throw-errors! errors)
     confirmed))
 
-(defn signal!
-  "Signal the same retained identity when its birth fence remains current."
-  [identity]
-  (interleave! :before-signal identity)
+(defn- signal-authorized! [identity]
   (when (live? identity)
     (let [signalled? ((:destroy! identity))]
       (interleave! :after-signal identity)
@@ -355,6 +353,16 @@
         (fail! "Guidance retained process could not be signalled"
                {:role (:role identity) :pid (:pid identity)}))
       identity)))
+
+(defn signal!
+  "Signal the retained birth only while optional operation authority is live."
+  ([identity]
+   (interleave! :before-signal identity)
+   (signal-authorized! identity))
+  ([identity operation-authority]
+   (interleave! :before-signal identity)
+   (authority/run! operation-authority "cleanup-signal"
+                   #(signal-authorized! identity))))
 
 (defn join!
   "Wait for the same retained identity without resolving its PID again."

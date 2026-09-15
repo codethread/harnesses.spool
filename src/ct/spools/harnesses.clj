@@ -187,7 +187,11 @@
                     {:attributes
                      (guidance/preflight-failure-patch
                       run attempt invocation error)}))
-                 (throw error)))]
+                 (throw error)))
+             attempt-started-at
+             (or (some-> guidance-patch :harness/guidance-attempts
+                         peek (get "started-at"))
+                 (life/now))]
          (guidance/carry-launch-plan
           guidance-patch
           (require-valid!
@@ -207,7 +211,7 @@
                           :harness/settlement nil
                           :harness/attempt attempt
                           :harness/invocation invocation
-                          :harness/started-at (life/now)}
+                          :harness/started-at attempt-started-at}
                          guidance-patch
                          start-attributes
                          (when interactive?
