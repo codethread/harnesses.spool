@@ -83,8 +83,8 @@
     (.getCanonicalPath file)))
 
 (defn arm!
-  "Replace one managed launcher's fail-closed sentinel with bootstrap export."
-  [runtime run bootstrap]
+  "Replace one managed launcher's fail-closed sentinel with bootstrap exports."
+  [runtime run bootstrap guidance]
   (let [file (io/file (launcher-dir runtime) (str (:id run) ".sh"))
         source (slurp file)
         first-index (str/index-of source bootstrap-sentinel)
@@ -93,7 +93,11 @@
       (fail! "Managed launcher has no unique bootstrap sentinel"
              {:run-id (:id run) :launcher (.getCanonicalPath file)}))
     (spit file
-          (str/replace source bootstrap-sentinel
-                       (str "export MILLSTRAND_MANAGED_BOOTSTRAP="
-                            (sh-quote (json/write-str bootstrap)) "\n")))
+          (str/replace
+           source bootstrap-sentinel
+           (str "export MILLSTRAND_MANAGED_BOOTSTRAP="
+                (sh-quote (json/write-str bootstrap)) "\n"
+                (when guidance
+                  (str "export MILLSTRAND_MANAGED_GUIDANCE="
+                       (sh-quote (json/write-str guidance)) "\n")))))
     (.getCanonicalPath file)))

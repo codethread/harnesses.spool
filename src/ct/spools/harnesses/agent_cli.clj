@@ -62,6 +62,7 @@
 (s/def ::request-id string?)
 (s/def ::attempt int?)
 (s/def ::invocation string?)
+(s/def ::guidance-transport string?)
 (s/def ::run-summary
   (s/keys :req-un [::harness/id ::harness/title ::harness/state
                    ::alias ::harness ::mode ::status ::substatus ::session-id
@@ -71,7 +72,8 @@
                    ::resumable ::resume-reason ::stop-reason ::abandon-reason
                    ::abandoned-at ::abandoned-by ::reconciled-at
                    ::reconciliation-source ::reconciliation-evidence
-                   ::logical-id ::target ::request-id ::attempt ::invocation]))
+                   ::logical-id ::target ::request-id ::attempt ::invocation
+                   ::guidance-transport]))
 (s/def ::runs (s/coll-of ::run-summary :kind vector?))
 (s/def ::config-result map?)
 (s/def ::reconciliation-result map?)
@@ -130,7 +132,12 @@
                    :native-session-id (:native-session-id args)
                    :cwd cwd
                    :scope (:scope args)
-                   :bootstrap (:bootstrap args)})
+                   :bootstrap (:bootstrap args)
+                   :guidance (:guidance args)})
+     ["guidance" "acknowledge"]
+     (harness/guidance-acknowledge! runtime (:receipt args))
+     ["guidance" "fail"]
+     (harness/guidance-fail! runtime (:receipt args))
      ["stop"] (summary (execution/stop! runtime (:run-id args)
                                         (select-keys args [:reason])))
      ["reconcile"]
@@ -311,6 +318,9 @@
     (attr-get run :harness/attempt) (assoc :attempt (attr-get run :harness/attempt))
     (attr-get run :harness/invocation)
     (assoc :invocation (attr-get run :harness/invocation))
+    (attr-get run :harness/guidance-transport)
+    (assoc :guidance-transport
+           (attr-get run :harness/guidance-transport))
     (some? (attr-get run :harness/exit-code))
     (assoc :exit-code (attr-get run :harness/exit-code))
     (attr-get run :harness/result) (assoc :result (attr-get run :harness/result))
@@ -392,7 +402,8 @@
 
 (defn- op-run
   [rt {:keys [agent interactive prompt append-system-prompt extra-argv cwd
-              attributes title by-identity target context request-id]
+              attributes title by-identity target context request-id
+              guidance-transport]
        :as args}
    op-cwd]
   (let [effort (if (contains? args :effort) (:effort args) (:thinking args))
@@ -410,6 +421,8 @@
                (some? prompt) (assoc :prompt prompt)
                (some? append-system-prompt)
                (assoc :append-system-prompt append-system-prompt)
+               (some? guidance-transport)
+               (assoc :guidance-transport guidance-transport)
                (some? title) (assoc :title title)
                (some? by-identity) (assoc :by-identity by-identity)
                (some? target) (assoc :target target)
@@ -429,7 +442,9 @@
       (contains? args :agent) (assoc :harness (:agent args))
       (contains? args :cwd) (assoc :cwd (:cwd args))
       (contains? args :attributes)
-      (assoc :attributes (overlay-map (:attributes args)))))))
+      (assoc :attributes (overlay-map (:attributes args)))
+      (contains? args :guidance-transport)
+      (assoc :guidance-transport (:guidance-transport args))))))
 
 (defn- op-resume [rt args]
   (let [predecessor (harness/resolve-resume-run
@@ -443,7 +458,9 @@
                (contains? args :by-identity)
                (assoc :by-identity (:by-identity args))
                (contains? args :request-id)
-               (assoc :request-id (:request-id args))))]
+               (assoc :request-id (:request-id args))
+               (contains? args :guidance-transport)
+               (assoc :guidance-transport (:guidance-transport args))))]
     (if (:interactive args)
       (interactive-plan rt run)
       (do

@@ -62,6 +62,9 @@
                           :append-system-prompt
                           {:type :string
                            :doc "Append role or policy text to the system prompt."}
+                          :guidance-transport
+                          {:type :string
+                           :doc "Managed delivery: legacy (default) or native-v1."}
                           :extra-argv
                           {:type :string
                            :repeat? true
@@ -89,7 +92,10 @@
              :scope
              {:type :string
               :required? true
-              :doc "Native event scope; managed launches require root."}}
+              :doc "Native event scope; managed launches require root."}
+             :guidance
+             {:type :string
+              :doc "Exact MILLSTRAND_MANAGED_GUIDANCE JSON document."}}
      :positionals [{:name :harness
                     :type :string
                     :required? true
@@ -173,7 +179,10 @@
                             :attributes
                             {:type :string
                              :parse :json
-                             :doc "Provider overlay merge patch."}})
+                             :doc "Provider overlay merge patch."}
+                            :guidance-transport
+                            {:type :string
+                             :doc "Replacement managed guidance transport."}})
              :positionals [{:name :run-id
                             :type :string
                             :required? true
@@ -209,7 +218,27 @@
                      :doc "Display title; defaults to the first 80 prompt characters or the agent and mode."}
                     :request-id
                     {:type :string
-                     :doc "Caller idempotency key for this continuation."}})}
+                     :doc "Caller idempotency key for this continuation."}
+                    :guidance-transport
+                    {:type :string
+                     :doc "Transport for this continuation; defaults to its predecessor."}})}
+    "guidance"
+    {:doc "Record fenced native adapter handoff or bootstrap failure."
+     :subcommands
+     {"acknowledge"
+      {:doc "Acknowledge complete adapter handoff for the current attempt."
+       :hook-class :mutating
+       :deadline-class :standard
+       :flags {:receipt {:type :string
+                         :required? true
+                         :doc "Strict millstrand.agent-guidance-receipt/v1 JSON."}}}
+      "fail"
+      {:doc "Record native adapter bootstrap failure for the current attempt."
+       :hook-class :mutating
+       :deadline-class :standard
+       :flags {:receipt {:type :string
+                         :required? true
+                         :doc "Strict millstrand.agent-guidance-receipt/v1 JSON."}}}}}
     "self-complete"
     {:doc "Record best-effort result text for an interactive agent run."
      :hook-class :mutating

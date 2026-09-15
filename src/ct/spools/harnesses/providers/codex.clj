@@ -4,6 +4,7 @@
             [clojure.spec.alpha :as s]
             [clojure.string :as str]
             [ct.spools.harnesses :as harness]
+            [ct.spools.harnesses.internal.guidance :as guidance]
             [ct.spools.harnesses.providers.internal.outcome :as outcome]
             [millstrand.api.lifecycle.alpha :as lifecycle]
             [millstrand.api.spool.alpha :refer [attr-get fail! require-valid!]]))
@@ -54,7 +55,8 @@
   (require-valid! ::harness/harness-definition resolved-harness
                   "Codex prepare requires a resolved harness definition")
   (require-valid! ::harness/strand run "Codex prepare requires a full run strand")
-  (let [options (prepare-options run)
+  (let [run (guidance/validation-run _rt run)
+        options (prepare-options run)
         launch-spec {:argv (codex-command options)
                      :stdin (when (= "headless" (:mode options))
                               (str (:prompt options) "\n"))}]
@@ -120,6 +122,7 @@
      :model (attribute run :harness/model)
      :effort (attribute run :harness/effort)
      :identity-prompt (attribute run :identity/prompt)
+     :guidance-transport (guidance/transport run)
      :appended-system-prompts
      (or (attribute run :harness/appended-system-prompts) [])
      :prompt (attribute run :harness/prompt)
@@ -141,7 +144,8 @@
            {:extra-argv extra})))
 
 (defn- option-argv
-  [{:keys [model effort identity-prompt appended-system-prompts extra]}]
+  [{:keys [model effort identity-prompt appended-system-prompts extra
+           guidance-transport]}]
   ;; developer_instructions is rebuilt from config on every launch and
   ;; `exec resume` accepts -c/--config, so resumed runs must reapply the pinned
   ;; identity and policy guidance rather than inherit it.
@@ -155,7 +159,8 @@
       (when effort
         ["--config"
          (str "model_reasoning_effort=" (get effort-names effort effort))])
-      (when-not (str/blank? system-prompt)
+      (when (and (= "legacy" guidance-transport)
+                 (not (str/blank? system-prompt)))
         ["--config"
          (str "developer_instructions=" (json/write-str system-prompt))])
       extra))))

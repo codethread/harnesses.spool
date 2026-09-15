@@ -4,7 +4,9 @@
             [clojure.spec.alpha :as s]
             [clojure.string :as str]
             [ct.spools.harnesses.catalog :as catalog]
+            [ct.spools.harnesses.internal.guidance :as guidance]
             [ct.spools.harnesses.internal.lifecycle :as life]
+            [ct.spools.harnesses.internal.managed-context :as managed-context]
             [ct.spools.harnesses.internal.managed-identity :as managed-identity]
             [ct.spools.harnesses.internal.managed-legacy :as legacy]
             [millhouse.spools.identity :as identity]
@@ -28,7 +30,7 @@
   #{"schema" "run-id" "harness" "identity" "reservation-id" "cwd"
     "workspace" "attempt" "invocation" "scope"})
 (def ^:private startup-request-keys
-  #{:harness :native-session-id :cwd :scope :bootstrap})
+  #{:harness :native-session-id :cwd :scope :bootstrap :guidance})
 
 (s/def ::runtime map?)
 (s/def ::non-blank-string (s/and string? (complement str/blank?)))
@@ -64,7 +66,7 @@
                 (fail! "Managed startup run not found" {:run-id id}))]
     (when-not (= "true" (attr-get run :harness/run))
       (fail! "Managed startup target is not a harness run" {:run-id id}))
-    run))
+    (guidance/validation-run rt run)))
 
 (defn- require-caller [rt by-identity]
   (when by-identity
@@ -372,20 +374,6 @@
   "Validate identity and invocation before accepting positive legacy evidence."
   legacy/validate-outcome!)
 
-(defn- context-result [run attached]
-  {:schema managed-context-schema
-   :run-id (:id run)
-   :harness (attr-get run :harness/harness)
-   :native-session-id (attr-get run :harness/session-id)
-   :identity (:identity attached)
-   :strand-id (:strand-id attached)
-   :result (:result attached)
-   :instruction (:instruction attached)
-   :context {:schema managed-context-schema
-             :identity-instruction (:instruction attached)
-             :appended-system-prompts
-             (or (attr-get run :harness/appended-system-prompts) [])}})
-
 (defn- attachment-result [identity-strand]
   (let [friendly-id (attr-get identity-strand :identity/id)]
     {:identity friendly-id
@@ -394,7 +382,7 @@
      :instruction (identity-instruction friendly-id)}))
 
 (defn- attach-validated!
-  [rt run native-session-id]
+  [rt run native-session-id fetch-guidance?]
   (managed-identity/with-identity-guard
     rt
     (fn []
@@ -417,8 +405,28 @@
                   :reservation-id
                   (attr-get run :identity/reservation-id)}))
         (if attachment-recorded?
-          (context-result run (attachment-result identity-strand))
-          (let [{:keys [identity-strand run]}
+          (managed-context/response rt run (attachment-result identity-strand)
+                                    managed-context-schema)
+          (let [attached-at (life/now)
+                guidance-patch
+                (when fetch-guidance?
+                  (guidance/fetch-patch
+                   run native-session-id attached-at))
+                run-attributes
+                (merge
+                 {:harness/session-id native-session-id
+                  :harness/native-attached "true"
+                  :harness/native-attached-at attached-at
+                  :harness/native-attachment-source "managed-startup"
+                  :harness/native-attachment-attempt
+                  (attr-get run :harness/attempt)
+                  :harness/native-attachment-invocation
+                  (attr-get run :harness/invocation)}
+                 guidance-patch)
+                _ (guidance/validate-representation!
+                   (guidance/validation-run
+                    rt (update run :attributes merge run-attributes)))
+                {:keys [identity-strand run]}
                 (managed-identity/persist-attachment!
                  rt
                  {:identity-strand identity-strand
@@ -428,17 +436,10 @@
                   (when-not already-attached?
                     {:identity/native-session-id native-session-id
                      :identity/reservation-state "attached"})
-                  :run-attributes
-                  {:harness/session-id native-session-id
-                   :harness/native-attached "true"
-                   :harness/native-attached-at
-                   (str (java.time.Instant/now))
-                   :harness/native-attachment-source "managed-startup"
-                   :harness/native-attachment-attempt
-                   (attr-get run :harness/attempt)
-                   :harness/native-attachment-invocation
-                   (attr-get run :harness/invocation)}})]
-            (context-result run (attachment-result identity-strand))))))))
+                  :run-attributes run-attributes})]
+            (managed-context/response
+             rt run (attachment-result identity-strand)
+             managed-context-schema)))))))
 
 (defn startup!
   "Attach one managed run to its actual root native session.
@@ -454,9 +455,10 @@
   #_{:splint/disable [lint/locking-object]}
   (locking (catalog/publication-lock rt)
     (let [request (update request :bootstrap normalize-bootstrap)
-          run (require-run rt (get-in request [:bootstrap "run-id"]))]
-      (validate-attachment! rt run request)
-      (attach-validated! rt run (:native-session-id request)))))
+          run (require-run rt (get-in request [:bootstrap "run-id"]))
+          _ (guidance/validate-startup run (:guidance request))
+          _ (validate-attachment! rt run request)]
+      (attach-validated! rt run (:native-session-id request) true))))
 
 (defn attach-outcome!
   "Attach positive provider session evidence to a managed invocation.
@@ -489,4 +491,4 @@
                        :scope root-scope
                        :bootstrap bootstrap}]
           (validate-attachment! rt run request)
-          (attach-validated! rt run session-id))))))
+          (attach-validated! rt run session-id false))))))

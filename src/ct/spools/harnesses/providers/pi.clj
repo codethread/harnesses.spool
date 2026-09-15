@@ -3,6 +3,7 @@
   (:require [clojure.spec.alpha :as s]
             [clojure.string :as str]
             [ct.spools.harnesses :as harness]
+            [ct.spools.harnesses.internal.guidance :as guidance]
             [ct.spools.harnesses.providers.internal.outcome :as outcome]
             [millstrand.api.lifecycle.alpha :as lifecycle]
             [millstrand.api.spool.alpha :refer [attr-get fail! require-valid!]]))
@@ -49,12 +50,14 @@
   (require-valid! ::harness/harness-definition resolved-harness
                   "Pi prepare requires a resolved harness definition")
   (require-valid! ::harness/strand run "Pi prepare requires a full run strand")
-  (let [options {:mode (attribute run :harness/mode)
+  (let [run (guidance/validation-run _rt run)
+        options {:mode (attribute run :harness/mode)
                  :resumes (attribute run :harness/resumes)
                  :session-id (attribute run :harness/session-id)
                  :model (attribute run :harness/model)
                  :effort (attribute run :harness/effort)
                  :identity-prompt (attribute run :identity/prompt)
+                 :guidance-transport (guidance/transport run)
                  :appended-system-prompts
                  (or (attribute run :harness/appended-system-prompts) [])
                  :prompt (attribute run :harness/prompt)
@@ -135,7 +138,7 @@
 
 (defn- pi-command
   [{:keys [mode resumes session-id model effort identity-prompt
-           appended-system-prompts prompt extra]}]
+           appended-system-prompts prompt extra guidance-transport]}]
   (let [interactive? (= "interactive" mode)]
     (vec
      (concat
@@ -145,9 +148,12 @@
       ;; Pi reconstructs the system prompt from the launch options every time, so
       ;; a resumed run drops pinned identity and policy guidance unless it is
       ;; reapplied here.
-      (when-not (str/blank? identity-prompt)
+      (when (and (= "legacy" guidance-transport)
+                 (not (str/blank? identity-prompt)))
         ["--append-system-prompt" identity-prompt])
-      (mapcat #(vector "--append-system-prompt" %) appended-system-prompts)
+      (when (= "legacy" guidance-transport)
+        (mapcat #(vector "--append-system-prompt" %)
+                appended-system-prompts))
       (when model ["--model" model])
       (when effort ["--thinking" effort])
       extra
