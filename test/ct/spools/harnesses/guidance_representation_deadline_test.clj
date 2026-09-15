@@ -108,6 +108,7 @@
 (deftest prior-no-launch-attempt-does-not-conflict-with-current-evidence
   (let [historical
         (-> (failed-run "preflight" false false)
+            fixture/with-retired-attempt
             (assoc-in [:attributes :harness/guidance-transport] "legacy")
             (assoc-in [:attributes :harness/attempt] 2)
             (assoc-in [:attributes :harness/invocation] nil)
@@ -126,6 +127,46 @@
                      :harness/exit-code 0}))]
     (is (= "legacy" (:transport
                      (guidance/validate-representation! historical))))))
+
+(deftest retirement-retains-attempt-scoped-launch-and-custody-evidence
+  (let [run
+        (update
+         (failed-run "rendering" true true)
+         :attributes merge
+         {:harness/completion-owner-pid 101
+          :harness/completion-owner-started-at "2026-09-14T00:00:02Z"
+          :harness/completion-owner-host "host"
+          :harness/completion-owner-invocation "invocation"
+          :harness/provider-pid 102
+          :harness/provider-started-at "2026-09-14T00:00:03Z"
+          :harness/provider-host "host"
+          :harness/provider-invocation "invocation"
+          :harness/process-key "run/attempt-1"
+          :harness/process-handle "owned-handle"
+          :harness/settlement "process-exit"
+          :harness/exit-code 0})
+        retired (guidance/retire-current-attempt run)
+        evidence (get (first retired) "retired-evidence")
+        historical
+        (-> run
+            (assoc-in [:attributes :harness/guidance-attempts] retired)
+            (assoc-in [:attributes :harness/guidance-transport] "legacy")
+            (assoc-in [:attributes :harness/invocation] nil)
+            (update :attributes dissoc
+                    :harness/guidance-capability
+                    :harness/guidance-capability-sha256))]
+    (is (= #{"attempt" "invocation" "authority"
+             "attachment-session-id" "attachment-at" "attachment-source"
+             "completion-owner-pid" "completion-owner-started-at"
+             "completion-owner-host" "completion-owner-invocation"
+             "provider-pid" "provider-started-at" "provider-host"
+             "provider-invocation" "process-key" "process-handle"
+             "settlement" "exit-code"}
+           (set (keys evidence))))
+    (is (= "legacy"
+           (:transport (guidance/validate-representation! historical))))
+    (is (corrupt?
+         (update-record historical #(dissoc % "retired-evidence"))))))
 
 (deftest fetched-interactive-pi-retains-only-delayed-acknowledgement-exemption
   (let [late "2026-09-14T00:00:01Z"]
@@ -157,7 +198,8 @@
                                    "state" "failed"
                                    "failure" {"stage" "rendering"
                                               "code" "fixture"
-                                              "diagnostic" "retryable"})))
+                                              "diagnostic" "retryable"}))
+            fixture/with-retired-attempt)
         codex-retry
         (-> pi-history
             (assoc-in [:attributes :harness/harness] "codex")
@@ -180,6 +222,7 @@
 (deftest legacy-retry-selection-still-validates-native-history
   (let [selected-legacy
         (-> (fixture/with-pending-attempt (fixture/run "codex" "native-v1"))
+            fixture/with-retired-attempt
             (assoc-in [:attributes :harness/guidance-transport] "legacy")
             (update :attributes dissoc
                     :harness/guidance-capability

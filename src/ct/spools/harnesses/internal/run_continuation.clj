@@ -95,6 +95,7 @@
               (fail! "A request-bound run cannot be retried in place"
                      {:id id :request-id (attr-get run :harness/request-id)}))
           _ (runs/require-continuation-head! rt id)
+          retired-guidance-attempts (guidance/retire-current-attempt run)
           old-concrete (attr-get run :harness/harness)
           resumed? (some? (attr-get run :harness/resumes))
           managed-native-resume?
@@ -169,24 +170,32 @@
              (:harness/appended-system-prompts effective)
              guidance-selection
              (when resumed? frozen-guidance-template)
-             (attr-get run :harness/guidance-attempts))]
+             retired-guidance-attempts)
+            attributes
+            (merge
+             (runs/retry-attribute-patch
+              run {:requested requested
+                   :concrete concrete
+                   :env (:env resolved)
+                   :generated generated
+                   :overrides overrides
+                   :effective effective
+                   :cwd cwd
+                   :session-id session-id
+                   :identity-binding identity-binding})
+             guidance-patch)
+            prospective-attributes
+            (reduce-kv (fn [stored key value]
+                         (if (nil? value)
+                           (dissoc stored key)
+                           (assoc stored key value)))
+                       (:attributes run)
+                       attributes)
+            _ (guidance/validate-representation!
+               (assoc run :attributes prospective-attributes))]
         (require-valid!
          :ct.spools.harnesses/strand
-         (weaver/update!
-          rt id
-          {:attributes
-           (merge
-            (runs/retry-attribute-patch
-             run {:requested requested
-                  :concrete concrete
-                  :env (:env resolved)
-                  :generated generated
-                  :overrides overrides
-                  :effective effective
-                  :cwd cwd
-                  :session-id session-id
-                  :identity-binding identity-binding})
-            guidance-patch)})
+         (weaver/update! rt id {:attributes attributes})
          "retry! produced an invalid run strand")))))
 
 (s/fdef retry! :args (s/cat :runtime :ct.spools.harnesses/runtime :id :ct.spools.harnesses/id :request :ct.spools.harnesses/retry-request) :ret :ct.spools.harnesses/strand)

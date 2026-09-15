@@ -4,6 +4,7 @@
             [clojure.string :as str]
             [ct.spools.harnesses.internal.guidance-capability :as capability]
             [ct.spools.harnesses.internal.guidance-context :as guidance-context]
+            [ct.spools.harnesses.internal.guidance-history :as history]
             [ct.spools.harnesses.internal.guidance-prompt-controls :as prompt-controls]
             [ct.spools.harnesses.internal.guidance-representation :as representation]
             [ct.spools.harnesses.internal.lifecycle :as life]
@@ -205,6 +206,17 @@
                       (= invocation (get % "invocation")))
              %)
           (attempt-records run))))
+
+(defn retire-current-attempt
+  "Retain current native evidence before a retry replaces outer fields."
+  [run]
+  (let [{:keys [attempts]} (validate-representation! run)
+        current (current-attempt run)]
+    (if (and current (= "native-v1" (get current "transport")))
+      (let [retired (history/retire run current)]
+        (history/validate-retired! run retired)
+        (mapv #(if (= current %) retired %) attempts))
+      attempts)))
 
 (defn preflight-failure-patch
   "Return a terminal no-launch patch for execution-time native preflight failure."

@@ -102,6 +102,33 @@
        "capability-sha256"
        (:harness/guidance-capability-sha256 attributes)}])))
 
+(defn retired-record
+  "Add closed retirement evidence to native `record`."
+  [record]
+  (let [first-fetch (get record "first-fetch")
+        evidence
+        (cond-> {"attempt" (get record "attempt")
+                 "invocation" (get record "invocation")
+                 "authority" "harness-retirement/v1"
+                 "settlement" (if (contains? record "no-launch")
+                                "launch-not-started"
+                                "process-exit")}
+          (not (contains? record "no-launch"))
+          (assoc "exit-code" 0)
+          first-fetch
+          (assoc "attachment-session-id"
+                 (get first-fetch "native-session-id")
+                 "attachment-at" (get first-fetch "fetched-at")
+                 "attachment-source" "managed-startup"))]
+    (assoc record "retired-evidence" evidence)))
+
+(defn with-retired-attempt
+  "Add closed retirement evidence to attempt `index` in `run`."
+  ([run] (with-retired-attempt run 0))
+  ([run index]
+   (update-in run [:attributes :harness/guidance-attempts index]
+              retired-record)))
+
 (defn with-fetched-attempt
   "Add timely first-fetch and matching attachment evidence to `run`."
   [run]

@@ -3,6 +3,7 @@
   (:require [clojure.string :as str]
             [ct.spools.harnesses.internal.guidance-capability :as capability]
             [ct.spools.harnesses.internal.guidance-context :as context]
+            [ct.spools.harnesses.internal.guidance-history :as history]
             [ct.spools.harnesses.internal.strict-json :as strict-json]
             [millstrand.api.spool.alpha :as spool])
   (:import [java.time Instant]
@@ -168,7 +169,7 @@
 
       "native-v1"
       (do
-        (when-not (some #(= (set (keys record)) %)
+        (when-not (some #(= (set (keys (dissoc record history/retirement-key))) %)
                         (allowed-native-keys state))
           (spool/fail! "Native guidance attempt is malformed"
                        {:state state}))
@@ -194,7 +195,11 @@
                    {:transport transport}))
     record))
 
-(defn- validate-attempts! [raw-attempts]
+(defn- current-record? [run record]
+  (and (= (attribute run :harness/attempt) (get record "attempt"))
+       (= (attribute run :harness/invocation) (get record "invocation"))))
+
+(defn- validate-attempts! [run raw-attempts]
   (when-not (vector? raw-attempts)
     (spool/fail! "Guidance attempts must be a vector" {}))
   (let [attempts (mapv validate-attempt! raw-attempts)
@@ -206,6 +211,12 @@
                    {:attempts numbers}))
     (when-not (= (count invocations) (count (distinct invocations)))
       (spool/fail! "Guidance attempt invocations are duplicated" {}))
+    (doseq [record attempts
+            :when (= "native-v1" (get record "transport"))]
+      (if (current-record? run record)
+        (when (contains? record history/retirement-key)
+          (spool/fail! "Current guidance attempt contains retired evidence" {}))
+        (history/validate-retired! run record)))
     attempts))
 
 (defn- values [run]
@@ -355,7 +366,7 @@
                          {}))
         bundle-digest (:harness/guidance-bundle-sha256 representation)
         attempts (validate-attempts!
-                  (:harness/guidance-attempts representation))]
+                  run (:harness/guidance-attempts representation))]
     (when-not (and (sha? bundle-digest)
                    (= bundle-digest
                       (context/bundle-sha256 (:id run) workspace context)))

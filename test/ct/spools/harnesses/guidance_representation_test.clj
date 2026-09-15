@@ -5,6 +5,7 @@
             [ct.spools.harnesses.guidance-test :as guidance-test]
             [ct.spools.harnesses.internal.guidance :as guidance]
             [ct.spools.harnesses.internal.guidance-context :as context]
+            [ct.spools.harnesses.guidance-representation-fixture :as fixture]
             [ct.spools.harnesses.internal.guidance-representation :as representation]
             [ct.spools.harnesses.internal.strict-json :as strict-json]
             [millstrand.test.alpha :as test-alpha]))
@@ -226,7 +227,14 @@
                        [:attributes :harness/guidance-capability :schema]
                        "collision")))))
     (testing (str harness " validates every historical attempt transport")
-      (let [valid-history [(pending-attempt 1) (legacy-attempt 2)]
+      (let [native-history
+            (assoc (pending-attempt 1)
+                   "state" "failed"
+                   "failure" {"stage" "handoff"
+                              "code" "fixture"
+                              "diagnostic" "retired"})
+            valid-history [(fixture/retired-record native-history)
+                           (legacy-attempt 2)]
             legacy (update (valid-run harness "legacy") :attributes assoc
                            :harness/attempt 2
                            :harness/invocation "invocation-2"
