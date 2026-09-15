@@ -30,8 +30,11 @@
 (def ^:private deadline-key #{"deadline-at"})
 (def ^:private acknowledgement-key #{"acknowledged-at"})
 (def ^:private failure-key #{"failure"})
+(def ^:private first-fetch-key #{"first-fetch"})
 (def ^:private no-launch-key #{"no-launch"})
 (def ^:private failure-keys #{"stage" "code" "diagnostic"})
+(def ^:private first-fetch-keys
+  #{"attempt" "invocation" "fetched-at" "native-session-id" "authority"})
 (def ^:private no-launch-keys #{"attempt" "invocation" "authority"})
 (def ^:private handoff-seconds 20)
 (def ^:private validation-context-key ::validation-context)
@@ -81,15 +84,36 @@
                    (= "harness-admission/v1" (get provenance "authority")))
       (spool/fail! "Guidance no-launch provenance is malformed" {}))))
 
+(defn- valid-first-fetch! [record started-at deadline]
+  (let [provenance (get record "first-fetch")
+        fetched-at (when (map? provenance)
+                     (parse-instant! (get provenance "fetched-at")
+                                     "Guidance attempt first fetch"))]
+    (when-not (and (map? provenance)
+                   (closed? provenance first-fetch-keys)
+                   (= (get record "attempt") (get provenance "attempt"))
+                   (= (get record "invocation")
+                      (get provenance "invocation"))
+                   (nonblank? (get provenance "native-session-id"))
+                   (= "harness-managed-startup/v1"
+                      (get provenance "authority"))
+                   (not (.isBefore fetched-at started-at))
+                   (.isBefore fetched-at deadline))
+      (spool/fail! "Guidance first-fetch provenance is malformed" {}))
+    fetched-at))
+
 (defn- delayed-pi-acknowledgement? [record]
   (and (= "pi" (get record "harness"))
        (= "interactive" (get record "mode"))
+       (contains? record "first-fetch")
        (contains? #{"acknowledged" "failed"} (get record "state"))))
 
 (defn- validate-time-order! [record started-at]
   (when (contains? record "deadline-at")
     (let [deadline (parse-instant! (get record "deadline-at")
-                                   "Guidance attempt deadline")]
+                                   "Guidance attempt deadline")
+          first-fetch-at (when (contains? record "first-fetch")
+                           (valid-first-fetch! record started-at deadline))]
       (when-not (= deadline (.plusSeconds started-at handoff-seconds))
         (spool/fail! "Guidance attempt deadline is not its 20 second fence" {}))
       (when (contains? record "acknowledged-at")
@@ -97,6 +121,8 @@
               (parse-instant! (get record "acknowledged-at")
                               "Guidance attempt acknowledgement")]
           (when (or (.isBefore acknowledged-at started-at)
+                    (and first-fetch-at
+                         (.isBefore acknowledged-at first-fetch-at))
                     (and (.isAfter acknowledged-at deadline)
                          (not (delayed-pi-acknowledgement? record))))
             (spool/fail!
@@ -106,12 +132,18 @@
 (defn- allowed-native-keys [state]
   (let [base (into base-attempt-keys native-attempt-keys)]
     (case state
-      ("pending" "fetched") [(into base deadline-key)]
-      "acknowledged" [(into base (into deadline-key acknowledgement-key))]
+      "pending" [(into base deadline-key)]
+      "fetched" [(into base (into deadline-key first-fetch-key))]
+      "acknowledged" [(into base (into deadline-key
+                                       (into first-fetch-key
+                                             acknowledgement-key)))]
       "failed" [(into base (into no-launch-key failure-key))
                 (into base (into deadline-key failure-key))
                 (into base (into deadline-key
-                                 (into acknowledgement-key failure-key)))]
+                                 (into first-fetch-key failure-key)))
+                (into base (into deadline-key
+                                 (into first-fetch-key
+                                       (into acknowledgement-key failure-key))))]
       [])))
 
 (defn- validate-attempt! [raw-record]
@@ -226,6 +258,52 @@
       (spool/fail! "Frozen managed guidance exceeds its host limit" {}))
     capability-document))
 
+(defn- validate-current-first-fetch! [run record]
+  (when-let [provenance (get record "first-fetch")]
+    (when-not (and (= "true" (attribute run :harness/native-attached))
+                   (= (get record "attempt")
+                      (attribute run :harness/native-attachment-attempt))
+                   (= (get record "invocation")
+                      (attribute run :harness/native-attachment-invocation))
+                   (= "managed-startup"
+                      (attribute run :harness/native-attachment-source))
+                   (= (get provenance "native-session-id")
+                      (attribute run :harness/session-id))
+                   (= (get provenance "fetched-at")
+                      (attribute run :harness/native-attached-at)))
+      (spool/fail! "Guidance first fetch does not match its attachment" {}))))
+
+(defn- validate-no-launch-evidence! [run record]
+  (when (contains? record "no-launch")
+    (let [attempt (get record "attempt")
+          invocation (get record "invocation")
+          process-key (str (:id run) "/attempt-" attempt)
+          contradictions
+          (cond-> []
+            (and (= "true" (attribute run :harness/native-attached))
+                 (= attempt
+                    (attribute run :harness/native-attachment-attempt))
+                 (= invocation
+                    (attribute run :harness/native-attachment-invocation)))
+            (conj "attachment")
+
+            (= invocation (attribute run :harness/completion-owner-invocation))
+            (conj "completion-owner-custody")
+
+            (= invocation (attribute run :harness/provider-invocation))
+            (conj "provider-launch")
+
+            (and (= process-key (attribute run :harness/process-key))
+                 (some? (attribute run :harness/process-handle)))
+            (conj "process-custody")
+
+            (or (= "process-exit" (attribute run :harness/settlement))
+                (some? (attribute run :harness/exit-code)))
+            (conj "process-exit"))]
+      (when (seq contradictions)
+        (spool/fail! "Guidance no-launch provenance conflicts with launch evidence"
+                     {:evidence contradictions})))))
+
 (defn- validate-current!
   [run representation attempts]
   (let [attempt (attribute run :harness/attempt)
@@ -237,6 +315,7 @@
       (do
         (when-not (= attempt (get current "attempt"))
           (spool/fail! "Guidance current attempt does not name its history" {}))
+        (validate-no-launch-evidence! run current)
         (when invocation
           (when-not (= invocation (get current "invocation"))
             (spool/fail! "Guidance current invocation does not name its history"
@@ -258,7 +337,8 @@
                        (= (:harness/guidance-capability-sha256 representation)
                           (get current "capability-sha256")))
               (spool/fail! "Guidance current native selection does not match"
-                           {}))))))))
+                           {}))
+            (validate-current-first-fetch! run current)))))))
 
 (defn- validate-versioned! [run representation present]
   (require-common! representation present)

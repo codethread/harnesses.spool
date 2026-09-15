@@ -111,6 +111,9 @@
 (defn- active-native-run [harness state]
   (let [run (valid-run harness "native-v1")
         attributes (:attributes run)
+        fetched? (contains? #{"fetched" "acknowledged"} state)
+        fetched-at "2026-09-14T00:00:05Z"
+        session-id "fixture-native-session"
         record
         (cond-> {"attempt" 1
                  "invocation" "invocation-1"
@@ -124,13 +127,28 @@
                  (:harness/guidance-bundle-sha256 attributes)
                  "capability-sha256"
                  (:harness/guidance-capability-sha256 attributes)}
+          fetched?
+          (assoc "first-fetch"
+                 {"attempt" 1
+                  "invocation" "invocation-1"
+                  "fetched-at" fetched-at
+                  "native-session-id" session-id
+                  "authority" "harness-managed-startup/v1"})
           (= "acknowledged" state)
           (assoc "acknowledged-at" "2026-09-14T00:00:10Z"))]
-    (update run :attributes assoc
-            :harness/attempt 1
-            :harness/invocation "invocation-1"
-            :harness/started-at "2026-09-14T00:00:00Z"
-            :harness/guidance-attempts [record])))
+    (cond-> (update run :attributes assoc
+                    :harness/attempt 1
+                    :harness/invocation "invocation-1"
+                    :harness/started-at "2026-09-14T00:00:00Z"
+                    :harness/guidance-attempts [record])
+      fetched?
+      (update :attributes assoc
+              :harness/native-attached "true"
+              :harness/native-attached-at fetched-at
+              :harness/native-attachment-source "managed-startup"
+              :harness/native-attachment-attempt 1
+              :harness/native-attachment-invocation "invocation-1"
+              :harness/session-id session-id))))
 
 (deftest complete-shared-discriminator-accepts-only-valid-representations
   (testing "wholly absent historical metadata remains legacy"
@@ -280,9 +298,8 @@
                    % (guidance/current-attempt %) expired-at)]
     (is (false? (expired? fetched-pi)))
     (is (true? (expired?
-                (assoc-in fetched-pi
-                          [:attributes :harness/guidance-attempts 0 "state"]
-                          "pending"))))
+                (with-mode (active-native-run "pi" "pending")
+                  "interactive"))))
     (is (true? (expired? (with-mode fetched-pi "headless"))))
     (is (true? (expired?
                 (with-mode (active-native-run "codex" "fetched")

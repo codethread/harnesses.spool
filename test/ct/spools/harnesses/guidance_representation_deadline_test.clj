@@ -22,14 +22,16 @@
 
 (defn- acknowledged-run [harness mode acknowledged-at]
   (-> (fixture/with-pending-attempt (fixture/run harness "native-v1"))
+      fixture/with-fetched-attempt
       (assoc-in [:attributes :harness/mode] mode)
       (assoc-in [:attributes :harness/guidance-attempts 0 "mode"] mode)
       (update-record #(assoc % "state" "acknowledged"
                              "acknowledged-at" acknowledged-at))))
 
 (defn- failed-run [stage include-deadline? include-acknowledgement?]
-  (let [base (fixture/with-pending-attempt
-               (fixture/run "codex" "native-v1"))]
+  (let [base (cond-> (fixture/with-pending-attempt
+                       (fixture/run "codex" "native-v1"))
+               include-acknowledgement? fixture/with-fetched-attempt)]
     (update-record
      base
      #(cond-> (assoc %
@@ -87,11 +89,66 @@
       (is (corrupt? (assoc-in run [:attributes :harness/settlement]
                               "process-exit"))))))
 
+(deftest no-launch-rejects-matching-durable-launch-evidence
+  (let [valid (failed-run "preflight" false false)
+        evidence
+        [{:harness/native-attached "true"
+          :harness/native-attachment-attempt 1
+          :harness/native-attachment-invocation "invocation"}
+         {:harness/completion-owner-invocation "invocation"}
+         {:harness/provider-invocation "invocation"}
+         {:harness/process-key "run/attempt-1"
+          :harness/process-handle "owned-handle"}
+         {:harness/settled "true"
+          :harness/settlement "process-exit"
+          :harness/exit-code 0}]]
+    (doseq [attributes evidence]
+      (is (corrupt? (update valid :attributes merge attributes))))))
+
+(deftest prior-no-launch-attempt-does-not-conflict-with-current-evidence
+  (let [historical
+        (-> (failed-run "preflight" false false)
+            (assoc-in [:attributes :harness/guidance-transport] "legacy")
+            (assoc-in [:attributes :harness/attempt] 2)
+            (assoc-in [:attributes :harness/invocation] nil)
+            (update :attributes dissoc
+                    :harness/guidance-capability
+                    :harness/guidance-capability-sha256)
+            (update-in [:attributes :harness/guidance-attempts]
+                       conj {"attempt" 2
+                             "invocation" "legacy-invocation"
+                             "transport" "legacy"
+                             "state" "not-required"
+                             "started-at" "2026-09-14T00:00:01Z"})
+            (update :attributes merge
+                    {:harness/settled "true"
+                     :harness/settlement "process-exit"
+                     :harness/exit-code 0}))]
+    (is (= "legacy" (:transport
+                     (guidance/validate-representation! historical))))))
+
 (deftest fetched-interactive-pi-retains-only-delayed-acknowledgement-exemption
   (let [late "2026-09-14T00:00:01Z"]
     (is (not (corrupt? (acknowledged-run "pi" "interactive" late))))
     (is (corrupt? (acknowledged-run "pi" "headless" late)))
     (is (corrupt? (acknowledged-run "codex" "interactive" late)))))
+
+(deftest delayed-pi-requires-timely-matching-first-fetch-evidence
+  (let [valid (acknowledged-run
+               "pi" "interactive" "2026-09-14T00:00:01Z")]
+    (doseq [run [(update-record valid #(dissoc % "first-fetch"))
+                 (update-record valid #(assoc-in % ["first-fetch" "attempt"] 2))
+                 (update-record valid #(assoc-in % ["first-fetch" "invocation"]
+                                                 "other-invocation"))
+                 (update-record valid #(assoc-in % ["first-fetch" "fetched-at"]
+                                                 "2026-09-14T00:00:00Z"))
+                 (update-record valid #(assoc-in % ["first-fetch" "authority"]
+                                                 "adapter"))
+                 (assoc-in valid [:attributes :harness/session-id]
+                           "conflicting-session")
+                 (assoc-in valid [:attributes :harness/native-attached-at]
+                           "2026-09-13T23:59:51Z")]]
+      (is (corrupt? run)))))
 
 (deftest historical-pi-acknowledgement-keeps-its-own-origin
   (let [pi-history
@@ -178,6 +235,9 @@
                              {:harness/attempt 1
                               :harness/invocation nil
                               :harness/native-attached "true"
+                              :harness/native-attachment-attempt 1
+                              :harness/native-attachment-invocation
+                              "retired-native"
                               :harness/settled "true"
                               :harness/settlement "process-exit"
                               :harness/guidance-attempts

@@ -101,3 +101,27 @@
        "bundle-sha256" (:harness/guidance-bundle-sha256 attributes)
        "capability-sha256"
        (:harness/guidance-capability-sha256 attributes)}])))
+
+(defn with-fetched-attempt
+  "Add timely first-fetch and matching attachment evidence to `run`."
+  [run]
+  (let [record (get-in run [:attributes :harness/guidance-attempts 0])
+        session-id "fixture-native-session"
+        fetched-at "2026-09-13T23:59:50Z"]
+    (-> run
+        (assoc-in [:attributes :harness/guidance-attempts 0 "state"] "fetched")
+        (assoc-in
+         [:attributes :harness/guidance-attempts 0 "first-fetch"]
+         {"attempt" (get record "attempt")
+          "invocation" (get record "invocation")
+          "fetched-at" fetched-at
+          "native-session-id" session-id
+          "authority" "harness-managed-startup/v1"})
+        (update :attributes assoc
+                :harness/native-attached "true"
+                :harness/native-attached-at fetched-at
+                :harness/native-attachment-source "managed-startup"
+                :harness/native-attachment-attempt (get record "attempt")
+                :harness/native-attachment-invocation
+                (get record "invocation")
+                :harness/session-id session-id))))

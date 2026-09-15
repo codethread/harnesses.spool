@@ -387,8 +387,8 @@
           document)))))
 
 (defn fetch-patch
-  "Return the exact-current native attempt transition to fetched."
-  [run]
+  "Return a timely exact-current transition with local first-fetch evidence."
+  [run native-session-id fetched-at]
   (when (native? run)
     (let [record (current-attempt run)
           state (get record "state")]
@@ -396,8 +396,20 @@
         (spool/fail! "Native guidance cannot be fetched in its current state"
                      {:run-id (:id run) :state state}))
       (when (= "pending" state)
+        (when (deadline-expired? run record (Instant/parse fetched-at))
+          (spool/fail! "Native guidance first fetch crossed its handoff deadline"
+                       {:run-id (:id run) :attempt (get record "attempt")}))
         {:harness/guidance-attempts
-         (mapv #(if (= record %) (assoc % "state" "fetched") %)
+         (mapv #(if (= record %)
+                  (assoc %
+                         "state" "fetched"
+                         "first-fetch"
+                         {"attempt" (get record "attempt")
+                          "invocation" (get record "invocation")
+                          "fetched-at" fetched-at
+                          "native-session-id" native-session-id
+                          "authority" "harness-managed-startup/v1"})
+                  %)
                (attempt-records run))}))))
 
 (defn bundle

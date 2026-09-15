@@ -28,4 +28,10 @@
          #(harnesses/create! runtime request)))
      (defn begin-native-interactive-fixture! [runtime id]
        (with-native-interactive-fixture
-         #(harnesses/begin-attempt! runtime id)))))
+         #(harnesses/begin-attempt! runtime id)))
+     (defn retime-fetched-guidance [record]
+       (-> record
+           (assoc "started-at" "2026-09-13T23:59:40Z"
+                  "deadline-at" "2026-09-14T00:00:00Z")
+           (assoc-in ["first-fetch" "fetched-at"]
+                     "2026-09-13T23:59:50Z")))))

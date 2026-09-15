@@ -136,6 +136,29 @@
     :harness/stop-requested-at (life/now)
     :harness/stop-reason stop-reason}))
 
+(defn- expire-at! [rt run now]
+  (let [record (attempt-record run)]
+    (when-not record
+      (spool/fail! "Native guidance run has no current attempt record"
+                   {:run-id (:id run)}))
+    (if-not (guidance/deadline-expired? run record now)
+      run
+      (let [diagnostic
+            (str "Native guidance handoff deadline expired for run "
+                 (:id run) " attempt " (get record "attempt")
+                 ". Repair the reviewed adapter/configuration or "
+                 "explicitly submit legacy work after settlement.")
+            failure {"stage" "handoff"
+                     "code" "acknowledgement-timeout"
+                     "diagnostic" diagnostic}]
+        (guidance/validation-run
+         rt
+         (weaver/update!
+          rt (:id run)
+          {:attributes
+           (failure-attributes
+            run record failure "native guidance handoff timed out")}))))))
+
 (defn expire!
   "Fail an overdue exact-current native handoff.
 
@@ -156,26 +179,12 @@
                         (spool/attr-get run :harness/invocation))
                      (guidance/native? run))
           run
-          (let [record (attempt-record run)]
-            (when-not record
-              (spool/fail! "Native guidance run has no current attempt record"
-                           {:run-id (:id run)}))
-            (if-not (guidance/deadline-expired? run record)
-              run
-              (let [diagnostic
-                    (str "Native guidance handoff deadline expired for run "
-                         (:id run) " attempt " (get record "attempt")
-                         ". Repair the reviewed adapter/configuration or "
-                         "explicitly submit legacy work after settlement.")
-                    failure {"stage" "handoff"
-                             "code" "acknowledgement-timeout"
-                             "diagnostic" diagnostic}]
-                (weaver/update!
-                 rt (:id run)
-                 {:attributes
-                  (failure-attributes
-                   run record failure
-                   "native guidance handoff timed out")})))))))))
+          (expire-at! rt run (java.time.Instant/now)))))))
+
+(defn- validate-prospective! [rt run attributes]
+  (guidance/validate-representation!
+   (guidance/validation-run rt (update run :attributes merge attributes)))
+  attributes)
 
 (defn acknowledge!
   "Record or replay one exact adapter-handoff acknowledgement."
@@ -194,7 +203,9 @@
               (spool/fail! "Guidance acknowledgement targets a legacy run"
                            {:run-id (:id run)}))
             (validate-receipt-fences! run receipt)
-            (let [run (expire! rt run)
+            (let [transition-at (life/now)
+                  run (expire-at! rt run
+                                  (java.time.Instant/parse transition-at))
                   record (attempt-record run)
                   state (get record "state")]
               (case state
@@ -205,10 +216,12 @@
                   (weaver/update!
                    rt (:id run)
                    {:attributes
-                    (update-record run record
-                                   (assoc record
-                                          "state" "acknowledged"
-                                          "acknowledged-at" (life/now)))})
+                    (validate-prospective!
+                     rt run
+                     (update-record run record
+                                    (assoc record
+                                           "state" "acknowledged"
+                                           "acknowledged-at" transition-at)))})
                   (result receipt "recorded" "acknowledged"))
                 (spool/fail! "Guidance acknowledgement has an invalid state"
                              {:run-id (:id run) :state state})))))))))

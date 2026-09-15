@@ -9,7 +9,7 @@
             [ct.spools.harnesses.internal.guidance-process-identity :as identity]
             [ct.spools.harnesses.internal.strict-json :as strict-json])
   (:import [java.lang ProcessHandle]
-           [java.util.concurrent TimeUnit]))
+           [java.util.concurrent CountDownLatch TimeUnit]))
 
 (defn- capability-document []
   {"schema" "millstrand.agent-guidance-capability/v1"
@@ -139,6 +139,22 @@
   (count (filter #(= thread-name (.getName ^Thread %))
                  (keys (Thread/getAllStackTraces)))))
 
+(defn- await-uninterruptibly! [^CountDownLatch latch]
+  (loop []
+    (when-not (try
+                (.await latch)
+                true
+                (catch InterruptedException _ false))
+      (recur))))
+
+(defn- workers-retired? []
+  (loop [remaining 200]
+    (if (zero? (thread-count "guidance-admission-worker"))
+      true
+      (if (zero? remaining)
+        false
+        (do (Thread/sleep 10) (recur (dec remaining)))))))
+
 (defn- process-for-root? [root]
   (with-open [handles (ProcessHandle/allProcesses)]
     (boolean
@@ -216,24 +232,43 @@
 
 (deftest scanner-birth-observation-shares-the-admission-deadline
   (with-scanner-profile
-    :finite-flood
+    :stalled
     (fn [{:keys [root profile]}]
       (let [original-retain identity/retain
-            {:keys [error elapsed-millis]}
-            (with-redefs [identity/retain
-                          (fn [handle role]
-                            (when (= "ownership-scanner" role)
-                              (Thread/sleep 3100))
-                            (original-retain handle role))]
-              (run-profile profile))
-            anchor-pid (pid-from (io/file root "anchor.pid"))
-            helper-pid (pid-from (io/file root "helper.pid"))]
-        (is (re-find #"Guidance preflight timed out" (ex-message error)))
-        (is (< elapsed-millis 3000.0))
-        (is (not (alive-pid? anchor-pid)))
-        (is (not (alive-pid? helper-pid)))
-        (is (false? (process-for-root? root)))
-        (is (zero? (thread-count "guidance-admission-worker")))))))
+            original-direct identity/retain-direct
+            entered (CountDownLatch. 1)
+            release (CountDownLatch. 1)
+            scanner (atom nil)
+            unrelated (start-sleep!)]
+        (try
+          (let [{:keys [error elapsed-millis]}
+                (with-redefs
+                 [identity/retain-direct
+                  (fn [& args]
+                    (let [retained (apply original-direct args)]
+                      (when (= "direct-ownership-scanner" (:role retained))
+                        (reset! scanner retained))
+                      retained))
+                  identity/retain
+                  (fn [handle role]
+                    (when (= "ownership-scanner" role)
+                      (.countDown entered)
+                      (await-uninterruptibly! release))
+                    (original-retain handle role))]
+                  (run-profile profile))
+                anchor-pid (pid-from (io/file root "anchor.pid"))]
+            (is (zero? (.getCount entered)))
+            (is (re-find #"Guidance preflight timed out" (ex-message error)))
+            (is (< elapsed-millis 3200.0))
+            (is @scanner)
+            (is (not (identity/live? @scanner)))
+            (is (not (alive-pid? anchor-pid)))
+            (is (.isAlive unrelated))
+            (is (false? (process-for-root? root))))
+          (finally
+            (.countDown release)
+            (is (workers-retired?))
+            (stop! unrelated)))))))
 
 (deftest delayed-scanner-liveness-cannot-block-revocation-or-signal-late
   (with-scanner-profile

@@ -110,9 +110,20 @@
     (catch Throwable error
       (swap! errors conj error))))
 
+(defn- signal-original! [retained deadline]
+  (admission-deadline/owned!
+   {:work-deadline
+    (- deadline (.toNanos TimeUnit/MILLISECONDS scanner-retirement-millis))
+    :deadline deadline}
+   "direct-ownership-scanner-retirement"
+   #(authority/run! % "direct-ownership-scanner-signal"
+                    (:destroy! retained))))
+
 (defn- cleanup-scanner!
-  [process scanner-identity executor streams deadline remaining-nanos]
+  [process signal-original! scanner-identity executor streams deadline
+   remaining-nanos]
   (let [errors (atom [])]
+    (attempt-cleanup! errors signal-original!)
     (when-let [retained @scanner-identity]
       (attempt-cleanup!
        errors
@@ -129,14 +140,15 @@
             #(identity/signal! retained %))))))
     (attempt-cleanup!
      errors
-     (fn []
-       (admission-deadline/owned!
-        {:work-deadline
-         (- deadline (.toNanos TimeUnit/MILLISECONDS
-                               scanner-retirement-millis))
-         :deadline deadline}
-        "direct-ownership-scanner-retirement"
-        #(authority/run! % "direct-ownership-scanner-signal"
+     #(admission-deadline/owned!
+       {:work-deadline
+        (- deadline (.toNanos TimeUnit/MILLISECONDS
+                              scanner-retirement-millis))
+        :deadline deadline}
+       "direct-ownership-scanner-fallback"
+       (fn [operation-authority]
+         (authority/run! operation-authority
+                         "direct-ownership-scanner-fallback-signal"
                          (fn [] (.destroyForcibly process))))))
     (attempt-cleanup!
      errors
@@ -193,10 +205,18 @@
   "Run one reviewed cleanup scanner with independent bounded drains."
   [profile process-environment root scanner deadline remaining-nanos]
   (let [scan-deadline (scanner-deadline deadline)
-        budget {:work-deadline scan-deadline :deadline deadline}
+        process (atom nil)
+        direct-scanner (atom nil)
+        scanner-signalled? (atom false)
+        signal-scanner!
+        #(when (and @direct-scanner
+                    (compare-and-set! scanner-signalled? false true))
+           (signal-original! @direct-scanner deadline))
+        budget {:work-deadline scan-deadline
+                :deadline deadline
+                :on-revoked signal-scanner!}
         budget! #(when-not (pos? (remaining-nanos scan-deadline))
                    (timed-out! "closure-verification"))
-        process (atom nil)
         scanner-identity (atom nil)
         executor (atom nil)
         streams (atom [])]
@@ -223,6 +243,7 @@
                                 (.toHandle started)
                                 "direct-ownership-scanner"
                                 (fn [] (.destroyForcibly started)))]
+                    (reset! direct-scanner direct)
                     (reset! scanner-identity direct)
                     started))))
              handle (.toHandle scanner-process)
@@ -258,5 +279,5 @@
            (parse-output! (decode-utf8 stdout-bytes "stdout")))))
      (fn []
        (when @process
-         (cleanup-scanner! @process scanner-identity @executor @streams
-                           deadline remaining-nanos))))))
+         (cleanup-scanner! @process signal-scanner! scanner-identity
+                           @executor @streams deadline remaining-nanos))))))

@@ -21,11 +21,11 @@
         record (first (guidance/attempt-records run))
         pi-run (-> (fixture/run "pi" "native-v1")
                    fixture/with-pending-attempt
+                   fixture/with-fetched-attempt
                    (assoc-in [:attributes :harness/mode] "interactive")
                    (assoc-in [:attributes :harness/guidance-attempts 0 "mode"]
                              "interactive"))
-        pi-record (assoc (first (guidance/attempt-records pi-run))
-                         "state" "fetched")
+        pi-record (first (guidance/attempt-records pi-run))
         after (Instant/parse "2026-09-14T00:00:01Z")]
     (is (true? (guidance/deadline-expired? run record after)))
     (is (false? (guidance/deadline-expired? pi-run pi-record after)))

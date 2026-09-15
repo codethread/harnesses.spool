@@ -5,6 +5,7 @@
             [ct.spools.harnesses.assignment-test]
             [ct.spools.harnesses.assignment-concurrency-test]
             [ct.spools.harnesses.execution-assignment-test]
+            [ct.spools.harnesses.guidance-acknowledgement-timestamp-test]
             [ct.spools.harnesses.executors.agent-test]
             [ct.spools.harnesses.guidance-capability-test]
             [ct.spools.harnesses.guidance-capability-deadline-test]
@@ -49,6 +50,7 @@
   '[ct.spools.harnesses.agent-bin-test
     ct.spools.harnesses.assignment-test
     ct.spools.harnesses.assignment-concurrency-test
+    ct.spools.harnesses.guidance-acknowledgement-timestamp-test
     ct.spools.harnesses.executors.agent-test
     ct.spools.harnesses.guidance-capability-test
     ct.spools.harnesses.guidance-capability-deadline-test

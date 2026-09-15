@@ -404,10 +404,10 @@
                            rt (:id current)
                            {:attributes
                             {:harness/started-at "2026-09-13T23:59:40Z"
+                             :harness/native-attached-at
+                             "2026-09-13T23:59:50Z"
                              :harness/guidance-attempts
-                             [(assoc record
-                                     "started-at" "2026-09-13T23:59:40Z"
-                                     "deadline-at" "2026-09-14T00:00:00Z")]}}))
+                             [(retime-fetched-guidance record)]}}))
                         fetched-pi
                         (create-native-interactive-fixture!
                          rt {:harness :native-codex :mode :interactive
@@ -442,10 +442,11 @@
                             {:harness/guidance-capability-sha256
                              pi-capability-sha
                              :harness/started-at "2026-09-13T23:59:40Z"
+                             :harness/native-attached-at
+                             "2026-09-13T23:59:50Z"
                              :harness/guidance-attempts
-                             [(assoc (assoc record "harness" "pi")
-                                     "started-at" "2026-09-13T23:59:40Z"
-                                     "deadline-at" "2026-09-14T00:00:00Z"
+                             [(assoc (retime-fetched-guidance record)
+                                     "harness" "pi"
                                      "capability-sha256" pi-capability-sha)]}}))
                         _ (Thread/sleep 1100)
                         _ (execution/open-execution! {:runtime rt})
@@ -489,8 +490,7 @@
         (is (true? (:positive-no-write result)))
         (is (= ["failed" "false" "no-terminal-evidence"]
                (:unknown result)))
-        (is (re-find #"corrupt partial guidance metadata"
-                     (:malformed-error result)))
+        (is (re-find #"corrupt partial guidance metadata" (:malformed-error result)))
         (is (true? (:malformed-no-write result)))
         (is (= ["failed" "bootstrap"
                 "native guidance handoff timed out"]
