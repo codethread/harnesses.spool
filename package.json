@@ -1,0 +1,48 @@
+{
+  "name": "@codethread/harnesses",
+  "version": "0.1.0",
+  "description": "Harness runtime and Millstrand identity adapters for Codex and Pi",
+  "type": "module",
+  "files": [
+    "plugins/millstrand-identity",
+    "scripts/managed-guidance-preflight.mjs",
+    "pnpm-lock.yaml"
+  ],
+  "exports": {
+    "./pi/millstrand-identity": "./plugins/millstrand-identity/pi/index.ts",
+    "./pi/millstrand-identity/context": "./plugins/millstrand-identity/pi/context.ts",
+    "./pi/millstrand-identity/managed-guidance": "./plugins/millstrand-identity/pi/managed-guidance.ts",
+    "./pi/millstrand-identity/native-identity": "./plugins/millstrand-identity/pi/native-identity.ts"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "format:plugins": "prettier --write package.json .codex-plugin plugins/millstrand-identity scripts/managed-guidance-preflight.mjs scripts/managed-guidance-preflight.test.ts",
+    "format:plugins:check": "prettier --check package.json .codex-plugin plugins/millstrand-identity scripts/managed-guidance-preflight.mjs scripts/managed-guidance-preflight.test.ts",
+    "test:plugins": "vitest run plugins/millstrand-identity/pi scripts/managed-guidance-preflight.test.ts",
+    "test:codex-hooks": "pnpm test:codex-hooks:cleanup && node ./plugins/millstrand-identity/.codex-plugin/conformance/run.mjs",
+    "test:codex-hooks:cleanup": "node ./plugins/millstrand-identity/.codex-plugin/conformance/signal-cleanup.mjs",
+    "test:codex-hooks:live": "bash ./plugins/millstrand-identity/.codex-plugin/conformance/live-identity.sh",
+    "typecheck:plugins": "tsc --noEmit",
+    "check:plugins": "pnpm typecheck:plugins && pnpm test:plugins && pnpm test:codex-hooks && pnpm format:plugins:check"
+  },
+  "pi": {
+    "extensions": [
+      "./plugins/millstrand-identity/pi/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@codethread/pi-coding-agent-test": "npm:@earendil-works/pi-coding-agent@0.84.4",
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@types/node": "^24.0.0",
+    "prettier": "^3.5.3",
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.3"
+  },
+  "volta": {
+    "node": "24.15.0",
+    "pnpm": "10.33.0"
+  }
+}

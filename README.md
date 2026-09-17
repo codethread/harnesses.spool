@@ -4,6 +4,40 @@
 runtime, the tracked-agent CLI, process custody, and the Claude, Codex, Cursor,
 and Pi providers.
 
+## Native identity plugins
+
+This repository owns the focused Millstrand identity data package for Codex and
+Pi under [`plugins/millstrand-identity`](plugins/millstrand-identity/README.md).
+The package resolves native session bindings, publishes Pi lifecycle data,
+propagates parent identity/workspace data to children, and implements the
+optional managed-guidance protocol. It deliberately does not own consumer UI:
+prompt owners, statuslines, and other extensions decide how to display the
+published identity.
+
+Install this checkout as a Pi package to load the standalone data extension:
+
+```text
+pi install /absolute/path/to/harnesses.spool
+```
+
+A larger Pi package may instead depend on `@codethread/harnesses` and compose
+`createMillstrandIdentityLifecycle` into its own entrypoint. Public imports are
+available from `@codethread/harnesses/pi/millstrand-identity`.
+
+Add the checkout as a Codex marketplace to install the native startup hooks:
+
+```text
+codex plugin marketplace add /absolute/path/to/harnesses.spool
+```
+
+Enable `millstrand-identity@harnesses`. The plugin owns only `SessionStart` and
+`SubagentStart`; dialogue capture and other harness UI remain separate.
+
+Run `pnpm check:plugins` for Pi unit/preflight checks, Codex 0.154.0 CLI
+conformance, and formatting. Installing these adapters does not activate the
+managed `native-v1` transport while Harnesses' production capability allowlist
+remains empty.
+
 ## Activation model
 
 Provider namespaces expose inert Millstrand declarations. Requiring one makes
@@ -417,8 +451,8 @@ separate vector positions. Older rows with no guidance attributes remain legacy;
 a partial versioned representation is corruption rather than a downgrade signal.
 
 `native-v1` is deliberately unavailable in this release. Harnesses' production
-capability allowlist is empty until the Agents adapter artifacts and exact Codex
-0.154.0/Pi 0.84.4 host profiles are independently accepted. An explicit native
+capability allowlist is empty until the repository-owned adapter artifacts and
+exact Codex 0.154.0/Pi 0.84.4 host profiles are independently accepted. An explicit native
 request therefore fails before run publication or identity reservation with the
 remedy to submit legacy work. Native interactive selection is also rejected for
 fresh work, continuation, retry, and queued execution revalidation because a

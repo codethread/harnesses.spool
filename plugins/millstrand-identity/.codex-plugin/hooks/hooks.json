@@ -1,0 +1,30 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${PLUGIN_ROOT}/.codex-plugin/hooks/identity.sh\"",
+            "timeout": 18,
+            "statusMessage": "Binding Millstrand identity",
+            "additionalContextLimit": 4096
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${PLUGIN_ROOT}/.codex-plugin/hooks/identity.sh\"",
+            "timeout": 18,
+            "statusMessage": "Binding Millstrand child identity",
+            "additionalContextLimit": 4096
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "session_id": "0199-0000-7000-8000-000000000001",
+  "turn_id": "0199-0000-7000-8000-000000000010",
+  "transcript_path": "/workspace/project/.codex/session.jsonl",
+  "cwd": "/workspace/project",
+  "hook_event_name": "SubagentStart",
+  "model": "gpt-5-codex",
+  "permission_mode": "default",
+  "agent_id": "0199-0000-7000-8000-000000000011",
+  "agent_type": "worker"
+}

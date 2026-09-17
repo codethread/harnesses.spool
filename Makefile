@@ -2,12 +2,15 @@ CLJ := clojure
 CLJ_KONDO := clj-kondo
 CLJ_KONDO_VERSION := 2026.08.04
 
-.PHONY: test format format-fix lint lint-splint check check-clj-kondo \
+.PHONY: test test-plugins format format-fix lint lint-splint check check-clj-kondo \
 	kondo kondo-import kondo-import-root kondo-import-workspace \
 	kondo-lint kondo-lint-root kondo-lint-workspace lsp-diagnostics
 
 test:
 	clojure -M:test
+
+test-plugins:
+	pnpm check:plugins
 
 format:
 	clojure -M:format
@@ -71,4 +74,4 @@ check-clj-kondo:
 lint-splint:
 	clojure -M:lint/splint
 
-check: format kondo lint-splint test
+check: format kondo lint-splint test test-plugins
