@@ -241,6 +241,10 @@ function run(command, args, request, { input = "", timeout = 5_000 } = {}) {
     child.stderr.on("data", (chunk) => {
       stderr = append(stderr, chunk, STDERR_MAX_BYTES, "stderr");
     });
+    child.stdin.on("error", (error) => {
+      if (input.length === 0 && error.code === "EPIPE") return;
+      rejectOnce(error);
+    });
     child.on("error", rejectOnce);
     child.on("close", (code) => {
       if (done) return;
