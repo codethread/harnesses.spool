@@ -1,6 +1,8 @@
 CLJ := clojure
 CLJ_KONDO := clj-kondo
 CLJ_KONDO_VERSION := 2026.08.04
+NODE_BIN := $(dir $(shell node -p 'process.execPath'))
+export PATH := $(NODE_BIN):$(PATH)
 
 .PHONY: test test-plugins format format-fix lint lint-splint check check-clj-kondo \
 	kondo kondo-import kondo-import-root kondo-import-workspace \
