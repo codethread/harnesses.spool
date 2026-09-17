@@ -1,0 +1,6 @@
+{
+  "name": "millstrand-identity",
+  "version": "0.1.0",
+  "description": "Native Codex and Pi identity data adapters for Millstrand.",
+  "hooks": "./.codex-plugin/hooks/hooks.json"
+}
