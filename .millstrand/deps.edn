@@ -15,6 +15,10 @@
   {:git/url "https://github.com/codethread/millhouse.spool.git"
    :git/sha "f80b80c8697e48a6ce56344372a32136d2bf279c"
    :deps/root "spools/kanban"}
+  millhouse.spools/land
+  {:git/url "https://github.com/codethread/millhouse.spool.git"
+   :git/sha "f80b80c8697e48a6ce56344372a32136d2bf279c"
+   :deps/root "spools/land"}
   codethread/devflow
   {:git/url "https://github.com/codethread/devflow.spool.git"
    :git/sha "3d880109f68e84e9c0d019e34d6ec434daf7c8d8"
