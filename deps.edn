@@ -3,10 +3,10 @@
                                   :git/sha "310368dff9174bd889ad21d4ed8196952684eaf9"
                                   :deps/root "."}
         millhouse.spools/identity {:git/url "https://github.com/codethread/millhouse.spool.git"
-                                   :git/sha "b1955a96ad91bf2909a407859fca1565ec4b9fdb"
+                                   :git/sha "f80b80c8697e48a6ce56344372a32136d2bf279c"
                                    :deps/root "spools/identity"}
         millhouse.spools/workflow {:git/url "https://github.com/codethread/millhouse.spool.git"
-                                   :git/sha "7cfcb235848c0db6231ba2282430913580d66f2e"
+                                   :git/sha "f80b80c8697e48a6ce56344372a32136d2bf279c"
                                    :deps/root "spools/workflow"}}
  :aliases {:test {:extra-paths ["test"]
                   :jvm-opts ["--enable-native-access=ALL-UNNAMED"]
