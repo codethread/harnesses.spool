@@ -20,18 +20,26 @@ Install this checkout as a Pi package to load the standalone data extension:
 pi install /absolute/path/to/harnesses.spool
 ```
 
+Or install from GitHub:
+
+```text
+pi install git:github.com/codethread/harnesses.spool
+```
+
 A larger Pi package may instead depend on `@codethread/harnesses` and compose
 `createMillstrandIdentityLifecycle` into its own entrypoint. Public imports are
 available from `@codethread/harnesses/pi/millstrand-identity`.
 
-Add the checkout as a Codex marketplace to install the native startup hooks:
+Add this checkout as a local Codex marketplace to install the native startup
+hooks:
 
 ```text
 codex plugin marketplace add /absolute/path/to/harnesses.spool
 ```
 
-Enable `millstrand-identity@harnesses`. The plugin owns only `SessionStart` and
-`SubagentStart`; dialogue capture and other harness UI remain separate.
+The marketplace exposes the `millstrand-identity` plugin package. Enable
+`millstrand-identity@harnesses`; the plugin owns only `SessionStart` and
+`SubagentStart`, and dialogue capture and other harness UI remain separate.
 
 Run `pnpm check:plugins` for Pi unit/preflight checks, Codex 0.154.0 CLI
 conformance, and formatting. Installing these adapters does not activate the

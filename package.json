@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "description": "Harness runtime and Millstrand identity adapters for Codex and Pi",
   "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-extension"
+  ],
   "files": [
     "plugins/millstrand-identity",
     "scripts/managed-guidance-preflight.mjs",
@@ -16,8 +20,8 @@
   },
   "packageManager": "pnpm@10.33.0",
   "scripts": {
-    "format:plugins": "prettier --write package.json .codex-plugin plugins/millstrand-identity scripts/managed-guidance-preflight.mjs scripts/managed-guidance-preflight.test.ts",
-    "format:plugins:check": "prettier --check package.json .codex-plugin plugins/millstrand-identity scripts/managed-guidance-preflight.mjs scripts/managed-guidance-preflight.test.ts",
+    "format:plugins": "prettier --write package.json .agents/plugins/marketplace.json plugins/millstrand-identity scripts/managed-guidance-preflight.mjs scripts/managed-guidance-preflight.test.ts",
+    "format:plugins:check": "prettier --check package.json .agents/plugins/marketplace.json plugins/millstrand-identity scripts/managed-guidance-preflight.mjs scripts/managed-guidance-preflight.test.ts",
     "test:plugins": "vitest run plugins/millstrand-identity/pi scripts/managed-guidance-preflight.test.ts",
     "test:codex-hooks": "pnpm test:codex-hooks:cleanup && node ./plugins/millstrand-identity/.codex-plugin/conformance/run.mjs",
     "test:codex-hooks:cleanup": "node ./plugins/millstrand-identity/.codex-plugin/conformance/signal-cleanup.mjs",

@@ -1,0 +1,12 @@
+{
+  "name": "harnesses",
+  "owner": { "name": "codethread" },
+  "plugins": [
+    {
+      "name": "millstrand-identity",
+      "source": { "source": "local", "path": "./plugins/millstrand-identity" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Productivity"
+    }
+  ]
+}

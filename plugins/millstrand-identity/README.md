@@ -34,7 +34,7 @@ the new session.
 
 ## Codex
 
-Add this checkout as a Codex marketplace and enable
+Add this checkout as a local Codex marketplace and enable
 `millstrand-identity@harnesses`. The plugin registers one `SessionStart` and one
 `SubagentStart` hook. Hooks bind the actual native ID, reject duplicate
 injectors, and return the canonical identity instruction as additional developer
