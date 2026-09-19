@@ -77,6 +77,31 @@ This publishes:
 Loading `ct.spools.harnesses`, a provider namespace, or one of the execution
 namespaces alone does not publish those declarations.
 
+### Repository automatic delivery
+
+The dogfood workspace registers a repository-owned `auto-full-land` workflow
+and a bounded dispatcher. Pending, dependency-ready feature cards opt in with
+the `auto-run` label. The default assignment uses Sol with high effort, with at
+most two admitted workers. A card may override `auto-run/seat`,
+`auto-run/effort`, or `auto-run/workflow`; only workflows allowed by this
+repository are accepted.
+
+`auto-full-land` separates implementation, repository checks, CI, and the review
+transition from landing. Shared autonomous Land creates a distinct finisher
+target whose worker owns sign-off, FIFO merge, cleanup, and final card closure.
+The implementation worker cannot sign off its own change.
+
+Inspect configuration and durable one-shot receipts with:
+
+```text
+strand auto-run status
+strand workflow show auto-full-land
+```
+
+A preparation or admission error is retained on the card and is not retried
+automatically. Workspace activation is covered in a disposable Weaver world by
+running `clojure -M:auto-run-test` from `.millstrand`.
+
 ## Shared Codethread catalog
 
 Codethread consumers can use the shared configuration spool to activate the

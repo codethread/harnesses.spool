@@ -31,4 +31,8 @@
   {:git/url "https://github.com/codethread/codethread.spool.git"
    :git/sha "fc8105cefe624f4c0cd7312e0f400d650dd7e52d"
    :deps/root "spools/config"}
-  ct.spools/harnesses {:local/root ".."}}}
+  ct.spools/harnesses {:local/root ".."}}
+ :aliases
+ {:auto-run-test
+  {:extra-paths ["test"]
+   :main-opts ["-m" "harnesses.auto-run-test"]}}}

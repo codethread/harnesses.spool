@@ -35,8 +35,22 @@
                   :after [:millstrand/spools-batteries]
                   :required? true})
 
+;; Repository-owned automatic delivery policy is loaded before the sole agent
+;; executor so its workflow and dispatcher are present for the initial scan.
+(runtime/module! runtime :harnesses/auto-run-workflows
+                 {:file "me/auto_run_workflows.clj"
+                  :after [:millhouse/spools-workflow-all]
+                  :required? true})
+
+(runtime/module! runtime :harnesses/auto-run
+                 {:file "me/auto_run.clj"
+                  :after [:harnesses/auto-run-workflows
+                          :millstrand/spools-harnesses]
+                  :required? true})
+
 (codethread/register-executor!
  runtime
  [:millhouse/spools-workflow-all
   :devflow
-  :devflow/kanban-adapter])
+  :devflow/kanban-adapter
+  :harnesses/auto-run])
