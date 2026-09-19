@@ -158,6 +158,9 @@
                                      %)
                                   strands)
                             :shell/argv)
+              ci-argv (attr-get
+                       (some #(when (= "Wait for the PR checks" (:title %)) %) strands)
+                       :shell/argv)
               handoff (workflow/step-view (role-step strands "handoff-worker"))
               finisher (workflow/step-view (role-step strands "finisher"))]
           (is (= ["Implement and verify the assigned feature"]
@@ -177,6 +180,17 @@
               (is (= "sh" (first quality-argv)))
               (is (= "auto-run-quality" (nth quality-argv 3)))
               (is (= "auto/fixture-card" (nth quality-argv 4)))
+              (is (= ["gh" "pr" "checks" "auto/fixture-card" "--watch" "--fail-fast"]
+                     ci-argv))
+              (is (= [:ci] (:depends-on (step :review-card))))
+              (testing "the shared gate accepts a clean published revision"
+                (let [fixture (quality-fixture "#!/bin/sh\nexit 0\n")]
+                  (try
+                    (is (zero? (:exit (quality-result quality-argv
+                                                       (:worktree fixture)
+                                                       (:branch fixture)))))
+                    (finally
+                      (delete-tree! (:root fixture))))))
               (testing "the shared gate rejects an unbound or changed revision"
                 (doseq [[label contract mutate!]
                         [["wrong branch" "#!/bin/sh\nexit 0\n"
