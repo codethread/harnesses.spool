@@ -10,6 +10,7 @@ export PATH := $(NODE_BIN):$(PATH)
 
 test:
 	clojure -M:test
+	cd .millstrand && clojure -M:auto-run-test
 
 test-plugins:
 	pnpm check:plugins
