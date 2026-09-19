@@ -95,7 +95,10 @@
                 (is (= (attr-get receipt :auto-run/worktree)
                        (:worktree context))))))))
       (current/with-runtime rt
-        (let [result (workflow/start!
+        (let [definition (:value (workflow/resolve-workflow :auto-full-land))
+              step (fn [id]
+                     (some #(when (= id (:id %)) %) (:steps definition)))
+              result (workflow/start!
                       "test-auto-full-land"
                       :auto-full-land
                       {:card "fixture-card"
@@ -113,6 +116,14 @@
           (is (contains? gates "code"))
           (is (not (contains? gates "agent"))
               "The finisher is a deliberate handoff, not an eager agent gate")
+          (testing "publication precedes quality"
+            (let [publish (step :publish)
+                  quality (step :quality)
+                  instruction (get-in publish [:attributes "workflow/instruction"])]
+              (is (= [:implement] (:depends-on publish)))
+              (is (= [:publish] (:depends-on quality)))
+              (is (str/includes? (instruction {:branch "auto/fixture-card"})
+                                 "git push --set-upstream origin auto/fixture-card"))))
           (testing "worker and finisher have separate targets and authority"
             (is (= "step" (:role handoff) (:role finisher)))
             (is (not= (:id handoff) (:id finisher)))

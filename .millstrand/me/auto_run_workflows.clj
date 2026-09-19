@@ -25,7 +25,7 @@
                  failure-instruction))
 
 (workflow/defworkflow! auto-full-land
-  "Implement, verify, review, then hand landing to an independent finisher."
+  "Implement, publish, verify, review, then hand landing to an independent finisher."
   {:entrypoints #{:start} :param-spec ::params}
   (workflow/workflow
    "Deliver automatically"
@@ -44,13 +44,29 @@
          shared `.millstrand` world as a fixture. Add focused regression tests
          when behavior or ownership boundaries warrant them.
 
-         Run `make check` while iterating. Commit the verified work, then
-         complete this step. Do not start Land; the following steps own review
-         and the independent landing handoff.
+         Run focused checks while iterating. Commit the completed work, then
+         complete this step. Do not start Land; the following steps own
+         publication, quality, review, and the independent landing handoff.
 
          {failure-policy}
        " {:card card :failure-policy (autonomous/failure-policy card)})))
-   (shell-gate :quality "Pass repository quality checks" [:implement]
+   (workflow/step
+    :publish "Publish the committed branch before quality checks" :self
+    :depends-on [:implement]
+    (fn [{:keys [branch]}]
+      (format/prose
+       "
+         Publish the committed branch and establish its upstream before
+         repository quality runs:
+
+         ```sh
+         git push --set-upstream origin {branch}
+         ```
+
+         Do not amend, commit, or otherwise change HEAD after this step. The
+         following quality gate must validate this published revision.
+       " {:branch branch})))
+   (shell-gate :quality "Pass repository quality checks" [:publish]
                ["make" "check"] 5400)
    (workflow/step
     :prepare-pr "Publish the exact change with its review package" :self
