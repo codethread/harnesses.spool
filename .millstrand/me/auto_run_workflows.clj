@@ -17,6 +17,50 @@
 (defn- failure-instruction [{:keys [card]}]
   (autonomous/failure-policy card))
 
+(defn- replace-quality-check [script old-check new-check]
+  (if (str/includes? script old-check)
+    (str/replace-first script old-check new-check)
+    (throw (ex-info "Land quality gate no longer contains the expected check"
+                    {:check old-check}))))
+
+(def ^:private upstream-quality-check
+  (str/join
+   "\n"
+   ["upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null) \\"
+    "    || die \"branch $target has no upstream; push it before running the land quality gate\""
+    "  upstream_head=$(git rev-parse \"$upstream\") || die \"cannot read upstream $upstream\""
+    "  [ \"$upstream_head\" = \"$head_before\" ] \\"
+    "    || die \"unpushed or mismatched HEAD: local $head_before, upstream $upstream_head\""]))
+
+(def ^:private origin-quality-check
+  (str/join
+   "\n"
+   ["origin_head=$(git rev-parse \"refs/remotes/origin/$target\") \\"
+    "    || die \"cannot read refs/remotes/origin/$target; push it before running the land quality gate\""
+    "  [ \"$origin_head\" = \"$head_before\" ] \\"
+    "    || die \"unpushed or mismatched HEAD: local $head_before, origin $origin_head\""]))
+
+(def ^:private upstream-quality-check-after
+  (str/join
+   "\n"
+   ["upstream_head_after=$(git rev-parse \"$upstream\") \\"
+    "    || die \"cannot re-read upstream $upstream after quality checks\""
+    "  [ \"$upstream_head_after\" = \"$head_before\" ] \\"
+    "    || die \"upstream changed during quality checks: expected $head_before, found $upstream_head_after\""]))
+
+(def ^:private origin-quality-check-after
+  (str/join
+   "\n"
+   ["origin_head_after=$(git rev-parse \"refs/remotes/origin/$target\") \\"
+    "    || die \"cannot re-read refs/remotes/origin/$target after quality checks\""
+    "  [ \"$origin_head_after\" = \"$head_before\" ] \\"
+    "    || die \"origin/$target changed during quality checks: expected $head_before, found $origin_head_after\""]))
+
+(def ^:private auto-run-quality-gate-script
+  (-> land-support/land-quality-gate-script
+      (replace-quality-check upstream-quality-check origin-quality-check)
+      (replace-quality-check upstream-quality-check-after origin-quality-check-after)))
+
 (workflow/defworkflow! auto-full-land
   "Implement, publish, verify, review, then hand landing to an independent finisher."
   {:entrypoints #{:start} :param-spec ::params}
@@ -62,7 +106,7 @@
    (land-support/shell-gate
     :quality "Pass repository quality checks" [:publish]
     (fn [{:keys [branch]}]
-      (land-support/sh-gate land-support/land-quality-gate-script
+      (land-support/sh-gate auto-run-quality-gate-script
                             "auto-run-quality" branch))
     5400 failure-instruction)
    (workflow/step
