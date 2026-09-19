@@ -3,6 +3,7 @@
   (:require [clojure.spec.alpha :as s]
             [clojure.string :as str]
             [millhouse.spools.land.autonomous :as autonomous]
+            [millhouse.spools.land.support :as land-support]
             [millhouse.spools.workflow :as workflow]
             [millstrand.api.format.alpha :as format]))
 
@@ -15,14 +16,6 @@
 
 (defn- failure-instruction [{:keys [card]}]
   (autonomous/failure-policy card))
-
-(defn- shell-gate [id title dependencies argv timeout]
-  (workflow/gate id title :shell
-                 :depends-on dependencies
-                 :attributes {"shell/argv" argv
-                              "shell/cwd" (fn [{:keys [worktree]}] worktree)
-                              "shell/timeout-secs" timeout}
-                 failure-instruction))
 
 (workflow/defworkflow! auto-full-land
   "Implement, publish, verify, review, then hand landing to an independent finisher."
@@ -66,8 +59,12 @@
          Do not amend, commit, or otherwise change HEAD after this step. The
          following quality gate must validate this published revision.
        " {:branch branch})))
-   (shell-gate :quality "Pass repository quality checks" [:publish]
-               ["make" "check"] 5400)
+   (land-support/shell-gate
+    :quality "Pass repository quality checks" [:publish]
+    (fn [{:keys [branch]}]
+      (land-support/sh-gate land-support/land-quality-gate-script
+                            "auto-run-quality" branch))
+    5400 failure-instruction)
    (workflow/step
     :prepare-pr "Publish the exact change with its review package" :self
     :depends-on [:quality]
@@ -88,10 +85,11 @@
          only after publishing the committed revision and review package. The
          next gates independently wait for CI and verify the card transition.
        " {:card card :branch branch})))
-   (shell-gate :ci "Wait for the PR checks" [:prepare-pr]
-               (fn [{:keys [branch]}]
-                 ["gh" "pr" "checks" branch "--watch" "--fail-fast"])
-               2100)
+   (land-support/shell-gate
+    :ci "Wait for the PR checks" [:prepare-pr]
+    (fn [{:keys [branch]}]
+      ["gh" "pr" "checks" branch "--watch" "--fail-fast"])
+    2100 failure-instruction)
    (workflow/gate
     :review-card "Move the verified feature into review" :code
     :depends-on [:ci]
