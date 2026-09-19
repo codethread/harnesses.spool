@@ -26,7 +26,7 @@
 (def ^:private upstream-quality-check
   (str/join
    "\n"
-   ["upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null) \\"
+   ["  upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null) \\"
     "    || die \"branch $target has no upstream; push it before running the land quality gate\""
     "  upstream_head=$(git rev-parse \"$upstream\") || die \"cannot read upstream $upstream\""
     "  [ \"$upstream_head\" = \"$head_before\" ] \\"
@@ -35,15 +35,17 @@
 (def ^:private origin-quality-check
   (str/join
    "\n"
-   ["origin_head=$(git rev-parse \"refs/remotes/origin/$target\") \\"
-    "    || die \"cannot read refs/remotes/origin/$target; push it before running the land quality gate\""
+   ["  git fetch origin \"refs/heads/$target:refs/remotes/origin/$target\" \\"
+    "    || die \"cannot refresh refs/remotes/origin/$target from origin\""
+    "  origin_head=$(git rev-parse \"refs/remotes/origin/$target\") \\"
+    "    || die \"cannot read refreshed refs/remotes/origin/$target\""
     "  [ \"$origin_head\" = \"$head_before\" ] \\"
     "    || die \"unpushed or mismatched HEAD: local $head_before, origin $origin_head\""]))
 
 (def ^:private upstream-quality-check-after
   (str/join
    "\n"
-   ["upstream_head_after=$(git rev-parse \"$upstream\") \\"
+   ["  upstream_head_after=$(git rev-parse \"$upstream\") \\"
     "    || die \"cannot re-read upstream $upstream after quality checks\""
     "  [ \"$upstream_head_after\" = \"$head_before\" ] \\"
     "    || die \"upstream changed during quality checks: expected $head_before, found $upstream_head_after\""]))
@@ -51,8 +53,10 @@
 (def ^:private origin-quality-check-after
   (str/join
    "\n"
-   ["origin_head_after=$(git rev-parse \"refs/remotes/origin/$target\") \\"
-    "    || die \"cannot re-read refs/remotes/origin/$target after quality checks\""
+   ["  git fetch origin \"refs/heads/$target:refs/remotes/origin/$target\" \\"
+    "    || die \"cannot refresh refs/remotes/origin/$target from origin after quality checks\""
+    "  origin_head_after=$(git rev-parse \"refs/remotes/origin/$target\") \\"
+    "    || die \"cannot re-read refreshed refs/remotes/origin/$target after quality checks\""
     "  [ \"$origin_head_after\" = \"$head_before\" ] \\"
     "    || die \"origin/$target changed during quality checks: expected $head_before, found $origin_head_after\""]))
 

@@ -201,15 +201,23 @@
                           #(do (spit (io/file (:worktree %) "unpushed") "unpushed\n")
                                (git! (:worktree %) "add" ".")
                                (git! (:worktree %) "commit" "-m" "unpushed"))]
-                         ["upstream targets another origin branch" "#!/bin/sh\nexit 0\n"
+                         ["remote target advanced behind a stale tracking ref"
+                          "#!/bin/sh\nexit 0\n"
                           #(let [{:keys [worktree branch head]} %]
-                             (git! worktree "commit" "--allow-empty" "-m" "upstream revision")
-                             (git! worktree "branch" "feature/upstream")
-                             (git! worktree "push" "origin" "feature/upstream")
-                             (git! worktree "branch" "--set-upstream-to"
-                                   "origin/feature/upstream" branch)
+                             (git! worktree "commit" "--allow-empty" "-m" "remote revision")
+                             (git! worktree "push" "origin"
+                                   (str "HEAD:refs/heads/" branch))
+                             (git! worktree "reset" "--hard" head)
                              (git! worktree "update-ref"
                                    (str "refs/remotes/origin/" branch) head))]
+                         ["remote target advances during quality checks"
+                          (str "#!/bin/sh\nset -eu\n"
+                               "git commit --allow-empty -m remote-revision\n"
+                               "git push origin \"HEAD:refs/heads/$LAND_EXPECTED_BRANCH\"\n"
+                               "git reset --hard \"$LAND_EXPECTED_HEAD\"\n"
+                               "git update-ref \"refs/remotes/origin/$LAND_EXPECTED_BRANCH\" "
+                               "\"$LAND_EXPECTED_HEAD\"\n")
+                          identity]
                          ["changed tested HEAD"
                           "#!/bin/sh\nset -eu\ngit commit --allow-empty -m changed\n"
                           identity]]]
