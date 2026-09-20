@@ -18,7 +18,7 @@
     :seat "sol"
     :effort "high"
     :workflow "auto-full-land"
-    :workflows #{"auto-full-land"}
+    :workflows #{"auto-full-land" "auto-human-review"}
     :prepare 'ct.spools.codethread.auto-run-worktree/prepare!
     :enabled? true
     :max-running 2
