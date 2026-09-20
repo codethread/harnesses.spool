@@ -35,6 +35,10 @@
                            :scope "root"
                            :bootstrap
                            (harnesses/managed-bootstrap rt first-id)})
+                    _ (claim! (:id card) (attr first :identity/id)
+                              :branch "resume-owner"
+                              :worktree "/tmp/assignment-work"
+                              :run-id first-id)
                     _ (harnesses/finish!
                        rt first-id
                        {:status :done :exit-code 0 :result "done"
@@ -53,10 +57,13 @@
                  :resumed (:id resumed)
                  :argv command
                  :policy-count
-                 (count (re-seq #"close the assigned feature yourself" command))
+                 (count (re-seq #"close the assigned work target yourself" command))
                  :alias-count (count (re-seq #"Existing alias guidance\." command))
                  :explicit-count
                  (count (re-seq #"Explicit caller guidance\." command))
+                 :same-identity (= (attr first :identity/id)
+                                   (attr resumed :identity/id))
+                 :claim-count (count (kanban/ownership-history rt (:id card)))
                  :stdin (:stdin (pi/prepare rt (pi/harness rt) resumed))}))]
         (is (= 1 (:policy-count result)))
         (is (= 1 (:alias-count result)))
@@ -64,6 +71,9 @@
         (is (not (str/includes? (:argv result) "#object[")))
         (is (str/includes? (:argv result) (:resumed result)))
         (is (not (str/includes? (:argv result) (:first result))))
+        (is (not (str/includes? (:argv result) "strand kanban claim")))
+        (is (true? (:same-identity result)))
+        (is (= 1 (:claim-count result)))
         (is (= "New user primer\n" (:stdin result)))))))
 
 (deftest fresh-continuation-binds-lineage-head

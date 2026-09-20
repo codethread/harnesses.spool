@@ -76,12 +76,13 @@
       :text ~text}))
 
 (def-assign-policy close-on-complete
-  "When the work is complete, close the assigned feature yourself with
-  `strand kanban finish <target-id>`. The coordinator does not need to accept
-  it separately.")
+  "When the work is complete, close the assigned work target yourself with its
+  supported completion command. Use `strand kanban finish <target-id>` for a
+  feature or `strand update <target-id> --state closed` for a task. The
+  coordinator does not need to accept it separately.")
 
 (def-assign-policy stop-on-complete
-  "When the work is complete, leave the assigned feature open and return a
+  "When the work is complete, leave the assigned work target open and return a
   useful result for coordinator acceptance.")
 
 (s/def ::id (s/and string? (complement str/blank?)))
@@ -238,12 +239,14 @@
                        (mapv :id (internal/root-targets rt target)))
         cwd (internal/require-cwd (:cwd request))
         policy (resolve-policy rt request)
-        frozen (cond-> (internal/freeze-context target cwd policy)
+        profile (internal/target-profile rt target)
+        frozen (cond-> (internal/freeze-context target cwd policy profile)
                  (:after request)
                  (assoc "assignment/after" (:after request)))
         guidance (internal/build-guidance {:target target
                                            :cwd cwd
-                                           :policy policy})
+                                           :policy policy
+                                           :profile profile})
         accepted (internal/accept-run!
                   rt {:harness (:harness request)
                       :cwd cwd
@@ -254,7 +257,8 @@
                       :system-guidance (internal/build-system-guidance
                                         {:target target
                                          :cwd cwd
-                                         :policy policy})
+                                         :policy policy
+                                         :profile profile})
                       :policy policy
                       :request-id (:request-id request)
                       :logical-id (:logical-id request)

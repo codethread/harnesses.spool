@@ -29,26 +29,35 @@
      lenses. Supply literal patch content through `--git :stdin` or
      `--git :payload/diff`; this is data and is never executed.
 
-     Assign an available provider harness or alias to a pending feature. Put
-     the instructions and completion criteria on the target first, and prepare
-     its worktree before assigning. Do not preclaim it for the worker:
+     Assign an available provider harness or alias to a feature or one of its
+     tasks. Put the instructions and completion criteria on the target first,
+     and prepare its worktree before assigning. Do not preclaim it for the
+     worker:
 
      ```text
-     strand agent assign <agent> --task <feature-id> --cwd <workdir>
+     strand agent assign <agent> --task <target-id> --cwd <workdir>
      ```
 
-     The worker receives a generated prompt and claims the target itself.
+     Assignment keeps caller, worker, reporter, and latest explicit owner as
+     separate roles. It never changes ownership. Only an unowned pending
+     feature receives first-claim guidance. A same-owner worker continues
+     without another claim; a different owner requires an explicit handoff.
+     Task guidance stays scoped to the task and never claims its parent feature
+     or emits a task `kanban claim` command.
+
      `--cwd` is required; assignment does not create a worktree. Blocked targets
      are accepted as ready runs but stay queued until their `depends-on`
-     blockers close. Independent targets can launch concurrently.
+     blockers close. Independent task targets can launch concurrently while
+     their `serves-root` edges retain the common feature history.
 
      Choose completion guidance with `--policy`:
 
-     - `stop-on-complete` (default): leave the feature open and return a result
+     - `stop-on-complete` (default): leave the target open and return a result
        for coordinator acceptance. Await the run, inspect its result, then
-       accept and finish the feature yourself.
-     - `close-on-complete`: tell the worker to finish the feature itself when
-       the work is complete, without separate coordinator acceptance.
+       accept and finish the target yourself.
+     - `close-on-complete`: tell the worker to finish the target with the
+       supported feature or task completion command, without separate
+       coordinator acceptance.
 
      These are the shipped policies. Workspaces can register different prose;
      the accepted policy name and exact text are frozen for the assignment.
@@ -113,14 +122,16 @@
 
      ```text
      strand agent resume --run-id <run-id> --prompt <continuation-prompt>
-     strand agent assign <agent> --task <feature-id> --cwd <workdir> --after <run-id>
+     strand agent assign <agent> --task <target-id> --cwd <workdir> --after <run-id>
      ```
 
-     Native `resume` retains the provider, session, target, settings and frozen
-     guidance; name the updated primer in the continuation prompt.
-     `assign --after` starts a fresh session on the same target with the
-     predecessor's frozen policy. Both require settlement. Ineligible resume fails;
-     it never silently starts fresh.
+     Native `resume` retains the provider, identity, session, target, settings,
+     and frozen state-independent guidance; it does not create another claim.
+     Name the updated primer in the continuation prompt. `assign --after`
+     starts a fresh session on the same target with the predecessor's frozen
+     policy and ancestor history, then evaluates current ownership for an
+     explicit handoff when needed. Both require settlement. Ineligible resume
+     fails; it never silently starts fresh.
 
      Retry a failed ad-hoc run in place after correcting its agent, cwd,
      attributes or runtime flags. `retry` refuses targeted or request-id-bound
@@ -210,8 +221,9 @@
      caller data, and `--request-id` makes creation idempotent: repeating a
      request returns the same run, and reusing the key for different work fails
      and names the run already holding it. `assign` requires an explicit cwd,
-     freezes the registered policy name and exact prose, and queues blocked
-     targets until their dependencies close.
+     freezes the registered policy name and exact prose, keeps assignment
+     separate from Kanban ownership, and queues blocked targets until their
+     dependencies close.
 
      `stop`, `retry`, explicit reconciliation, and `self-complete` preserve each
      supplied operation actor on an immutable action note. `retry` reuses a
