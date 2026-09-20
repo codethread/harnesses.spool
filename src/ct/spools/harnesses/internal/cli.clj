@@ -4,7 +4,7 @@
 
 (def ^:private by-identity-flag
   {:by-identity {:type :string
-                 :doc "Friendly identity performing this operation."}})
+                 :doc "Friendly operation actor; stored without requiring a local match."}})
 
 (def ^:private assignment-flags
   "Generic work binding recorded atomically when a run is created.

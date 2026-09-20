@@ -66,7 +66,7 @@ case "$native_session_id" in
 	codex-child:v1:*) identity=fixture-child-identity ;;
 	*) identity=fixture-root-identity ;;
 esac
-instruction="Your Millstrand identity is $identity. Use $identity for identity-bearing operations; pass \`--by-identity $identity\` explicitly. Do not invent another identity."
+instruction="Your Millstrand identity is $identity. Use it as \`--owner $identity\` for \`kanban claim\` and \`--by-identity $identity\` for Kanban notes, workflow mutations, and agent operations. Keep \`--identity\` and \`--parent-identity\` for native-session references. Inspect live help; never pass an unsupported flag or invent another identity."
 result=${FAKE_STRAND_RESULT:-minted}
 resolved_workspace=$workspace
 if [[ -z "$resolved_workspace" ]]; then

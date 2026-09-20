@@ -7,7 +7,6 @@
             [ct.spools.harnesses.internal.managed-startup :as managed]
             [ct.spools.harnesses.internal.registry :as registry]
             [ct.spools.harnesses.internal.runs :as runs]
-            [millhouse.spools.identity :as identity]
             [millstrand.api.spool.alpha :refer [attr-get fail!]])
   (:import [java.util UUID]))
 
@@ -74,8 +73,6 @@
              :effective effective
              :session-id session-id
              :resumes resumes})]
-    (when by-identity
-      (identity/current rt by-identity))
     (when-not (contains? (:modes definition) mode)
       (fail! "Harness does not support requested mode"
              {:harness harness :mode mode :modes (:modes definition)}))

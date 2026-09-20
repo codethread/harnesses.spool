@@ -222,10 +222,11 @@
         (let [result (attr run :harness/result)]
           (require-valid! non-blank-string? result
                           "Completed agent run requires a non-blank result")
-          (workflow/complete!
-           workflow-run-id
-           {:step gate-id
-            :by run-id
+          (workflow/run-complete!
+           {:run-id workflow-run-id
+            :step gate-id
+            :executor "agent"
+            :executor-run-id run-id
             :attributes {"harness/result" result}})
           (stamp! run-id {"gate/delivered" "true"}))
         (catch Throwable throwable

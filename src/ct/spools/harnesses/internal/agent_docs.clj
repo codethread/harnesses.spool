@@ -157,9 +157,17 @@
      complete visible registry, including unavailable candidates and their
      reasons.
 
-     Identity-bearing commands accept `--by-identity`. On `list`, it applies the
-     caller alias's `:allow` or `:deny` visibility policy. On `run` and `resume`,
-     it records the caller as the parent of the spawned session identity.
+     Mutating commands accept `--by-identity` as operation-actor attribution.
+     They store the supplied nonblank friendly string on a durable run or action
+     note without requiring a local Identity match. Identity reconciliation may
+     later add `attributed` edges; worker `identity/id`, native binding,
+     `performed`, and explicit native `parent-of` relations stay separate.
+
+     On `list`, a uniquely resolved caller's latest performed run selects the
+     alias whose `:allow` or `:deny` visibility policy applies. An unknown,
+     ambiguous, or locally resolved caller with no performed run receives an
+     empty listing rather than an unfiltered one. Other reads accept the flag as
+     caller context but write no attribution history.
 
      Workspace startup code registers aliases. An alias can layer a model,
      effort, and provider attributes over a concrete provider harness, or try
@@ -205,9 +213,11 @@
      freezes the registered policy name and exact prose, and queues blocked
      targets until their dependencies close.
 
-     `retry` reuses a failed ad hoc run after correction, and refuses runs bound
-     to a request id or target, which should be continued or requested afresh
-     instead. `resume` creates a *new* run continuing a settled provider
+     `stop`, `retry`, explicit reconciliation, and `self-complete` preserve each
+     supplied operation actor on an immutable action note. `retry` reuses a
+     failed ad hoc run after correction, and refuses runs bound to a request id
+     or target, which should be continued or requested afresh instead. `resume`
+     creates a *new* run continuing a settled provider
      session, reusing the predecessor's exact provider, session, and initial
      guidance rather than resolving its alias again. An ineligible predecessor
      fails loudly; it never falls back to a silent fresh run.

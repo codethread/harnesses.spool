@@ -5,7 +5,7 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)
 source_plugin_root="$repo_root/plugins/millstrand-identity"
 plugin_root=
 identity_hook=
-identity_sha="f80b80c8697e48a6ce56344372a32136d2bf279c"
+identity_sha="f17ad387b2825887b736cab597b33af84cff13cb"
 identity_url="https://github.com/codethread/millhouse.spool.git"
 
 tmp_root=$(mktemp -d /tmp/cia.XXXXXX)

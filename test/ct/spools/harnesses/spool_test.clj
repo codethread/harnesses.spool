@@ -36,8 +36,9 @@
 
 (deftest every-agent-command-accepts-caller-identity
   (is (not (contains? (:subcommands cli/agent-arg-spec) "await")))
-  (doseq [path [["run"] ["show"] ["runs"] ["stop"] ["reconcile"]
-                ["retry"] ["resumable"] ["resume"] ["self-complete"] ["list"]]]
+  (doseq [path [["assign"] ["reviewers"] ["review"] ["run"] ["show"]
+                ["runs"] ["stop"] ["reconcile"] ["retry"] ["resumable"]
+                ["resume"] ["self-complete"] ["list"]]]
     (is (contains? (get-in cli/agent-arg-spec
                            (into [:subcommands]
                                  (mapcat #(vector % :subcommands) (butlast path))))
@@ -463,6 +464,9 @@
           (is (= {:allow ["oracle" "reviewer"]
                   :deny-targets #{}
                   :deny-keeps-pi true
+                  :unknown []
+                  :ambiguous []
+                  :read-count-stable true
                   :plain-list-vector true
                   :conflict-rejected true}
                  (test-alpha/repl!
@@ -496,7 +500,26 @@
                               rt 'agent
                               ["list" "--by-identity" friendly-id])))
                          allowed (listing :allow-seat)
-                         denied (listing :deny-seat)]
+                         denied (listing :deny-seat)
+                         _ (doseq [native ["duplicate-a" "duplicate-b"]]
+                             (weaver/add!
+                              rt
+                              {:title "duplicate-list-actor"
+                               :attributes
+                               {:identity/session "true"
+                                :identity/id "duplicate-list-actor"
+                                :identity/harness "pi"
+                                :identity/native-session-id native}}))
+                         before-read-count (count (weaver/list rt))
+                         unknown-list
+                         (weaver/op! rt 'agent
+                                     ["list" "--by-identity"
+                                      "unknown-list-actor"])
+                         ambiguous-list
+                         (weaver/op! rt 'agent
+                                     ["list" "--by-identity"
+                                      "duplicate-list-actor"])
+                         after-read-count (count (weaver/list rt))]
                      {:allow (mapv :name allowed)
                       :deny-targets
                       (into #{}
@@ -504,6 +527,9 @@
                             (map :name denied))
                       :deny-keeps-pi
                       (contains? (set (map :name denied)) "pi")
+                      :unknown unknown-list
+                      :ambiguous ambiguous-list
+                      :read-count-stable (= before-read-count after-read-count)
                       :plain-list-vector
                       (vector? (millstrand.api.weaver.alpha/op!
                                 rt 'agent ["list"]))
@@ -518,9 +544,10 @@
                           :attributes {}})
                         false
                         (catch clojure.lang.ExceptionInfo _ true))})))))
-        (testing "nested agent calls build identity and run provenance"
-          (is (= {:origin-to-child true
-                  :child-to-grandchild true
+        (testing "nested agent calls separate actor and worker provenance"
+          (is (= {:origin-attributed-child-run true
+                  :child-attributed-descendant-runs true
+                  :caller-is-not-native-parent true
                   :origin-performed-run true
                   :child-performed-run true
                   :grandchild-performed-runs true
@@ -575,16 +602,22 @@
                             ["resume" "--run-id" (:id grandchild-run)
                              "--interactive" "--by-identity" child-id])
                            identity-strand #(identity/current rt %)
+                           _ (identity/reconcile-attributions!
+                              rt [(:id child-run) (:id grandchild-run)
+                                  (:id resumed-run)])
                            target-ids #(into #{}
                                              (map :to_strand_id)
                                              (graph/outgoing-edges
                                               rt [(:id (identity-strand %))] %2))]
-                       {:origin-to-child
-                        (= #{(:id (identity-strand child-id))}
-                           (target-ids origin-id "parent-of"))
-                        :child-to-grandchild
-                        (= #{(:id (identity-strand grandchild-id))}
-                           (target-ids child-id "parent-of"))
+                       {:origin-attributed-child-run
+                        (= #{(:id child-run)}
+                           (target-ids origin-id "attributed"))
+                        :child-attributed-descendant-runs
+                        (= #{(:id grandchild-run) (:id resumed-run)}
+                           (target-ids child-id "attributed"))
+                        :caller-is-not-native-parent
+                        (and (empty? (target-ids origin-id "parent-of"))
+                             (empty? (target-ids child-id "parent-of")))
                         :origin-performed-run
                         (= #{(:id origin-run)}
                            (target-ids origin-id "performed"))

@@ -158,10 +158,6 @@ function absolutePath(value: unknown, label: string): string {
   return path;
 }
 
-function canonicalIdentity(identity: string): string {
-  return `Your Millstrand identity is ${identity}. Use ${identity} for identity-bearing operations; pass \`--by-identity ${identity}\` explicitly. Do not invent another identity.`;
-}
-
 function parseMetadata(
   raw: string,
 ): { transport: "legacy" } | ManagedGuidanceMetadata {
@@ -427,12 +423,6 @@ function parseBundle(
   }
   if (bundle.identity !== selection.bootstrap.identity) {
     throw new Error("guidance bundle identity fence mismatch.");
-  }
-  if (
-    bundle.context["identity-instruction"] !==
-    canonicalIdentity(bundle.identity)
-  ) {
-    throw new Error("guidance bundle identity instruction is not canonical.");
   }
   const calculated = sha256CanonicalJson([
     bundle["run-id"],

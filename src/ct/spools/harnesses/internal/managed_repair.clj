@@ -68,9 +68,6 @@
       (fn []
         (let [run (require-run rt run-id)
               identity-strand (identity/current rt identity)
-              parent (when-let [parent-identity
-                                (attr-get run :harness/caller-identity)]
-                       (identity/current rt parent-identity))
               harness (attr-get run :harness/harness)
               recorded-session (attr-get run :harness/session-id)
               run-reservation (attr-get run :identity/reservation-id)
@@ -173,7 +170,6 @@
                    rt
                    {:identity-strand identity-strand
                     :run run
-                    :parent parent
                     :identity-attributes
                     (when-not identity-reservation
                       {:identity/native-session-id native-session-id

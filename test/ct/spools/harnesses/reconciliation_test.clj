@@ -343,7 +343,11 @@
                                             :harness/reconciliation-source)}
                    :intervention? intervention?
                    :target-blocked? target-blocked?
-                   :same-session-blocked? same-session-blocked?})))]
+                   :same-session-blocked? same-session-blocked?
+                   :action-actors
+                   (mapv :by-identity
+                         (millstrand.api.notes.alpha/notes
+                          rt (:id legacy) {}))})))]
         (is (= [] (get-in result [:live :changed])))
         (is (= "live" (get-in result [:live :runs 0 :classification])))
         (is (true? (:live-abandon-refused? result)))
@@ -363,6 +367,8 @@
         (is (= [(:id (first (get-in result [:abandoned :runs])))]
                (get-in result [:abandoned :changed])))
         (is (= [] (get-in result [:repeated :changed])))
+        (is (= [(get-in result [:abandoned :runs 0 :abandoned-by])]
+               (:action-actors result)))
         (is (= {:status "stopped"
                 :substatus "abandoned"
                 :settled "false"

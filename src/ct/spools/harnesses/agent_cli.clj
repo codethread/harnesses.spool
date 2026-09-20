@@ -106,8 +106,6 @@
    :prime agent-docs/prime}
   [{:op/keys [runtime args cwd] :as ctx}]
   (require-valid! ::op-context ctx "agent op received an invalid operation context")
-  (when-let [friendly-id (:by-identity args)]
-    (identity/current runtime friendly-id))
   (require-valid!
    ::op-result
    (case (:subcommand args)
@@ -139,20 +137,21 @@
      ["guidance" "fail"]
      (harness/guidance-fail! runtime (:receipt args))
      ["stop"] (summary (execution/stop! runtime (:run-id args)
-                                        (select-keys args [:reason])))
+                                        (select-keys args [:reason
+                                                           :by-identity])))
      ["reconcile"]
      (reconciliation/reconcile!
       runtime
-      (cond-> (select-keys args [:run-id :reason :offset])
+      (cond-> (select-keys args [:run-id :reason :offset :by-identity])
         (:dry-run args) (assoc :dry-run? true)
-        (:abandon args) (assoc :abandon? true)
-        (:by-identity args) (assoc :by (:by-identity args))))
+        (:abandon args) (assoc :abandon? true)))
      ["retry"] (op-retry runtime args)
      ["resumable"] (resumable-runs runtime)
      ["resume"] (op-resume runtime args)
      ["self-complete"] (summary (harness/self-complete! runtime
                                                         (:run-id args)
-                                                        (:result args)))
+                                                        (:result args)
+                                                        (:by-identity args)))
      ["_callback-contract"] {:version 2}
      ["_started"]
      (summary (execution/mark-interactive-running!
@@ -164,11 +163,18 @@
      ["_finished"] (summary (execution/finish-interactive!
                              runtime (:run-id args) (:invocation args)
                              (:exit-code args)))
-     ["list"] (let [requesting-alias
-                    (when-let [friendly-id (:by-identity args)]
-                      (identity-alias runtime friendly-id))
-                    registry (if requesting-alias
+     ["list"] (let [attributed? (contains? args :by-identity)
+                    requesting-alias
+                    (when attributed?
+                      (identity-alias runtime (:by-identity args)))
+                    registry (cond
+                               requesting-alias
                                (harness/harnesses runtime requesting-alias)
+
+                               attributed?
+                               []
+
+                               :else
                                (harness/harnesses runtime))]
                 (if (:full args)
                   registry
@@ -236,16 +242,18 @@
          (mapv #(concise-agent-entry rt entries %)))))
 
 (defn- identity-alias [rt friendly-id]
-  (let [identity (identity/current rt friendly-id)
-        run-ids (mapv :to_strand_id
-                      (graph/outgoing-edges rt [(:id identity)] "performed"))
-        latest-run (->> run-ids
-                        (map #(weaver/show rt %))
-                        (sort-by (juxt :updated_at :id) #(compare %2 %1))
-                        first)]
-    (or (some-> latest-run (attr-get :harness/alias))
-        (fail! "Identity has no associated harness run"
-               {:identity friendly-id}))))
+  (let [matches (filterv #(and (identity/identity? %)
+                               (= friendly-id (attr-get % :identity/id)))
+                         (weaver/list rt))]
+    (when (= 1 (count matches))
+      (let [run-ids (mapv :to_strand_id
+                          (graph/outgoing-edges rt [(:id (first matches))]
+                                                "performed"))
+            latest-run (->> run-ids
+                            (map #(weaver/show rt %))
+                            (sort-by (juxt :updated_at :id) #(compare %2 %1))
+                            first)]
+        (some-> latest-run (attr-get :harness/alias))))))
 
 (defn- full-run [rt id]
   (or (weaver/show rt id) (fail! "Agent run not found" {:id id})))
@@ -444,7 +452,9 @@
       (contains? args :attributes)
       (assoc :attributes (overlay-map (:attributes args)))
       (contains? args :guidance-transport)
-      (assoc :guidance-transport (:guidance-transport args))))))
+      (assoc :guidance-transport (:guidance-transport args))
+      (contains? args :by-identity)
+      (assoc :by-identity (:by-identity args))))))
 
 (defn- op-resume [rt args]
   (let [predecessor (harness/resolve-resume-run
