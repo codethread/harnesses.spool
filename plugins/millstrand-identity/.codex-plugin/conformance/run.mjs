@@ -169,9 +169,14 @@ function run(
     let stdout = "";
     let stderr = "";
     let terminalError;
-    const stopWithError = (error) => {
+    let terminalErrorSource;
+    const recordTerminalError = (error, source) => {
       if (terminalError) return;
       terminalError = error;
+      terminalErrorSource = source;
+    };
+    const stopWithError = (error) => {
+      recordTerminalError(error, "execution");
       terminateProcessTree(child);
     };
     const timer = setTimeout(() => {
@@ -196,13 +201,46 @@ function run(
       clearTimeout(timer);
       reject(error);
     });
+    child.stdin.on("error", (error) => {
+      recordTerminalError(error, "stdin");
+    });
     child.on("close", (code, signal) => {
       clearTimeout(timer);
-      if (terminalError) reject(terminalError);
+      if (terminalErrorSource === "stdin") {
+        const invocation = JSON.stringify([command, ...args]);
+        const outcome = `code ${String(code)}, signal ${String(signal)}`;
+        reject(
+          new Error(
+            `${invocation} stdin failed: ${terminalError.message}; child outcome: ${outcome}; stderr: ${stderr || "<empty>"}`,
+            { cause: terminalError },
+          ),
+        );
+      } else if (terminalError) reject(terminalError);
       else resolvePromise({ code, signal, stdout, stderr });
     });
     child.stdin.end(input);
   });
+}
+
+async function checkEarlyStdinCloseReporting() {
+  const diagnostic = "fixture closed stdin before consuming its payload";
+  const closeStdin = [
+    "process.stdin.destroy();",
+    `process.stderr.write(${JSON.stringify(`${diagnostic}\n`)});`,
+    "setTimeout(() => process.exit(23), 20);",
+  ].join("");
+  await assert.rejects(
+    run(process.execPath, ["-e", closeStdin], {
+      input: "x".repeat(1_000_000),
+    }),
+    (error) => {
+      assert.match(error.message, /stdin failed: write EPIPE/);
+      assert.match(error.message, /child outcome: code 23, signal null/);
+      assert.match(error.message, new RegExp(diagnostic));
+      assert.match(error.message, /process\.stdin\.destroy/);
+      return true;
+    },
+  );
 }
 
 function parseJsonLines(text, label) {
@@ -2446,6 +2484,7 @@ try {
     await holdInterruptProbe();
   } else {
     checkStrictJsonRegression();
+    await checkEarlyStdinCloseReporting();
     await checkPayloadReplay();
     await checkManagedGuidanceReplay();
     await checkCliDiscovery();
