@@ -2,6 +2,7 @@
   "Private assignment helpers: target checks, guidance, and run accept."
   (:require [clojure.string :as str]
             [ct.spools.harnesses :as harnesses]
+            [ct.spools.harnesses.internal.publication :as publication]
             [millhouse.spools.kanban :as kanban]
             [millstrand.api.format.alpha :as format-alpha]
             [millstrand.api.graph.alpha :as graph]
@@ -333,9 +334,7 @@
     logical-id (assoc :logical-id logical-id)
     after (assoc :after after)))
 
-(defn- already-assigned?
-  [run]
-  (boolean (context-get (attr-get run :harness/context) "assignment/run-id")))
+(declare enrich-guidance!)
 
 (defn accept-run!
   "Create or reuse the harness run for one prepared assignment.
@@ -345,8 +344,12 @@
   that one authoritative create request; it never stamps those bindings after
   publication."
   [rt prepared]
-  (let [run (harnesses/create! rt (create-request prepared))]
-    {:run run :existing? (already-assigned? run)}))
+  (binding [publication/*enrich*
+            (fn [runtime run]
+              (enrich-guidance!
+               runtime run (:context prepared) (:policy prepared)
+               (:cwd prepared) (weaver/show runtime (:target prepared))))]
+    (harnesses/create! rt (create-request prepared))))
 
 (defn enrich-guidance!
   "Stamp run identity and current ownership guidance into the accepted run."

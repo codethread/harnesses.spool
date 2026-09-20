@@ -9,6 +9,7 @@
             [ct.spools.harnesses.internal.guidance :as guidance]
             [ct.spools.harnesses.internal.launcher :as launcher]
             [ct.spools.harnesses.internal.lifecycle :as life]
+            [ct.spools.harnesses.internal.publication :as publication]
             [ct.spools.harnesses.internal.managed-startup :as managed]
             [ct.spools.harnesses.internal.process-custody :as custody]
             [ct.spools.harnesses.reconciliation :as reconciliation]
@@ -76,6 +77,7 @@
   (let [opened (activate-state! runtime)]
     (try
       (harness/migrate-runs! runtime)
+      (publication/recover-all! runtime)
       (let [recovery (try
                        (inspect-owned! runtime opened)
                        nil

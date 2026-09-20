@@ -22,12 +22,13 @@
 
 (defn with-assignment-world
   "Run a body in an isolated assignment Weaver world."
-  [f]
-  (test-alpha/with-weaver-world
-    [ctx {:storage :sqlite-memory
-          :deps-edn (pr-str (world-deps))
-          :init-clj
-          "(require '[millstrand.api.current.alpha :as current]
+  ([f] (with-assignment-world {} f))
+  ([opts f]
+   (test-alpha/with-weaver-world
+     [ctx (merge {:storage :sqlite-memory
+                  :deps-edn (pr-str (world-deps))
+                  :init-clj
+                  "(require '[millstrand.api.current.alpha :as current]
                      '[millstrand.api.runtime.alpha :as runtime])
            (def rt (current/runtime))
            (runtime/module! rt :identity
@@ -37,9 +38,9 @@
              {:file \"modules/assignment_test.clj\"
               :after [:identity]
               :required? true})"
-          :files
-          {"modules/assignment_test.clj"
-           "(ns modules.assignment-test
+                  :files
+                  {"modules/assignment_test.clj"
+                   "(ns modules.assignment-test
               (:require [ct.spools.harnesses :as harnesses]
                         [ct.spools.harnesses.assignment :as assignment]
                         [millhouse.spools.kanban :as kanban]
@@ -48,12 +49,12 @@
              harnesses/harness-core-runtime
              kanban/kanban-runtime
              assignment/assignment-runtime)"
-           "modules/assignment_scheduler.clj"
-           "(ns modules.assignment-scheduler
+                   "modules/assignment_scheduler.clj"
+                   "(ns modules.assignment-scheduler
               (:require [ct.spools.harnesses.execution :as execution]
                         [millstrand.api.millstrand.alpha :as millstrand]))
-            (millstrand/use-handler! execution/on-event)"}}]
-    (f ctx)))
+            (millstrand/use-handler! execution/on-event)"}} opts)]
+     (f ctx))))
 
 (def setup
   "Forms installed before each assignment world assertion."
