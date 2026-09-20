@@ -109,8 +109,11 @@ strand workflow show auto-human-review
 ```
 
 A preparation or admission error is retained on the card and is not retried
-automatically. Workspace activation is covered in a disposable Weaver world by
-running `clojure -M:auto-run-test` from `.millstrand`.
+automatically. A normal runtime source refresh reconciles the checked-in policy
+with an already running dispatcher; it does not require a restart or manual
+configuration call. Workspace activation and same-runtime policy refresh are
+covered in a disposable Weaver world by running `clojure -M:auto-run-test` from
+`.millstrand`.
 
 ## Shared Codethread catalog
 

@@ -11,6 +11,8 @@
             [millhouse.spools.workflow :as workflow]
             [millstrand.api.current.alpha :as current]
             [millstrand.api.graph.alpha :as graph]
+            [millstrand.api.runtime.alpha :as runtime]
+            [millstrand.api.scheduler.alpha :as scheduler]
             [millstrand.api.spool.alpha :refer [attr-get]]
             [millstrand.api.weaver.alpha :as weaver]
             [millstrand.test.alpha :as t]))
@@ -31,21 +33,63 @@
                  :kanban/priority priority
                  :kanban.label/auto-run "true"}}))
 
-(defn- world-options []
-  (let [deps (:deps (edn/read-string (slurp "deps.edn")))]
-    {:storage :sqlite-memory
-     :deps-edn
-     (pr-str
-      {:deps
-       (update-vals deps
-                    #(if-let [root (:local/root %)]
-                       (assoc % :local/root (.getCanonicalPath (io/file root)))
-                       %))})
-     :init-clj (slurp "init.clj")
-     :files (into {}
-                  (for [path ["me/auto_run_workflows.clj"
-                              "me/auto_run.clj"]]
-                    [path (slurp path)]))}))
+(defn- world-options
+  ([] (world-options {}))
+  ([files]
+   (let [deps (:deps (edn/read-string (slurp "deps.edn")))]
+     {:storage :sqlite-memory
+      :deps-edn
+      (pr-str
+       {:deps
+        (update-vals deps
+                     #(if-let [root (:local/root %)]
+                        (assoc % :local/root (.getCanonicalPath (io/file root)))
+                        %))})
+      :init-clj (slurp "init.clj")
+      :files (merge
+              (into {}
+                    (for [path ["me/auto_run_workflows.clj"
+                                "me/auto_run.clj"]]
+                      [path (slurp path)]))
+              files)})))
+
+(defn- old-auto-run-source []
+  "(ns harnesses.auto-run
+     (:require [clojure.java.io :as io]
+               [ct.spools.codethread.auto-run :as auto-run]
+               [ct.spools.codethread.auto-run-worktree]
+               [millstrand.api.lifecycle.alpha :as lifecycle]
+               [millstrand.api.millstrand.alpha :as millstrand]))
+   (millstrand/use-op! auto-run/auto-run)
+   (defn open!
+     \"Open old dispatcher.\"
+     [{:keys [runtime]}]
+     (auto-run/configure!
+      runtime
+      {:repo (.getCanonicalPath
+              (.getParentFile
+               (io/file (get-in runtime [:metadata :config-dir]))))
+       :seat \"sol\" :effort \"high\" :workflow \"auto-full-land\"
+       :workflows #{\"auto-full-land\"}
+       :prepare 'ct.spools.codethread.auto-run-worktree/prepare!
+       :enabled? true :max-running 2 :interval-ms 15000}))
+   (defn close!
+     \"Close old dispatcher.\"
+     [{:keys [runtime]}]
+     (auto-run/stop! runtime))
+   (lifecycle/defresource! auto-run-dispatcher
+     \"Own old dispatcher.\"
+     {:open 'harnesses.auto-run/open!
+      :close 'harnesses.auto-run/close!})")
+
+(defn- old-workflow-source []
+  (str/replace
+   (slurp "me/auto_run_workflows.clj")
+   #"(?s)\n\(workflow/defworkflow! auto-human-review.*?\(delivery false\)\)\n"
+   "\n"))
+
+(defn- auto-run-wakes [runtime]
+  (filter #(= "codethread/auto-run" (:key %)) (scheduler/pending runtime)))
 
 (defn- role-step [strands role]
   (first (filter #(= role (attr-get % :auto-run/role)) strands)))
@@ -245,6 +289,55 @@
                                "Verify land is done and the card is closed with outcome done"))
             (is (not (str/includes? (:instruction finisher)
                                     "agent run grunt")))))))))
+
+(deftest source-refresh-reconciles-running-dispatcher
+  (t/with-weaver-world
+    [ctx (world-options {"me/auto_run.clj" (old-auto-run-source)
+                         "me/auto_run_workflows.clj" (old-workflow-source)})]
+    (let [rt (:runtime ctx)
+          card (card! rt "p1")
+          dispatch (with-redefs [auto-run-worktree/prepare! prepare!
+                                 assignment/assign!
+                                 (fn [_runtime request]
+                                   {:id (str "fixture-run-" (:target request))})]
+                     (auto-run/scan! rt))
+          accepted (weaver/show rt (:id card))]
+      (is (= ["auto-full-land"] (get-in (auto-run/status rt)
+                                         [:config :workflows])))
+      (is (= 1 (count (:dispatched dispatch))))
+      (is (= "assigned" (attr-get accepted :auto-run/status)))
+      (spit (io/file (:config-dir ctx) "me/auto_run.clj")
+            (slurp "me/auto_run.clj"))
+      (spit (io/file (:config-dir ctx) "me/auto_run_workflows.clj")
+            (slurp "me/auto_run_workflows.clj"))
+      (let [refresh (runtime/refresh! rt)
+            wake (vec (auto-run-wakes rt))]
+        (is (empty? (:residuals refresh)))
+        (is (= ["auto-full-land" "auto-human-review"]
+               (get-in (auto-run/status rt) [:config :workflows])))
+        (is (= "assigned"
+               (attr-get (weaver/show rt (:id card)) :auto-run/status)))
+        (is (= 1 (count wake)))
+        (current/with-runtime rt
+          (is (= #{:start}
+                 (:entrypoints (workflow/resolve-workflow
+                                :auto-human-review)))))
+        (let [desired! @(runtime/resolve-var
+                         rt 'harnesses.auto-run/desired-config)
+              actual! @(runtime/resolve-var
+                        rt 'harnesses.auto-run/actual-config)
+              reconcile! @(runtime/resolve-var
+                           rt 'harnesses.auto-run/reconcile-config!)]
+          (is (false?
+               (:changed?
+                (reconcile! {:runtime rt
+                             :desired (desired! {:runtime rt})
+                             :actual (actual! {:runtime rt})})))))
+        (is (empty? (:residuals (runtime/refresh! rt))))
+        (is (= wake (vec (auto-run-wakes rt))))
+        (is (= "assigned"
+               (attr-get (weaver/show rt (:id card))
+                         :auto-run/status)))))))
 
 (deftest human-review-contract-stops-before-landing
   (t/with-weaver-world
