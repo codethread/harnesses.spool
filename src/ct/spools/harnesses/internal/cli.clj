@@ -192,7 +192,7 @@
                  :deadline-class :standard
                  :flags by-identity-flag}
     "resume"
-    {:doc "Continue a settled native session from exactly one accepted lineage head."
+    {:doc "Continue a settled native session, or replay one exact accepted request."
      :hook-class :mutating
      :deadline-class :standard
      :flags (merge by-identity-flag
@@ -218,7 +218,7 @@
                      :doc "Display title; defaults to the first 80 prompt characters or the agent and mode."}
                     :request-id
                     {:type :string
-                     :doc "Caller idempotency key for this continuation."}
+                     :doc "Idempotency key; an exact replay returns its original child."}
                     :guidance-transport
                     {:type :string
                      :doc "Transport for this continuation; defaults to its predecessor."}})}

@@ -868,4 +868,8 @@ evidence. After stopping, await settlement, update the feature and tasks with
 a primer that explicitly supersedes old instructions, then resume explicitly
 against that primer. Native resume preserves the concrete provider, native
 session, target, settings, and frozen guidance; `--after` is the explicit fresh
-continuation and never an implicit fallback.
+continuation and never an implicit fallback. An exact `resume --request-id`
+replay returns its originally accepted child before resolving a newer lineage
+head; changed selectors or payload fail under the immutable request fingerprint.
+A run's reported local resume eligibility does not prove it is the accepted
+lineage head, because an already published child makes the predecessor stale.

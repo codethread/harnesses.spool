@@ -457,11 +457,10 @@
       (assoc :by-identity (:by-identity args))))))
 
 (defn- op-resume [rt args]
-  (let [predecessor (harness/resolve-resume-run
-                     rt (select-keys args [:run-id :session-id :identity
-                                           :logical-id]))
-        run (harness/resume!
-             rt (:id predecessor)
+  (let [selector (select-keys args [:run-id :session-id :identity
+                                    :logical-id])
+        run (harness/resume-selected!
+             rt selector
              (cond-> {:mode (if (:interactive args) :interactive :headless)}
                (contains? args :prompt) (assoc :prompt (:prompt args))
                (contains? args :title) (assoc :title (:title args))

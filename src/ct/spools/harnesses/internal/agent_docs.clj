@@ -127,6 +127,9 @@
 
      Native `resume` retains the provider, identity, session, target, settings,
      and frozen state-independent guidance; it does not create another claim.
+     With `--request-id`, an exact replay returns the originally accepted child,
+     even while that child is active or after the lineage advances. Reusing the
+     key with a different selector, prompt, mode, transport, or actor fails.
      Name the updated primer in the continuation prompt. `assign --after`
      starts a fresh session on the same target with the predecessor's frozen
      policy and ancestor history, then evaluates current ownership for an
@@ -231,8 +234,14 @@
      or target, which should be continued or requested afresh instead. `resume`
      creates a *new* run continuing a settled provider
      session, reusing the predecessor's exact provider, session, and initial
-     guidance rather than resolving its alias again. An ineligible predecessor
-     fails loudly; it never falls back to a silent fresh run.
+     guidance rather than resolving its alias again. An exact request replay is
+     checked before resolving a newer head and returns its original child.
+     A new request must select the current accepted head; an ineligible or stale
+     predecessor fails loudly and never falls back to a silent fresh run.
+
+     `show` reports local session resume eligibility for the named run. That
+     field does not prove the run is the accepted lineage head: a published
+     child can make an otherwise locally eligible predecessor stale.
 
      Set `--interactive` on `run` or `resume` only when the user asks to work in
      the provider session. It launches the provider in the caller's terminal;

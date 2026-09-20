@@ -53,6 +53,16 @@
            (runs-where rt [[:= [:attr "harness/target"] target]
                            [:= [:attr "harness/published"] "true"]])))
 
+(defn request-holder
+  "Return the unique run holding `request-id`, or nil when the key is free."
+  [rt request-id]
+  (when request-id
+    (let [matches (runs-where rt [[:= [:attr "harness/request-id"] request-id]])]
+      (when (next matches)
+        (fail! "Request id is held by multiple harness runs"
+               {:request-id request-id :runs (mapv :id matches)}))
+      (first matches))))
+
 (defn request-match
   "Return the run already holding `request-id`, or nil when the key is free.
 
@@ -60,16 +70,11 @@
   under the same key is a caller bug and fails with the conflicting run's
   ID rather than launching a second agent."
   [rt request-id fingerprint]
-  (when request-id
-    (let [matches (runs-where rt [[:= [:attr "harness/request-id"] request-id]])]
-      (when-let [existing (first matches)]
-        (when (next matches)
-          (fail! "Request id is held by multiple harness runs"
-                 {:request-id request-id :runs (mapv :id matches)}))
-        (when-not (= fingerprint (attr-get existing :harness/request-fingerprint))
-          (fail! "Request id is already held by a different harness request"
-                 {:request-id request-id :run (:id existing)}))
-        existing))))
+  (when-let [existing (request-holder rt request-id)]
+    (when-not (= fingerprint (attr-get existing :harness/request-fingerprint))
+      (fail! "Request id is already held by a different harness request"
+             {:request-id request-id :run (:id existing)}))
+    existing))
 
 (defn continuation-child
   "Return an accepted continuation of `run-id`, if one exists."
@@ -112,7 +117,7 @@
   [rt {:keys [title alias harness mode generated env overrides effective
               literal-extra-argv cwd session-id requested-session-id prompt
               resumes after target root-targets context request-id fingerprint
-              logical-id by-identity guidance-selection
+              logical-id by-identity resume-selector-intent guidance-selection
               guidance-context-template]
        :as request}]
   (when resumes
@@ -162,7 +167,10 @@
                         (when context {:harness/context context})
                         (when request-id
                           {:harness/request-id request-id
-                           :harness/request-fingerprint fingerprint}))}
+                           :harness/request-fingerprint fingerprint})
+                        (when resume-selector-intent
+                          {:harness/resume-selector-intent
+                           resume-selector-intent}))}
                 (or resumes after target)
                 (assoc :edges (cond-> []
                                 resumes (conj {:type "resumes" :to resumes})
