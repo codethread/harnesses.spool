@@ -3,6 +3,7 @@
   (:require [clojure.spec.alpha :as s]
             [clojure.string :as str]
             [ct.spools.harnesses.catalog :as catalog]
+            [ct.spools.harnesses.internal.attribution :as attribution]
             [ct.spools.harnesses.internal.guidance :as guidance]
             [ct.spools.harnesses.internal.guidance-receipts :as guidance-receipts]
             [ct.spools.harnesses.internal.lifecycle :as life]
@@ -354,14 +355,22 @@
   (locking (catalog/publication-lock rt)
     (let [run (runs/require-run rt id)]
       (if-let [patch (life/stop-patch run (:reason request))]
-        (require-valid!
-         ::strand
-         (weaver/update! rt id
-                         {:state (if (= "stopped" (:harness/status patch))
-                                   "closed"
-                                   (:state run))
-                          :attributes patch})
-         "stop! produced an invalid run strand")
+        (let [updated
+              (require-valid!
+               ::strand
+               (attribution/update-with-action!
+                rt id
+                {:state (if (= "stopped"
+                               (:harness/status patch))
+                          "closed"
+                          (:state run))
+                 :attributes patch}
+                "stop requested" (:by-identity request)
+                (cond-> {}
+                  (:reason request)
+                  (assoc :harness/action-reason (:reason request))))
+               "stop! produced an invalid run strand")]
+          updated)
         run))))
 
 (s/fdef stop! :args (s/cat :runtime ::runtime :id ::id :request ::stop-request) :ret ::strand)
@@ -405,20 +414,35 @@
 (defn self-complete!
   "Record best-effort result text for an interactive run.
 
-  This optional user-driven signal does not change the run lifecycle."
-  [rt id result]
-  (require-valid! ::runtime rt "self-complete! requires a Weaver runtime")
-  (require-valid! ::id id "self-complete! requires a run id")
-  (require-valid! string? result "self-complete! requires result text")
-  (let [run (runs/require-run rt id)]
-    (when-not (= "interactive" (attr-get run :harness/mode))
-      (fail! "self-complete applies only to interactive runs" {:id id}))
-    (require-valid! ::strand
-                    (weaver/update! rt id
-                                    {:attributes {:harness/result result}})
-                    "self-complete! produced an invalid run strand")))
+  This optional user-driven signal does not change the run lifecycle. When an
+  actor is supplied, an immutable action note preserves its attribution."
+  ([rt id result]
+   (self-complete! rt id result nil))
+  ([rt id result by-identity]
+   (require-valid! ::runtime rt "self-complete! requires a Weaver runtime")
+   (require-valid! ::id id "self-complete! requires a run id")
+   (require-valid! string? result "self-complete! requires result text")
+   (when by-identity
+     (require-valid! ::by-identity by-identity
+                     "self-complete! requires a valid actor identity"))
+   (let [run (runs/require-run rt id)]
+     (when-not (= "interactive" (attr-get run :harness/mode))
+       (fail! "self-complete applies only to interactive runs" {:id id}))
+     (let [updated
+           (require-valid! ::strand
+                           (attribution/update-with-action!
+                            rt id {:attributes {:harness/result result}}
+                            "self-completed" by-identity {})
+                           "self-complete! produced an invalid run strand")]
+       updated))))
 
-(s/fdef self-complete! :args (s/cat :runtime ::runtime :id ::id :result string?) :ret ::strand)
+(s/fdef self-complete!
+  :args (s/or :plain
+              (s/cat :runtime ::runtime :id ::id :result string?)
+              :attributed
+              (s/cat :runtime ::runtime :id ::id :result string?
+                     :by-identity (s/nilable ::by-identity)))
+  :ret ::strand)
 
 (defn retry!
   "Reset one settled failed ad-hoc run with validated replacement options."

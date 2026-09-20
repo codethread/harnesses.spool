@@ -9,7 +9,7 @@
 
 (def ^:private millstrand-sha
   "The Millstrand revision required by the external acceptance world."
-  "310368dff9174bd889ad21d4ed8196952684eaf9")
+  "8e220eab7de2fabe7880c6a4c71de6cd903c34bb")
 
 (def ^:private fixture-module
   "(ns me.execution-assignment-fixture
@@ -154,7 +154,7 @@
               :deps/root "spools/batteries"}
              'millhouse.spools/identity
              {:git/url "https://github.com/codethread/millhouse.spool.git"
-              :git/sha "f80b80c8697e48a6ce56344372a32136d2bf279c"
+              :git/sha "f17ad387b2825887b736cab597b33af84cff13cb"
               :deps/root "spools/identity"}
              'ct.spools/harnesses
              {:local/root project-root}}}))

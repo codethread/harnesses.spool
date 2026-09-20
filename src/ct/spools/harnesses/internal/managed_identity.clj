@@ -46,14 +46,12 @@
   "Validate and return one reserved identity attachment binding.
 
   Callers must hold `with-identity-guard` from validation through persistence.
-  The return includes the reserved identity strand, optional parent strand, and
-  whether the identity already has this exact native binding."
-  [rt {:keys [harness native-session-id reservation-id friendly-id
-              parent-identity]}]
+  The return includes the reserved identity strand and whether the identity
+  already has this exact native binding."
+  [rt {:keys [harness native-session-id reservation-id friendly-id]}]
   (let [reserved (unique-reservation rt reservation-id)
         supplied (identity/current rt friendly-id)
         native (unique-native-binding rt harness native-session-id)
-        parent (when parent-identity (identity/current rt parent-identity))
         reserved-harness (attr-get reserved :identity/harness)
         reserved-session (attr-get reserved :identity/native-session-id)
         reservation-state (attr-get reserved :identity/reservation-state)]
@@ -90,29 +88,21 @@
               :identity (attr-get native :identity/id)
               :reserved-identity (attr-get reserved :identity/id)}))
     {:identity-strand reserved
-     :parent parent
      :already-attached? (= "attached" reservation-state)}))
 
 (defn persist-provenance!
-  "Persist one identity/run provenance edge and optional caller parent edge."
-  [rt identity-strand run caller]
-  (let [self? (= (:id caller) (:id identity-strand))]
-    (batch/apply!
-     rt
-     {:refs (cond-> {:identity (:id identity-strand)
-                     :run (:id run)}
-              (and caller (not self?)) (assoc :caller (:id caller)))
-      :strands []
-      :edges (cond-> [{:op :upsert
-                       :from :identity
-                       :to :run
-                       :type "performed"}]
-               (and caller (not self?))
-               (conj {:op :upsert
-                      :from :caller
-                      :to :identity
-                      :type "parent-of"}))
-      :burn []})))
+  "Persist the strict worker identity to run `performed` provenance edge."
+  [rt identity-strand run]
+  (batch/apply!
+   rt
+   {:refs {:identity (:id identity-strand)
+           :run (:id run)}
+    :strands []
+    :edges [{:op :upsert
+             :from :identity
+             :to :run
+             :type "performed"}]
+    :burn []}))
 
 (defn persist-attachment!
   "Persist identity binding, provenance, and run evidence in one transaction.

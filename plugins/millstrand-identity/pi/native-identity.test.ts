@@ -14,7 +14,7 @@ describe("resolveNativeIdentity", () => {
         "strand-id": "abc12",
         result: "minted",
         instruction:
-          "Your Millstrand identity is warm-silver-lemur. Use warm-silver-lemur for identity-bearing operations; pass `--by-identity warm-silver-lemur` explicitly. Do not invent another identity.",
+          "Your Millstrand identity is warm-silver-lemur. Use it as `--owner warm-silver-lemur` for `kanban claim` and `--by-identity warm-silver-lemur` for Kanban notes, workflow mutations, and agent operations. Keep `--identity` and `--parent-identity` for native-session references. Inspect live help; never pass an unsupported flag or invent another identity.",
       }),
       stderr: "",
       code: 0,

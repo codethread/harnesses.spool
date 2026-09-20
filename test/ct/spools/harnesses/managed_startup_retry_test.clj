@@ -150,7 +150,9 @@
                                    :evidence {:settled true
                                               :settlement "process-exit"}})
                     old-identity (attr retry-failed :identity/id)
-                    retried (harnesses/retry! rt (:id retry-failed) {})
+                    retried (harnesses/retry!
+                             rt (:id retry-failed)
+                             {:by-identity "retry-operator"})
                     new-identity (attr retried :identity/id)
                     prompt (attr retried :harness/prompt)
                     appends (attr retried :harness/appended-system-prompts)]
@@ -189,6 +191,13 @@
                  (attr atomic-late-identity :identity/native-session-id)
                  :retry-old old-identity
                  :retry-new new-identity
+                 :retry-performed-identities
+                 (into #{}
+                       (map #(attr (weaver/show rt (:from_strand_id %))
+                                   :identity/id))
+                       (graph/incoming-edges rt [(:id retried)] "performed"))
+                 :retry-actors
+                 (mapv :by-identity (notes/notes rt (:id retried) {}))
                  :retry-session-changed
                  (not= (attr retry-failed :harness/session-id)
                        (attr retried :harness/session-id))
@@ -224,6 +233,9 @@
         (is (= "reserved" (:atomic-late-reservation-state result)))
         (is (nil? (:atomic-late-native result)))
         (is (not= (:retry-old result) (:retry-new result)))
+        (is (= #{(:retry-old result) (:retry-new result)}
+               (:retry-performed-identities result)))
+        (is (= ["retry-operator"] (:retry-actors result)))
         (is (true? (:retry-session-changed result)))
         (is (= "reserved" (:retry-reserved result)))
         (is (str/includes? (:prompt result) (:retry-new result)))

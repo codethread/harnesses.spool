@@ -8,6 +8,7 @@
   (:require [clojure.spec.alpha :as s]
             [clojure.string :as str]
             [ct.spools.harnesses.catalog :as catalog]
+            [ct.spools.harnesses.internal.attribution :as attribution]
             [ct.spools.harnesses.internal.lifecycle :as life]
             [ct.spools.harnesses.internal.reconciliation :as decision]
             [ct.spools.harnesses.internal.reconciliation-process :as process]
@@ -34,16 +35,16 @@
 (s/def ::dry-run? boolean?)
 (s/def ::abandon? boolean?)
 (s/def ::reason (s/and string? (complement str/blank?)))
-(s/def ::by (s/and string? (complement str/blank?)))
+(s/def ::by-identity (s/and string? (complement str/blank?)))
 (s/def ::source (s/and string? (complement str/blank?)))
 (s/def ::limit pos-int?)
 (s/def ::offset nat-int?)
 (s/def ::generation (s/and string? (complement str/blank?)))
 (s/def ::options
-  (s/and (s/keys :opt-un [::run-id ::dry-run? ::abandon? ::reason ::by
-                          ::source ::limit ::offset])
-         #(every? #{:run-id :dry-run? :abandon? :reason :by :source :limit
-                    :offset}
+  (s/and (s/keys :opt-un [::run-id ::dry-run? ::abandon? ::reason
+                          ::by-identity ::source ::limit ::offset])
+         #(every? #{:run-id :dry-run? :abandon? :reason :by-identity :source
+                    :limit :offset}
                   (keys %))))
 (s/def ::interval-ms pos-int?)
 
@@ -258,14 +259,17 @@
         (let [operator? (:abandon? opts)
               reason (or (:reason opts) (:reason report))
               source (or (:source opts) (if operator? "attested" "manual"))
-              by (or (:by opts) source)
+              by-identity (or (:by-identity opts) source)
               at (str (runtime/now rt))
               patch (decision/abandonment-patch
-                     run {:at at :by by :reason reason :source source
+                     run {:at at :by by-identity :reason reason :source source
                           :evidence (:evidence report)})]
-          (weaver/update! rt (:id run) patch)
+          (attribution/update-with-action!
+           rt (:id run) patch "abandoned" (:by-identity opts)
+           {:harness/action-reason reason
+            :harness/reconciliation-source source})
           (assoc report :changed true
-                 :abandoned-at at :abandoned-by by
+                 :abandoned-at at :abandoned-by by-identity
                  :abandon-reason reason))))))
 
 (defn- explicit-abandonment-eligible? [report]
@@ -293,7 +297,7 @@
      (fail! "Explicit abandonment requires one exact run ID" {}))
    (when (and abandon? (str/blank? reason))
      (fail! "Explicit abandonment requires a nonblank reason" {:run-id run-id}))
-   (when (and abandon? (str/blank? (:by opts)))
+   (when (and abandon? (str/blank? (:by-identity opts)))
      (fail! "Explicit abandonment requires an actor identity" {:run-id run-id}))
    (let [limit (when-not run-id (or (:limit opts) sweep-limit))
          inspected (inspect rt (cond-> (select-keys opts [:run-id :offset])

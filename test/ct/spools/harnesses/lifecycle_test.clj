@@ -178,6 +178,178 @@
   [f]
   (test-alpha/run-with-weaver-world (core-world-options :sqlite-memory) f))
 
+(deftest caller-attribution-is-nonblocking-and-reconciles-late
+  (with-core-world
+    (fn [ctx]
+      (let [result
+            (test-alpha/repl!
+             ctx
+             '(do
+                (require '[ct.spools.harnesses :as harnesses]
+                         '[millhouse.spools.identity :as identity]
+                         '[millstrand.api.graph.alpha :as graph]
+                         '[millstrand.api.notes.alpha :as notes]
+                         '[millstrand.api.spool.alpha :as spool]
+                         '[millstrand.api.weaver.alpha :as weaver])
+                (harnesses/register-harness!
+                 rt :fake
+                 {:modes #{:interactive}
+                  :prepare 'ct.spools.harnesses/create!
+                  :finish 'ct.spools.harnesses/finish!})
+                (let [unknown (harnesses/create!
+                               rt {:harness :fake
+                                   :mode :interactive
+                                   :by-identity "late-caller"})
+                      unresolved
+                      (first (identity/inspect-attributions
+                              rt [(:id unknown)]))
+                      late (weaver/add!
+                            rt
+                            {:title "late-caller"
+                             :attributes {:identity/session "true"
+                                          :identity/id "late-caller"
+                                          :identity/harness "pi"
+                                          :identity/native-session-id
+                                          "late-native"}})
+                      _ (identity/reconcile-attributions! rt [(:id unknown)])
+                      late-links
+                      (mapv :from_strand_id
+                            (graph/incoming-edges rt [(:id unknown)]
+                                                  "attributed"))
+                      _ (doseq [native ["ambiguous-a" "ambiguous-b"]]
+                          (weaver/add!
+                           rt
+                           {:title "ambiguous-caller"
+                            :attributes {:identity/session "true"
+                                         :identity/id "ambiguous-caller"
+                                         :identity/harness "pi"
+                                         :identity/native-session-id native}}))
+                      ambiguous (harnesses/create!
+                                 rt {:harness :fake
+                                     :mode :interactive
+                                     :by-identity "ambiguous-caller"})
+                      ambiguous-projection
+                      (first (identity/inspect-attributions
+                              rt [(:id ambiguous)]))
+                      stop-run (harnesses/create!
+                                rt {:harness :fake :mode :interactive})
+                      _ (harnesses/stop!
+                         rt (:id stop-run)
+                         {:reason "operator stop"
+                          :by-identity "stop-operator"})
+                      retry-run (harnesses/create!
+                                 rt {:harness :fake :mode :interactive})
+                      failed (harnesses/finish!
+                              rt (:id retry-run)
+                              {:status :failed
+                               :exit-code 1
+                               :evidence {:settled true
+                                          :settlement "test-failure"}})
+                      _ (harnesses/retry!
+                         rt (:id failed)
+                         {:by-identity "retry-operator"})
+                      complete-run (harnesses/create!
+                                    rt {:harness :fake :mode :interactive})
+                      _ (harnesses/self-complete!
+                         rt (:id complete-run) "done" "complete-operator")]
+                  {:unknown-raw
+                   (spool/attr-get unknown :identity/by-identity)
+                   :unresolved (:status unresolved)
+                   :late-links late-links
+                   :late-id (:id late)
+                   :ambiguous-raw
+                   (spool/attr-get ambiguous :identity/by-identity)
+                   :ambiguous (:status ambiguous-projection)
+                   :ambiguous-links
+                   (:linked-identity-strand-ids ambiguous-projection)
+                   :stop-actors
+                   (mapv :by-identity (notes/notes rt (:id stop-run) {}))
+                   :retry-actors
+                   (mapv :by-identity (notes/notes rt (:id retry-run) {}))
+                   :complete-actors
+                   (mapv :by-identity
+                         (notes/notes rt (:id complete-run) {}))})))]
+        (is (= "late-caller" (:unknown-raw result)))
+        (is (= :unresolved (:unresolved result)))
+        (is (= [(:late-id result)] (:late-links result)))
+        (is (= "ambiguous-caller" (:ambiguous-raw result)))
+        (is (= :ambiguous (:ambiguous result)))
+        (is (empty? (:ambiguous-links result)))
+        (is (= ["stop-operator"] (:stop-actors result)))
+        (is (= ["retry-operator"] (:retry-actors result)))
+        (is (= ["complete-operator"] (:complete-actors result)))))))
+
+(deftest attributed-run-mutation-and-action-note-are-atomic
+  (with-core-world
+    (fn [ctx]
+      (let [result
+            (test-alpha/repl!
+             ctx
+             '(do
+                (require '[ct.spools.harnesses :as harnesses]
+                         '[millstrand.api.hooks.alpha :as hooks]
+                         '[millstrand.api.notes.alpha :as notes]
+                         '[millstrand.api.weaver.alpha :as weaver])
+                (harnesses/register-harness!
+                 rt :fake
+                 {:modes #{:interactive}
+                  :prepare 'ct.spools.harnesses/create!
+                  :finish 'ct.spools.harnesses/finish!})
+                (def reject-action-evidence? (atom false))
+                (defn reject-action-evidence [context]
+                  (let [add-action
+                        (get-in context
+                                [:strand/after :attributes :harness/action])
+                        batch-actions
+                        (into #{}
+                              (keep #(get-in % [:attributes :harness/action]))
+                              (get-in context [:batch/payload :strands]))]
+                    (when (and @reject-action-evidence?
+                               (or (= "stop requested" add-action)
+                                   (contains? batch-actions "stop requested")))
+                      (throw (ex-info "reject action evidence"
+                                      {:code "test/reject-action-evidence"})))))
+                (hooks/register-hook!
+                 rt :reject-action-evidence
+                 #{:strand/add-before-commit :batch/apply-before-commit}
+                 (symbol (str (ns-name *ns*)) "reject-action-evidence") {})
+                (let [run (harnesses/create!
+                           rt {:harness :fake :mode :interactive})
+                      before (weaver/show rt (:id run))
+                      _ (reset! reject-action-evidence? true)
+                      rejection
+                      (try
+                        (harnesses/stop!
+                         rt (:id run)
+                         {:reason "atomic stop"
+                          :by-identity "stop-operator"})
+                        nil
+                        (catch clojure.lang.ExceptionInfo error
+                          {:message (ex-message error)
+                           :data (ex-data error)}))
+                      after-rejection (weaver/show rt (:id run))
+                      notes-after-rejection
+                      (notes/notes rt (:id run) {})
+                      _ (reset! reject-action-evidence? false)
+                      stopped
+                      (harnesses/stop!
+                       rt (:id run)
+                       {:reason "atomic stop"
+                        :by-identity "stop-operator"})]
+                  {:rejection rejection
+                   :unchanged? (= before after-rejection)
+                   :notes-after-rejection notes-after-rejection
+                   :stopped stopped
+                   :notes (notes/notes rt (:id run) {})})))]
+        (is (= "Lifecycle hook failed"
+               (get-in result [:rejection :message])))
+        (is (true? (:unchanged? result)))
+        (is (empty? (:notes-after-rejection result)))
+        (is (= "stopped"
+               (get-in result [:stopped :attributes :harness/status])))
+        (is (= ["stop-operator"]
+               (mapv :by-identity (:notes result))))))))
+
 (deftest work-scope-queries-use-positive-evidence
   (with-core-world
     (fn [ctx]

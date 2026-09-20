@@ -53,14 +53,16 @@ claims about today's CLI.
    binding, else a new identity. Return name, identity strand ID, resolution
    outcome, and canonical context text.
 5. Adapter emits native context. Codex uses SessionStart `additionalContext`;
-   Pi composes the returned text into its effective system prompt. Include:
-   “Your Millstrand identity is NAME. Use NAME for identity-bearing operations;
-   pass `--by-identity NAME` explicitly. Do not invent another identity.” Include
-   explicit workspace guidance when cwd discovery alone would not route there.
+   Pi composes the Identity spool's returned instruction into its effective
+   system prompt. That instruction distinguishes `--owner` for `kanban claim`,
+   `--by-identity` for actor attribution, and `--identity`/`--parent-identity`
+   for native-session references. Include explicit workspace guidance when cwd
+   discovery alone would not route there.
 6. Subsequent Strand operations carry the friendly name explicitly. A desktop
    agent can delegate through Strand without ever having a managed parent run.
-   Its identity gets `parent-of` to the managed child's identity; the child gets
-   `performed` to its run. Work cards and process custody remain separate.
+   The operation source stores `identity/by-identity`; the child identity gets
+   `performed` to its run. Native `parent-of` remains an explicit
+   `--parent-identity` relation. Work cards and process custody remain separate.
 
 A plain desktop session receives identity/routing context, **not an invented
 assignment**. Native project instructions remain native. Only a validated managed
@@ -179,9 +181,10 @@ then prove discovery in CLI fixtures. Do not patch installed cache as source.
 ### Managed publication invariants
 
 **Verified:** `create!` allocates a UUID unless given one and checks active session
-and target reservations. `commit-run!` creates an unpublished run, calls
-`identity/bind!`, records caller parentage, expands `{{RUN_ID}}`/`{{AGENT_ID}}`, and
-only then publishes [H1, H2]. Assignment policy/context and system guidance are
+and target reservations. `commit-run!` creates an unpublished run, binds the
+worker identity and `performed` provenance, stores raw operation actor evidence,
+expands `{{RUN_ID}}`/`{{AGENT_ID}}`, and only then publishes [H1, H2]. Assignment
+policy/context and system guidance are
 frozen; native resume keeps concrete provider, cwd, target, native session and
 settings instead of re-resolving an alias [H2, H4]. Both execution paths export
 reserved identity/run/workspace values [H3].

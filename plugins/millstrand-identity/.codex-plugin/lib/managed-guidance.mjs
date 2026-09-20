@@ -236,10 +236,6 @@ function absolute(value, label) {
     throw new Error(`${label} must be canonical absolute.`);
   return result;
 }
-function canonicalIdentity(identity) {
-  return `Your Millstrand identity is ${identity}. Use ${identity} for identity-bearing operations; pass \`--by-identity ${identity}\` explicitly. Do not invent another identity.`;
-}
-
 export function parseGuidance(raw, harness = "codex") {
   const value = object(
     parseStrictJson(raw, METADATA_MAX_BYTES),
@@ -511,8 +507,6 @@ function parseBundle(stdout, guidance, bootstrap, nativeSessionId) {
     throw new Error(
       "guidance bundle native session or identity fence mismatch",
     );
-  if (context["identity-instruction"] !== canonicalIdentity(bundle.identity))
-    throw new Error("guidance identity instruction is not canonical");
   if (
     sha256CanonicalJson([bundle["run-id"], bundle.workspace, context]) !==
     bundle["bundle-sha256"]

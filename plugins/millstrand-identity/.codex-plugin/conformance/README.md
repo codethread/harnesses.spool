@@ -1,6 +1,6 @@
 # Codex startup-hook conformance fixtures
 
-This suite pins the packaged Codex identity adapter to **Codex CLI 0.154.0** and the Millhouse native startup API landed in `f80b80c8697e48a6ce56344372a32136d2bf279c`. All paths (home, config, state, cache, temp, cwd) are disposable; only `PATH` is inherited. Credentials, identity/run/bootstrap state, shell startup scripts, and ambient settings are excluded unless a case deliberately adds a hostile value.
+This suite pins the packaged Codex identity adapter to **Codex CLI 0.154.0** and the Millhouse native startup API pinned at `f17ad387b2825887b736cab597b33af84cff13cb`. All paths (home, config, state, cache, temp, cwd) are disposable; only `PATH` is inherited. Credentials, identity/run/bootstrap state, shell startup scripts, and ambient settings are excluded unless a case deliberately adds a hostile value.
 
 It does not use a shared Millstrand workspace or any desktop application. Run the bounded default suite from the repository root:
 
@@ -66,7 +66,7 @@ The fake does not prove Millhouse internals; the landed identity spool owns mint
 
 ## Live disposable acceptance
 
-Run the production hook against real Strand and the live Millhouse startup API pinned at `f80b80c8697e48a6ce56344372a32136d2bf279c`:
+Run the production hook against real Strand and the live Millhouse startup API pinned at `f17ad387b2825887b736cab597b33af84cff13cb`:
 
 ```text
 pnpm test:codex-hooks:live

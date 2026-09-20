@@ -228,6 +228,9 @@
                     :workflow-run-id (attr happy-run :workflow/run-id)
                     :delivered (attr delivered-run :gate/delivered)
                     :gate-state (:state delivered-gate)
+                    :executor (attr delivered-gate :workflow/executor)
+                    :executor-run-id
+                    (attr delivered-gate :workflow/executor-run-id)
                     :outcome-by (attr delivered-gate :workflow/outcome-by)
                     :result (attr delivered-gate :harness/result)
                     :next-title (:title (first (workflow/ready "happy-agent")))}
@@ -264,8 +267,10 @@
           (is (= "closed" (get-in result [:happy :gate-state])))
           (is (= "implemented" (get-in result [:happy :result])))
           (is (= "After happy" (get-in result [:happy :next-title])))
+          (is (= "agent" (get-in result [:happy :executor])))
           (is (= (get-in result [:happy :run-id])
-                 (get-in result [:happy :outcome-by]))))
+                 (get-in result [:happy :executor-run-id])))
+          (is (nil? (get-in result [:happy :outcome-by]))))
         (testing "a failed serving run stalls until retrying that same run"
           (is (= "failed" (get-in result [:failed :stall :status])))
           (is (= "provider failed" (get-in result [:failed :stall :error])))

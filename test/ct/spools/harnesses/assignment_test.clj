@@ -116,6 +116,18 @@
     (is (nil? (get-in command [:flags :worktree])))
     (is (= :agent (-> command :positionals first :name)))))
 
+(deftest assignment-persists-unresolved-operation-actor
+  (with-assignment-world
+    (fn [ctx]
+      (is (= "unknown-assignment-actor"
+             (eval-world
+              ctx
+              '(let [target (add-target! "Attributed assignment")
+                     run (assign! (:id target)
+                                  {:by-identity
+                                   "unknown-assignment-actor"})]
+                 (attr run :identity/by-identity))))))))
+
 (deftest assignment-resource-installs-default-policies
   (with-assignment-world
     (fn [ctx]

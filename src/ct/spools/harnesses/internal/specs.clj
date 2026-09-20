@@ -226,8 +226,9 @@
             (keys %))))
 (s/def :ct.spools.harnesses/reason (s/and string? (complement str/blank?)))
 (s/def :ct.spools.harnesses/stop-request
-  (s/and (s/keys :opt-un [:ct.spools.harnesses/reason])
-         #(every? #{:reason} (keys %))))
+  (s/and (s/keys :opt-un [:ct.spools.harnesses/reason
+                          :ct.spools.harnesses/by-identity])
+         #(every? #{:reason :by-identity} (keys %))))
 (s/def :ct.spools.harnesses/attempt pos-int?)
 (s/def :ct.spools.harnesses/started
   (s/keys :req-un [:ct.spools.harnesses/strand
@@ -241,8 +242,10 @@
    (s/keys :opt-un [:ct.spools.harnesses/harness
                     :ct.spools.harnesses/cwd
                     :ct.spools.harnesses/attributes
-                    :ct.spools.harnesses/guidance-transport])
-   #(every? #{:harness :cwd :attributes :guidance-transport} (keys %))
+                    :ct.spools.harnesses/guidance-transport
+                    :ct.spools.harnesses/by-identity])
+   #(every? #{:harness :cwd :attributes :guidance-transport :by-identity}
+            (keys %))
    #(or (not (contains? % :attributes))
         (s/valid? :ct.spools.harnesses/overlay-attributes (:attributes %)))))
 (s/def :ct.spools.harnesses/run-id :ct.spools.harnesses/id)

@@ -263,9 +263,11 @@ unlinked run carrying the claimed session ID or resumes creation at the next
 attempt. Three unsuccessful attempts stamp `gate/error`; a successful link
 removes the private session claim and retains the attempt count for audit.
 
-A successful non-blank `harness/result` closes the gate through
-`workflow/complete!`, records the run ID in `workflow/outcome-by`, and copies the
-result onto the gate. A failed run remains active and stalls the gate; retry it
+A successful non-blank `harness/result` closes the gate through the Workflow
+`run-complete!` executor boundary. The gate records `workflow/executor=agent`
+and the Harness run ID in `workflow/executor-run-id`; it does not mislabel that
+opaque run ID as a domain actor. The result is copied onto the gate. A failed
+run remains active and stalls the gate; retry it
 with `strand agent retry <run-id>`. `stalled-agent-gates` reports failed runs and
 gates carrying `gate/error`. After fixing a spawn request, remove `gate/error`
 to start a fresh bounded attempt series.
@@ -347,8 +349,11 @@ with their selected resolution and effective model and thinking level. Pass
 `--full` for the complete visible registry, including unavailable entries and
 their reasons.
 
-Identity-bearing agent commands accept `--by-identity` to name the agent
-performing the operation. `list` applies the caller alias's visibility policy:
+Mutating agent commands accept `--by-identity` to name the operation actor. The
+nonblank friendly string is durable even when it is unknown or ambiguous in the
+local Identity registry; those states never reject an otherwise-valid mutation.
+`list` uses a uniquely resolved caller's latest performed run to apply that
+caller's alias visibility policy:
 
 ```clojure
 {:doc "Reviewer seat."
@@ -370,10 +375,25 @@ Each name includes aliases that currently resolve through it, so hiding
 strand agent list --by-identity gentle-cool-puma
 ```
 
-On `run` and `resume`, the caller identity gains a `parent-of` edge to the
-spawned session identity. Agents pass their `MILLSTRAND_AGENT_ID` explicitly at
-the Strand client boundary; Weaver never reads a caller's environment. The
-user-only agent bin does not supply agent identity.
+An unresolved or ambiguous `list --by-identity` returns an empty listing rather
+than silently falling back to the unfiltered registry. `show`, `runs`,
+`resumable`, and `reviewers` accept caller context without writing mutation
+history.
+
+`run`, `assign`, `review`, and `resume` store `identity/by-identity` on each
+created run. `stop`, `retry`, explicit abandonment, and `self-complete` append an
+immutable action note carrying the same canonical attribute. Identity
+reconciliation projects an exact unique local match as
+`identity --attributed--> source`. Worker identity remains `identity/id` on the
+run and `worker identity --performed--> run`; native session attachment and
+explicit `parent-of` are separate strict Identity-spool contracts. Consumers
+recover one delegation participation by joining `attributed -> run <- performed`
+and recover retries from every `performed` edge, not only the run's current
+mutable `identity/id`.
+
+Agents pass their `MILLSTRAND_AGENT_ID` explicitly at the Strand client
+boundary; Weaver never reads a caller's environment. The user-only agent bin
+does not supply agent identity.
 
 Use `mill bin run agent <agent> [wrapper options] -- <provider args>` to launch
 an interactive tracked session. The first literal `--` ends wrapper options;
@@ -438,8 +458,9 @@ and workspace, root scope, positive durable attempt, nonblank durable invocation
 reservation, friendly identity, immutable prior attachment, target writer, and
 native-session writer. Pi additionally requires the bootstrap pin and compares
 both it and the actual host ID independently with the durable provisional ID.
-Identity binding, `performed`/`parent-of` provenance, and run attachment evidence
-then commit in one transaction. Exact replay converges. Never-launched runs,
+Identity binding, `performed` provenance, and run attachment evidence then
+commit in one transaction. Operation caller attribution is not a native parent
+reference and cannot block startup. Exact replay converges. Never-launched runs,
 child scope, stale launch metadata, and conflicts fail without attachment writes.
 
 A successful startup response has this exact context structure (normal Strand

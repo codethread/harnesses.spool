@@ -3,14 +3,14 @@
   (:require [clojure.spec.alpha :as s]
             [clojure.string :as str]
             [ct.spools.harnesses.catalog :as catalog]
+            [ct.spools.harnesses.internal.attribution :as attribution]
             [ct.spools.harnesses.internal.guidance :as guidance]
             [ct.spools.harnesses.internal.lifecycle :as life]
             [ct.spools.harnesses.internal.managed-startup :as managed]
             [ct.spools.harnesses.internal.registry :as registry]
             [ct.spools.harnesses.internal.run-creation :as creation]
             [ct.spools.harnesses.internal.runs :as runs]
-            [millstrand.api.spool.alpha :refer [attr-get fail!]]
-            [millstrand.api.weaver.alpha :as weaver])
+            [millstrand.api.spool.alpha :refer [attr-get fail!]])
   (:import [java.util UUID]))
 
 (defn- require-valid! [spec value message]
@@ -77,7 +77,7 @@
   `resume!` or submit a new request. A fresh Codex/Pi retry reserves a fresh
   identity and refreshes invocation markers before becoming ready. Retrying a
   native-resume attempt keeps its attached native identity and session."
-  [rt id request]
+  [rt id {:keys [by-identity] :as request}]
   (require-valid! :ct.spools.harnesses/runtime rt "retry! requires a Weaver runtime")
   (require-valid! :ct.spools.harnesses/id id "retry! requires a run id")
   (require-valid! :ct.spools.harnesses/retry-request request "retry! requires valid replacements")
@@ -192,11 +192,14 @@
                        (:attributes run)
                        attributes)
             _ (guidance/validate-representation!
-               (assoc run :attributes prospective-attributes))]
-        (require-valid!
-         :ct.spools.harnesses/strand
-         (weaver/update! rt id {:attributes attributes})
-         "retry! produced an invalid run strand")))))
+               (assoc run :attributes prospective-attributes))
+            updated
+            (require-valid!
+             :ct.spools.harnesses/strand
+             (attribution/update-with-action!
+              rt id {:attributes attributes} "retried" by-identity {})
+             "retry! produced an invalid run strand")]
+        updated))))
 
 (s/fdef retry! :args (s/cat :runtime :ct.spools.harnesses/runtime :id :ct.spools.harnesses/id :request :ct.spools.harnesses/retry-request) :ret :ct.spools.harnesses/strand)
 

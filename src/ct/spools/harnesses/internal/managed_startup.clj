@@ -54,12 +54,14 @@
   legacy/managed-run?)
 
 (defn identity-instruction
-  "Return the canonical managed identity instruction for `friendly-id`."
+  "Return the Identity spool's published instruction for `friendly-id`."
   [friendly-id]
   (str "Your Millstrand identity is " friendly-id
-       ". Use " friendly-id
-       " for identity-bearing operations; pass `--by-identity " friendly-id
-       "` explicitly. Do not invent another identity."))
+       ". Use it as `--owner " friendly-id
+       "` for `kanban claim` and `--by-identity " friendly-id
+       "` for Kanban notes, workflow mutations, and agent operations. "
+       "Keep `--identity` and `--parent-identity` for native-session references. "
+       "Inspect live help; never pass an unsupported flag or invent another identity."))
 
 (defn- require-run [rt id]
   (let [run (or (weaver/show rt id)
@@ -68,70 +70,61 @@
       (fail! "Managed startup target is not a harness run" {:run-id id}))
     (guidance/validation-run rt run)))
 
-(defn- require-caller [rt by-identity]
-  (when by-identity
-    (identity/current rt by-identity)))
-
 (defn commit-identity!
-  "Bind or reserve identity and provenance before a managed run is published."
-  [rt {:keys [harness session-id run predecessor by-identity effective]}]
-  (let [caller (require-caller rt by-identity)]
-    (if-not (managed-harness? harness)
-      (let [binding (identity/bind!
-                     rt
-                     (cond-> {:harness harness
-                              :native-session-id session-id
-                              :run-id (:id run)}
-                       predecessor
-                       (assoc :expected-identity
-                              (attr-get predecessor :identity/id))))]
-        (when (and caller (not= (:id caller) (:strand-id binding)))
-          (weaver/update!
-           rt (:id caller)
-           {:edges [{:type "parent-of" :to (:strand-id binding)}]}))
-        binding)
-      (if predecessor
-        (if (legacy-managed-run? predecessor)
-          (legacy/commit-pi-identity! rt run predecessor caller)
-          (let [reservation-id (attr-get predecessor :identity/reservation-id)
-                friendly-id (attr-get predecessor :identity/id)
-                attached? (= "true" (attr-get predecessor
-                                              :harness/native-attached))]
-            (when-not (and reservation-id friendly-id attached?)
-              (fail! "Managed native resume requires an attached predecessor identity"
-                     {:predecessor (:id predecessor)
-                      :identity friendly-id
-                      :reservation-id reservation-id
-                      :native-attached attached?}))
-            (let [attached (identity/attach!
-                            rt
-                            (cond-> {:harness harness
-                                     :native-session-id session-id
-                                     :reservation-id reservation-id
-                                     :identity friendly-id
-                                     :run-id (:id run)}
-                              by-identity (assoc :parent-identity by-identity)))]
-              {:identity (:identity attached)
-               :strand-id (:strand-id attached)
-               :prompt (:instruction attached)
-               :reservation-id reservation-id
-               :native-attached true})))
-        (let [reservation (identity/reserve!
-                           rt
-                           (cond-> {:harness harness}
-                             (string? (:harness/model effective))
-                             (assoc :model (:harness/model effective))
-                             (string? (:harness/effort effective))
-                             (assoc :thinking-level
-                                    (:harness/effort effective))))
-              identity-strand (identity/current rt (:identity reservation))]
-          (managed-identity/persist-provenance!
-           rt identity-strand run caller)
-          {:identity (:identity reservation)
-           :strand-id (:strand-id reservation)
-           :prompt (identity-instruction (:identity reservation))
-           :reservation-id (:reservation-id reservation)
-           :native-attached false})))))
+  "Bind or reserve worker identity before a managed run is published.
+
+  Operation caller attribution is durable run evidence and never participates
+  in strict worker identity binding."
+  [rt {:keys [harness session-id run predecessor effective]}]
+  (if-not (managed-harness? harness)
+    (identity/bind!
+     rt
+     (cond-> {:harness harness
+              :native-session-id session-id
+              :run-id (:id run)}
+       predecessor
+       (assoc :expected-identity
+              (attr-get predecessor :identity/id))))
+    (if predecessor
+      (if (legacy-managed-run? predecessor)
+        (legacy/commit-pi-identity! rt run predecessor)
+        (let [reservation-id (attr-get predecessor :identity/reservation-id)
+              friendly-id (attr-get predecessor :identity/id)
+              attached? (= "true" (attr-get predecessor
+                                            :harness/native-attached))]
+          (when-not (and reservation-id friendly-id attached?)
+            (fail! "Managed native resume requires an attached predecessor identity"
+                   {:predecessor (:id predecessor)
+                    :identity friendly-id
+                    :reservation-id reservation-id
+                    :native-attached attached?}))
+          (let [attached (identity/attach!
+                          rt
+                          {:harness harness
+                           :native-session-id session-id
+                           :reservation-id reservation-id
+                           :identity friendly-id
+                           :run-id (:id run)})]
+            {:identity (:identity attached)
+             :strand-id (:strand-id attached)
+             :prompt (:instruction attached)
+             :reservation-id reservation-id
+             :native-attached true})))
+      (let [reservation (identity/reserve!
+                         rt
+                         (cond-> {:harness harness}
+                           (string? (:harness/model effective))
+                           (assoc :model (:harness/model effective))
+                           (string? (:harness/effort effective))
+                           (assoc :thinking-level
+                                  (:harness/effort effective))))
+            identity-strand (identity/current rt (:identity reservation))]
+        (managed-identity/persist-provenance! rt identity-strand run)
+        {:identity (:identity reservation)
+         :strand-id (:strand-id reservation)
+         :prompt (identity-instruction (:identity reservation))
+         :reservation-id (:reservation-id reservation)
+         :native-attached false}))))
 
 (defn retry-identity!
   "Return a coherent identity binding for one managed retry.
@@ -158,9 +151,7 @@
              :prompt (attr-get run :identity/prompt)
              :reservation-id (attr-get run :identity/reservation-id)
              :native-attached true})))
-      (let [caller (require-caller rt
-                                   (attr-get run :harness/caller-identity))
-            reservation (identity/reserve!
+      (let [reservation (identity/reserve!
                          rt
                          (cond-> {:harness harness}
                            (string? (:harness/model effective))
@@ -169,8 +160,7 @@
                            (assoc :thinking-level
                                   (:harness/effort effective))))
             identity-strand (identity/current rt (:identity reservation))]
-        (managed-identity/persist-provenance!
-         rt identity-strand run caller)
+        (managed-identity/persist-provenance! rt identity-strand run)
         {:identity (:identity reservation)
          :strand-id (:strand-id reservation)
          :prompt (identity-instruction (:identity reservation))
@@ -390,15 +380,13 @@
             (and (= "true" (attr-get run :harness/native-attached))
                  (= (attr-get run :harness/invocation)
                     (attr-get run :harness/native-attachment-invocation)))
-            {:keys [identity-strand parent already-attached?]}
+            {:keys [identity-strand already-attached?]}
             (managed-identity/reservation-binding
              rt
              {:harness (attr-get run :harness/harness)
               :native-session-id native-session-id
               :reservation-id (attr-get run :identity/reservation-id)
-              :friendly-id (attr-get run :identity/id)
-              :parent-identity
-              (attr-get run :harness/caller-identity)})]
+              :friendly-id (attr-get run :identity/id)})]
         (when (and attachment-recorded? (not already-attached?))
           (fail! "Managed run attachment evidence conflicts with its reservation"
                  {:run-id (:id run)
@@ -431,7 +419,6 @@
                  rt
                  {:identity-strand identity-strand
                   :run run
-                  :parent parent
                   :identity-attributes
                   (when-not already-attached?
                     {:identity/native-session-id native-session-id

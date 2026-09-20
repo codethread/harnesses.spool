@@ -49,7 +49,7 @@ if (operation[1] === "startup") {
   const bootstrap = JSON.parse(take("--bootstrap"));
   const context = {
     schema: "millstrand.agent-managed-context/v1",
-    "identity-instruction": `Your Millstrand identity is ${bootstrap.identity}. Use ${bootstrap.identity} for identity-bearing operations; pass \`--by-identity ${bootstrap.identity}\` explicitly. Do not invent another identity.`,
+    "identity-instruction": `Your Millstrand identity is ${bootstrap.identity}. Use it as \`--owner ${bootstrap.identity}\` for \`kanban claim\` and \`--by-identity ${bootstrap.identity}\` for Kanban notes, workflow mutations, and agent operations. Keep \`--identity\` and \`--parent-identity\` for native-session references. Inspect live help; never pass an unsupported flag or invent another identity.`,
     "appended-system-prompts": [
       "first frozen contribution",
       "intentionally repeated",

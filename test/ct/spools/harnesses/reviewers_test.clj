@@ -271,7 +271,8 @@
                         result (reviewers/start!
                                 rt
                                 {:git patch
-                                 :agents ["source" "docs" "docs"]})
+                                 :agents ["source" "docs" "docs"]
+                                 :by-identity "unknown-review-actor"})
                         runs (mapv #(harnesses/run rt (:id %)) (:runs result))
                         glob-result (reviewers/start! rt {:git patch})
                         label-result (reviewers/start!
@@ -287,6 +288,8 @@
                      :label-result label-result
                      :cli-result cli-result
                      :statuses (mapv #(spool/attr-get % :harness/status) runs)
+                     :actors
+                     (mapv #(spool/attr-get % :identity/by-identity) runs)
                      :prompts (mapv #(spool/attr-get % :harness/prompt) runs)
                      :systems (mapv #(spool/attr-get
                                       % :harness/appended-system-prompts) runs)
@@ -301,6 +304,8 @@
         (is (= "no-matching-reviewers"
                (get-in result [:label-result :reason])))
         (is (= ["ready" "ready"] (:statuses result)))
+        (is (= ["unknown-review-actor" "unknown-review-actor"]
+               (:actors result)))
         (is (= 2 (count (distinct (map :id (get-in result [:result :runs]))))))
         (is (every? #(re-find #"Authoritative literal unified diff" %)
                     (:prompts result)))

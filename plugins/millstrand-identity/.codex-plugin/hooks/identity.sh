@@ -289,9 +289,11 @@ validate_startup_response() {
 			(.result == "minted" or .result == "recovered" or .result == "attached") and
 			(.instruction == (
 				"Your Millstrand identity is " + .identity +
-				". Use " + .identity +
-				" for identity-bearing operations; pass `--by-identity " + .identity +
-				"` explicitly. Do not invent another identity."
+				". Use it as `--owner " + .identity +
+				"` for `kanban claim` and `--by-identity " + .identity +
+				"` for Kanban notes, workflow mutations, and agent operations. " +
+				"Keep `--identity` and `--parent-identity` for native-session references. " +
+				"Inspect live help; never pass an unsupported flag or invent another identity."
 			))
 		)
 	' "$1" 2>/dev/null

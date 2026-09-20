@@ -140,19 +140,16 @@
 
 (defn commit-pi-identity!
   "Bind one prevalidated child to its legacy Pi predecessor identity."
-  [rt run predecessor caller]
+  [rt run predecessor]
   (require-pi-continuation! rt predecessor)
-  (let [binding (identity/bind!
-                 rt
-                 {:harness "pi"
-                  :native-session-id (attr-get predecessor :harness/session-id)
-                  :run-id (:id run)
-                  :expected-identity (attr-get predecessor :identity/id)})]
-    (when (and caller (not= (:id caller) (:strand-id binding)))
-      (weaver/update!
-       rt (:id caller)
-       {:edges [{:type "parent-of" :to (:strand-id binding)}]}))
-    (assoc binding :legacy-pi true)))
+  (assoc
+   (identity/bind!
+    rt
+    {:harness "pi"
+     :native-session-id (attr-get predecessor :harness/session-id)
+     :run-id (:id run)
+     :expected-identity (attr-get predecessor :identity/id)})
+   :legacy-pi true))
 
 (defn retry-pi-binding!
   "Validate and return the retained identity for a legacy Pi retry."

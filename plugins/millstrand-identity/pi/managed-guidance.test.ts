@@ -15,7 +15,7 @@ const cwd = "/repo";
 const workspace = "/world/.millstrand";
 const identity = "coral-lucid-bison";
 const instruction =
-  "Your Millstrand identity is coral-lucid-bison. Use coral-lucid-bison for identity-bearing operations; pass `--by-identity coral-lucid-bison` explicitly. Do not invent another identity.";
+  "Your Millstrand identity is coral-lucid-bison. Use it as `--owner coral-lucid-bison` for `kanban claim` and `--by-identity coral-lucid-bison` for Kanban notes, workflow mutations, and agent operations. Keep `--identity` and `--parent-identity` for native-session references. Inspect live help; never pass an unsupported flag or invent another identity.";
 
 function fixture(
   overrides: {

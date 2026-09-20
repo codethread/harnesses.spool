@@ -153,7 +153,7 @@
                         (when context
                           {:harness/context-template context})
                         (when by-identity
-                          {:harness/caller-identity by-identity})
+                          {:identity/by-identity by-identity})
                         (when resumes {:harness/resumes resumes})
                         (when after {:harness/after after})
                         (when target {:harness/target target})

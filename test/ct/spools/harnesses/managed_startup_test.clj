@@ -52,6 +52,7 @@
               '[millstrand.api.current.alpha :as current]
               '[millstrand.api.graph.alpha :as graph]
               '[millstrand.api.hooks.alpha :as hooks]
+              '[millstrand.api.notes.alpha :as notes]
               '[millstrand.api.spool.alpha :as spool]
               '[millstrand.api.weaver.alpha :as weaver])
      (def rt (current/runtime))
@@ -157,7 +158,8 @@
                           :harness/native-attached-at)
                     resumed-identity (identity/current
                                       rt (attr resumed :identity/id))
-                    caller-strand (identity/current rt (:identity caller))]
+                    caller-strand (identity/current rt (:identity caller))
+                    _ (identity/reconcile-attributions! rt [(:id run)])]
                 {:run (:id run)
                  :published (attr run :harness/published)
                  :reservation-state-before
@@ -182,8 +184,8 @@
                  (= (attr finished :harness/session-id)
                     (attr resumed :harness/session-id))
                  :performed (targets resumed-identity "performed")
-                 :parented (targets caller-strand "parent-of")
-                 :child-strand (:id resumed-identity)}))]
+                 :attributed (targets caller-strand "attributed")
+                 :parented (targets caller-strand "parent-of")}))]
         (is (= "true" (:published result)))
         (is (= "reserved" (:reservation-state-before result)))
         (is (nil? (:native-before result)))
@@ -220,7 +222,69 @@
         (is (true? (:same-resume-identity result)))
         (is (true? (:same-resume-session result)))
         (is (= 2 (count (:performed result))))
-        (is (= #{(:child-strand result)} (:parented result)))))))
+        (is (= #{(:run result)} (:attributed result)))
+        (is (empty? (:parented result)))))))
+
+(deftest unresolved-callers-do-not-gate-managed-startup
+  (with-managed-world
+    (fn [ctx]
+      (let [result
+            (eval-world
+             ctx
+             '(let [_ (doseq [native ["ambiguous-a" "ambiguous-b"]]
+                        (weaver/add!
+                         rt
+                         {:title "ambiguous-managed-caller"
+                          :attributes {:identity/session "true"
+                                       :identity/id
+                                       "ambiguous-managed-caller"
+                                       :identity/harness "pi"
+                                       :identity/native-session-id native}}))
+                    launch
+                    (fn [caller session]
+                      (let [run (harnesses/create!
+                                 rt {:harness :codex
+                                     :mode :interactive
+                                     :cwd "/tmp/managed-caller"
+                                     :by-identity caller})
+                            started (harnesses/begin-attempt! rt (:id run))
+                            attached
+                            (harnesses/managed-startup!
+                             rt {:harness "codex"
+                                 :native-session-id session
+                                 :cwd "/tmp/managed-caller"
+                                 :scope "root"
+                                 :bootstrap
+                                 (harnesses/managed-bootstrap rt (:id run))})]
+                        {:run run :started started :attached attached}))
+                    unknown (launch "unknown-managed-caller"
+                                    "unknown-thread")
+                    ambiguous (launch "ambiguous-managed-caller"
+                                      "ambiguous-thread")
+                    _ (identity/reconcile-attributions!
+                       rt [(get-in unknown [:run :id])
+                           (get-in ambiguous [:run :id])])]
+                {:unknown-status
+                 (:status
+                  (first (identity/inspect-attributions
+                          rt [(get-in unknown [:run :id])])))
+                 :ambiguous-status
+                 (:status
+                  (first (identity/inspect-attributions
+                          rt [(get-in ambiguous [:run :id])])))
+                 :unknown-result (get-in unknown [:attached :result])
+                 :ambiguous-result (get-in ambiguous [:attached :result])
+                 :workers
+                 (mapv #(attr (identity/current rt
+                                                (get-in % [:run :attributes
+                                                           :identity/id]))
+                              :identity/reservation-state)
+                       [unknown ambiguous])}))]
+        (is (= :unresolved (:unknown-status result)))
+        (is (= :ambiguous (:ambiguous-status result)))
+        (is (= "attached" (:unknown-result result)
+               (:ambiguous-result result)))
+        (is (= ["attached" "attached"] (:workers result)))))))
 
 (deftest invalid-fences-pins-and-atomic-rejection-do-not-attach
   (with-managed-world
