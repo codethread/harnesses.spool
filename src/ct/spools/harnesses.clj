@@ -358,18 +358,18 @@
         (let [updated
               (require-valid!
                ::strand
-               (weaver/update! rt id
-                               {:state (if (= "stopped"
-                                              (:harness/status patch))
-                                         "closed"
-                                         (:state run))
-                                :attributes patch})
+               (attribution/update-with-action!
+                rt id
+                {:state (if (= "stopped"
+                               (:harness/status patch))
+                          "closed"
+                          (:state run))
+                 :attributes patch}
+                "stop requested" (:by-identity request)
+                (cond-> {}
+                  (:reason request)
+                  (assoc :harness/action-reason (:reason request))))
                "stop! produced an invalid run strand")]
-          (attribution/record-action!
-           rt id "stop requested" (:by-identity request)
-           (cond-> {}
-             (:reason request)
-             (assoc :harness/action-reason (:reason request))))
           updated)
         run))))
 
@@ -430,10 +430,10 @@
        (fail! "self-complete applies only to interactive runs" {:id id}))
      (let [updated
            (require-valid! ::strand
-                           (weaver/update!
-                            rt id {:attributes {:harness/result result}})
+                           (attribution/update-with-action!
+                            rt id {:attributes {:harness/result result}}
+                            "self-completed" by-identity {})
                            "self-complete! produced an invalid run strand")]
-       (attribution/record-action! rt id "self-completed" by-identity {})
        updated))))
 
 (s/fdef self-complete!

@@ -279,6 +279,77 @@
         (is (= ["retry-operator"] (:retry-actors result)))
         (is (= ["complete-operator"] (:complete-actors result)))))))
 
+(deftest attributed-run-mutation-and-action-note-are-atomic
+  (with-core-world
+    (fn [ctx]
+      (let [result
+            (test-alpha/repl!
+             ctx
+             '(do
+                (require '[ct.spools.harnesses :as harnesses]
+                         '[millstrand.api.hooks.alpha :as hooks]
+                         '[millstrand.api.notes.alpha :as notes]
+                         '[millstrand.api.weaver.alpha :as weaver])
+                (harnesses/register-harness!
+                 rt :fake
+                 {:modes #{:interactive}
+                  :prepare 'ct.spools.harnesses/create!
+                  :finish 'ct.spools.harnesses/finish!})
+                (def reject-action-evidence? (atom false))
+                (defn reject-action-evidence [context]
+                  (let [add-action
+                        (get-in context
+                                [:strand/after :attributes :harness/action])
+                        batch-actions
+                        (into #{}
+                              (keep #(get-in % [:attributes :harness/action]))
+                              (get-in context [:batch/payload :strands]))]
+                    (when (and @reject-action-evidence?
+                               (or (= "stop requested" add-action)
+                                   (contains? batch-actions "stop requested")))
+                      (throw (ex-info "reject action evidence"
+                                      {:code "test/reject-action-evidence"})))))
+                (hooks/register-hook!
+                 rt :reject-action-evidence
+                 #{:strand/add-before-commit :batch/apply-before-commit}
+                 (symbol (str (ns-name *ns*)) "reject-action-evidence") {})
+                (let [run (harnesses/create!
+                           rt {:harness :fake :mode :interactive})
+                      before (weaver/show rt (:id run))
+                      _ (reset! reject-action-evidence? true)
+                      rejection
+                      (try
+                        (harnesses/stop!
+                         rt (:id run)
+                         {:reason "atomic stop"
+                          :by-identity "stop-operator"})
+                        nil
+                        (catch clojure.lang.ExceptionInfo error
+                          {:message (ex-message error)
+                           :data (ex-data error)}))
+                      after-rejection (weaver/show rt (:id run))
+                      notes-after-rejection
+                      (notes/notes rt (:id run) {})
+                      _ (reset! reject-action-evidence? false)
+                      stopped
+                      (harnesses/stop!
+                       rt (:id run)
+                       {:reason "atomic stop"
+                        :by-identity "stop-operator"})]
+                  {:rejection rejection
+                   :unchanged? (= before after-rejection)
+                   :notes-after-rejection notes-after-rejection
+                   :stopped stopped
+                   :notes (notes/notes rt (:id run) {})})))]
+        (is (= "Lifecycle hook failed"
+               (get-in result [:rejection :message])))
+        (is (true? (:unchanged? result)))
+        (is (empty? (:notes-after-rejection result)))
+        (is (= "stopped"
+               (get-in result [:stopped :attributes :harness/status])))
+        (is (= ["stop-operator"]
+               (mapv :by-identity (:notes result))))))))
+
 (deftest work-scope-queries-use-positive-evidence
   (with-core-world
     (fn [ctx]

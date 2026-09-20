@@ -10,8 +10,7 @@
             [ct.spools.harnesses.internal.registry :as registry]
             [ct.spools.harnesses.internal.run-creation :as creation]
             [ct.spools.harnesses.internal.runs :as runs]
-            [millstrand.api.spool.alpha :refer [attr-get fail!]]
-            [millstrand.api.weaver.alpha :as weaver])
+            [millstrand.api.spool.alpha :refer [attr-get fail!]])
   (:import [java.util UUID]))
 
 (defn- require-valid! [spec value message]
@@ -197,9 +196,9 @@
             updated
             (require-valid!
              :ct.spools.harnesses/strand
-             (weaver/update! rt id {:attributes attributes})
+             (attribution/update-with-action!
+              rt id {:attributes attributes} "retried" by-identity {})
              "retry! produced an invalid run strand")]
-        (attribution/record-action! rt id "retried" by-identity {})
         updated))))
 
 (s/fdef retry! :args (s/cat :runtime :ct.spools.harnesses/runtime :id :ct.spools.harnesses/id :request :ct.spools.harnesses/retry-request) :ret :ct.spools.harnesses/strand)

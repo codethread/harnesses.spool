@@ -264,9 +264,8 @@
               patch (decision/abandonment-patch
                      run {:at at :by by-identity :reason reason :source source
                           :evidence (:evidence report)})]
-          (weaver/update! rt (:id run) patch)
-          (attribution/record-action!
-           rt (:id run) "abandoned" (:by-identity opts)
+          (attribution/update-with-action!
+           rt (:id run) patch "abandoned" (:by-identity opts)
            {:harness/action-reason reason
             :harness/reconciliation-source source})
           (assoc report :changed true
