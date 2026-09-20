@@ -104,7 +104,8 @@
         (is (= "sol" (get-in status [:config :seat])))
         (is (= "high" (get-in status [:config :effort])))
         (is (= "auto-full-land" (get-in status [:config :workflow])))
-        (is (= ["auto-full-land"] (get-in status [:config :workflows])))
+        (is (= ["auto-full-land" "auto-human-review"]
+               (get-in status [:config :workflows])))
         (is (empty? (:cards status)))
         (is (empty? (:dispatched (auto-run/scan! rt)))))
       (testing "the real policy admits exactly two eligible cards"
@@ -244,6 +245,38 @@
                                "Verify land is done and the card is closed with outcome done"))
             (is (not (str/includes? (:instruction finisher)
                                     "agent run grunt")))))))))
+
+(deftest human-review-contract-stops-before-landing
+  (t/with-weaver-world
+    [ctx (world-options)]
+    (let [rt (:runtime ctx)]
+      (current/with-runtime rt
+        (let [definition (:value (workflow/resolve-workflow :auto-human-review))
+              result (workflow/start!
+                      "test-auto-human-review"
+                      :auto-human-review
+                      {:card "fixture-card"
+                       :feature "Disposable feature"
+                       :branch "auto/fixture-card"
+                       :worktree (:config-dir ctx)})
+              root (workflow/current-root "test-auto-human-review")
+              strands (:strands (graph/subgraph rt [(:id root)]))
+              views (map workflow/step-view strands)
+              checkpoint (first (filter #(= "human" (:checkpoint-kind %)) views))]
+          (is (= ["Implement and verify the assigned feature"]
+                 (mapv :title (:ready result))))
+          (is (= [:review-card]
+                 (:depends-on (some #(when (= :human-acceptance (:id %)) %)
+                                    (:steps definition)))))
+          (is (= ["reviewed"] (:choices checkpoint)))
+          (is (str/includes? (:instruction checkpoint)
+                             "Do not choose this checkpoint"))
+          (is (str/includes? (:instruction checkpoint) "exact head SHA"))
+          (is (not-any? #(str/includes? (or (:instruction %) "")
+                                        "auto-land-finisher/")
+                        views))
+          (is (nil? (role-step strands "handoff-worker")))
+          (is (nil? (role-step strands "finisher"))))))))
 
 (defn -main
   "Run the disposable workspace activation test."

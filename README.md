@@ -79,26 +79,33 @@ namespaces alone does not publish those declarations.
 
 ### Repository automatic delivery
 
-The dogfood workspace registers a repository-owned `auto-full-land` workflow
-and a bounded dispatcher. Pending, dependency-ready feature cards opt in with
-the `auto-run` label. The default assignment uses Sol with high effort, with at
-most two admitted workers. A card may override `auto-run/seat`,
-`auto-run/effort`, or `auto-run/workflow`; only workflows allowed by this
-repository are accepted.
+The dogfood workspace registers repository-owned `auto-full-land` and
+`auto-human-review` workflows with a bounded dispatcher. Pending,
+dependency-ready feature cards opt in with the `auto-run` label. The default
+assignment remains Sol with high effort and `auto-full-land`, with at most two
+admitted workers. A card may override `auto-run/seat`, `auto-run/effort`, or
+`auto-run/workflow`; only those two workflows are accepted.
 
-`auto-full-land` separates implementation, branch publication, repository
-checks, CI, and the review transition from landing. After committing, the
-implementation worker pushes its branch with an upstream before repository
-quality runs, so quality validates the same published HEAD that reaches review.
-Shared autonomous Land creates a distinct finisher target whose worker owns
-sign-off, FIFO merge, cleanup, and final card closure. The implementation
-worker cannot sign off its own change.
+Both workflows separate implementation, branch publication, repository checks,
+CI, and the review transition. After committing, the implementation worker
+pushes its branch with an upstream before repository quality runs, so quality
+validates the same published HEAD that reaches review.
+
+`auto-full-land` calls shared autonomous Land, which creates a distinct finisher
+target whose worker owns sign-off, FIFO merge, cleanup, and final card closure.
+The implementation worker cannot sign off its own change.
+
+`auto-human-review` instead stops at a human checkpoint after preparing a
+passing, non-draft PR for the exact tested head. It leaves the feature, branch,
+and worktree intact. The worker must not choose the checkpoint, start Land,
+merge, close the feature, or launch a finisher.
 
 Inspect configuration and durable one-shot receipts with:
 
 ```text
 strand auto-run status
 strand workflow show auto-full-land
+strand workflow show auto-human-review
 ```
 
 A preparation or admission error is retained on the card and is not retried
