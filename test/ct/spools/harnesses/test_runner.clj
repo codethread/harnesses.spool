@@ -3,6 +3,7 @@
   (:require [clojure.test :as test]
             [ct.spools.harnesses.agent-bin-test]
             [ct.spools.harnesses.assignment-test]
+            [ct.spools.harnesses.publication-test]
             [ct.spools.harnesses.assignment-concurrency-test]
             [ct.spools.harnesses.execution-assignment-test]
             [ct.spools.harnesses.guidance-acknowledgement-timestamp-test]
@@ -52,6 +53,7 @@
 (def ^:private test-namespaces
   '[ct.spools.harnesses.agent-bin-test
     ct.spools.harnesses.assignment-test
+    ct.spools.harnesses.publication-test
     ct.spools.harnesses.assignment-concurrency-test
     ct.spools.harnesses.guidance-acknowledgement-timestamp-test
     ct.spools.harnesses.executors.agent-test

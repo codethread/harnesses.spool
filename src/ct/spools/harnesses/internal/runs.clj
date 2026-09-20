@@ -6,6 +6,7 @@
             [ct.spools.harnesses.internal.managed-legacy :as legacy]
             [ct.spools.harnesses.internal.managed-startup :as managed]
             [ct.spools.harnesses.internal.registry :as registry]
+            [ct.spools.harnesses.internal.publication :as publication]
             [millstrand.api.graph.alpha :as graph]
             [millstrand.api.spool.alpha :refer [attr-get fail! require-valid!]]
             [millstrand.api.weaver.alpha :as weaver]))
@@ -40,18 +41,16 @@
                      {})))
 
 (defn reserving-session-writers
-  "Return published runs that still reserve `session-id`."
+  "Return runs that still reserve `session-id`."
   [rt session-id]
   (filterv life/reserving?
-           (runs-where rt [[:= [:attr "harness/session-id"] session-id]
-                           [:= [:attr "harness/published"] "true"]])))
+           (runs-where rt [[:= [:attr "harness/session-id"] session-id]])))
 
 (defn reserving-target-runs
-  "Return published runs that still reserve `target`."
+  "Return runs that still reserve `target`."
   [rt target]
   (filterv life/reserving?
-           (runs-where rt [[:= [:attr "harness/target"] target]
-                           [:= [:attr "harness/published"] "true"]])))
+           (runs-where rt [[:= [:attr "harness/target"] target]])))
 
 (defn request-holder
   "Return the unique run holding `request-id`, or nil when the key is free."
@@ -74,7 +73,7 @@
     (when-not (= fingerprint (attr-get existing :harness/request-fingerprint))
       (fail! "Request id is already held by a different harness request"
              {:request-id request-id :run (:id existing)}))
-    existing))
+    (publication/recover! rt (:id existing))))
 
 (defn continuation-child
   "Return an accepted continuation of `run-id`, if one exists."
@@ -87,7 +86,7 @@
                              (graph/incoming-edges rt [run-id] "continues"))))]
     (some #(let [child (some->> (weaver/show rt %)
                                 (guidance/validation-run rt))]
-             (when (and child (life/published? child)) child))
+             (when (and child (life/accepted? child)) child))
           child-ids)))
 
 (defn require-continuation-head!
@@ -96,7 +95,10 @@
   (when-let [child (continuation-child rt run-id)]
     (fail! "Harness predecessor already has an accepted continuation"
            {:predecessor run-id :continuation (:id child)}))
-  (require-run rt run-id))
+  (let [run (require-run rt run-id)]
+    (when-not (life/accepted? run)
+      (fail! "Harness predecessor publication was not accepted" {:id run-id}))
+    run))
 
 (defn frozen-resolution
   "Return an alias-free resolution for a native continuation.
@@ -144,6 +146,8 @@
                          :harness/mode (name mode)
                          :harness/status "ready"
                          :harness/substatus "pending"
+                         :harness/publication-phase "created"
+                         :harness/publication-outcome "publishing"
                          :harness/cwd cwd
                          :harness/session-id session-id
                          :harness/env env
@@ -180,60 +184,65 @@
                                 (into (for [root-target root-targets]
                                         {:type "serves-root"
                                          :to root-target}))))))
-             "create! produced an invalid run strand")
-        predecessor (when resumes (require-run rt resumes))
-        identity-binding (managed/commit-identity!
-                          rt
-                          {:harness harness
-                           :session-id session-id
-                           :run run
-                           :predecessor predecessor
-                           :by-identity by-identity
-                           :effective effective})
-        run-id (:id run)
-        identity-id (:identity identity-binding)
-        guidance-patch
-        (guidance/publication-patch
-         rt run-id identity-id (:prompt identity-binding)
-         (:harness/appended-system-prompts effective)
-         guidance-selection guidance-context-template [])
-        effective (bind-invocation-markers effective run-id identity-id)
-        effective (cond-> effective
-                    (some? literal-extra-argv)
-                    (assoc :harness/extra-argv literal-extra-argv))
-        prompt (bind-invocation-markers prompt run-id identity-id)
-        context (bind-invocation-markers context run-id identity-id)
-        published (guidance/validation-run
-                   rt
-                   (require-valid!
-                    :ct.spools.harnesses/strand
-                    (weaver/update!
-                     rt (:id run)
-                     {:attributes (merge effective
-                                         guidance-patch
-                                         (when (some? prompt) {:harness/prompt prompt})
-                                         (when context {:harness/context context})
-                                         {:identity/id identity-id
-                                          :identity/prompt (:prompt identity-binding)
-                                          :harness/logical-id (or logical-id (:id run))
-                                         ;; Last write of the create: everything a scheduler needs
-                                         ;; to act on this run is durable before it becomes visible
-                                         ;; as published.
-                                          :harness/published "true"}
-                                         (when-let [reservation-id
-                                                    (:reservation-id
-                                                     identity-binding)]
-                                           {:identity/reservation-id reservation-id
-                                            :harness/provisional-session-id session-id
-                                            :harness/native-attached
-                                            (if (:native-attached identity-binding)
-                                              "true"
-                                              "false")}))})
-                    "create! produced an invalid published run"))]
-    (when-let [predecessor-id (or resumes after)]
-      (weaver/update! rt predecessor-id
-                      {:attributes {:harness/continued "true"}}))
-    published))
+             "create! produced an invalid run strand")]
+    (try
+      (publication/check-interrupted!)
+      (let [predecessor (when resumes (require-run rt resumes))
+            identity-binding (managed/commit-identity!
+                              rt
+                              {:harness harness
+                               :session-id session-id
+                               :run run
+                               :predecessor predecessor
+                               :by-identity by-identity
+                               :effective effective})
+            run-id (:id run)
+            identity-id (:identity identity-binding)
+            _ (weaver/update!
+               rt run-id
+               {:attributes (merge
+                             {:identity/id identity-id
+                              :identity/prompt (:prompt identity-binding)
+                              :harness/publication-phase "bound"}
+                             (when-let [reservation-id (:reservation-id identity-binding)]
+                               {:identity/reservation-id reservation-id
+                                :harness/provisional-session-id session-id
+                                :harness/native-attached
+                                (if (:native-attached identity-binding) "true" "false")}))})
+            _ (publication/check-interrupted!)
+            guidance-patch
+            (guidance/publication-patch
+             rt run-id identity-id (:prompt identity-binding)
+             (:harness/appended-system-prompts effective)
+             guidance-selection guidance-context-template [])
+            effective (bind-invocation-markers effective run-id identity-id)
+            effective (cond-> effective
+                        (some? literal-extra-argv)
+                        (assoc :harness/extra-argv literal-extra-argv))
+            prompt (bind-invocation-markers prompt run-id identity-id)
+            context (bind-invocation-markers context run-id identity-id)
+            published (guidance/validation-run
+                       rt
+                       (require-valid!
+                        :ct.spools.harnesses/strand
+                        (weaver/update!
+                         rt (:id run)
+                         {:attributes (merge effective
+                                             guidance-patch
+                                             (when (some? prompt) {:harness/prompt prompt})
+                                             (when context {:harness/context context})
+                                             {:harness/logical-id (or logical-id (:id run))
+                                              ;; Binding is published, but assignment enrichment
+                                              ;; and the final commit still fence scheduling.
+                                              :harness/published "true"
+                                              :harness/publication-phase "published"})})
+                        "create! produced an invalid published run"))]
+        (publication/check-interrupted!)
+        (when publication/*enrich*
+          (publication/*enrich* rt published))
+        (publication/complete! rt published (or resumes after)))
+      (catch Throwable error
+        (publication/fail! rt (:id run) error)))))
 
 (defn inspectable-headless
   "Return published headless runs that still need a custody observation.
@@ -259,16 +268,16 @@
                              {}))))
 
 (defn accepted-lineage
-  "Return every published run matching `attribute` = `value`."
+  "Return every accepted run matching `attribute` = `value`."
   [rt attribute value]
-  (filterv #(and (life/published? %)
+  (filterv #(and (life/accepted? %)
                  (= value (attr-get % attribute)))
            (runs-where rt [])))
 
 (defn resolve-lineage-head
   "Return the latest accepted head for `attribute` = `value`.
 
-  Every published child is inspected so a still-running continuation keeps
+  Every accepted child is inspected so a still-running continuation keeps
   its predecessor out of the head set. Only a terminal, settled, uncontinued
   run can be a head. There is no fallback to a stale ancestor."
   [rt attribute value selector]

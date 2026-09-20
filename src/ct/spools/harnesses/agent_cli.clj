@@ -318,6 +318,12 @@
     (attr-get run :harness/reconciliation-evidence)
     (assoc :reconciliation-evidence
            (attr-get run :harness/reconciliation-evidence))
+    (attr-get run :harness/publication-phase)
+    (assoc :publication-phase (attr-get run :harness/publication-phase))
+    (attr-get run :harness/publication-outcome)
+    (assoc :publication-outcome (attr-get run :harness/publication-outcome))
+    (attr-get run :harness/publication-reason)
+    (assoc :publication-reason (attr-get run :harness/publication-reason))
     (attr-get run :harness/logical-id)
     (assoc :logical-id (attr-get run :harness/logical-id))
     (attr-get run :harness/target) (assoc :target (attr-get run :harness/target))
@@ -365,7 +371,7 @@
          (case (count matches)
            0 (fail! "No agent run matches the selector"
                     {:task task :request request})
-           1 (first matches)
+           1 (full-run rt (:id (first matches)))
            ;; Several runs may have served one target over time; the caller
            ;; asked for a run, so name them rather than picking one silently.
            (fail! "Selector matches multiple agent runs"

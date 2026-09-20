@@ -222,6 +222,9 @@
                           (runs/reserving-session-writers rt session-id)))
         legacy? (managed/legacy-managed-run? run)
         result (cond
+                 (not (life/accepted? run))
+                 {:eligible? false :reason "run publication was not accepted"}
+
                  (and legacy? (= "pi" (attr-get run :harness/harness)))
                  (do
                    (managed/require-legacy-pi-continuation! rt run)

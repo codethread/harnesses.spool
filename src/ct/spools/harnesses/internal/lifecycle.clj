@@ -45,12 +45,33 @@
   (= "true" (attr-get run :harness/settled)))
 
 (defn published?
-  "Return true once identity, target, and request binding are all durable.
+  "Return true once identity, target, and request binding are durable.
 
-  Only published runs are eligible for scheduling, so a run committed mid
-  publication can never be launched or reconciled by a concurrent worker."
+  This binding marker is necessary but insufficient for launch. `accepted?`
+  also fences final assignment enrichment and publication completion."
   [run]
   (= "true" (attr-get run :harness/published)))
+
+(defn assignment-enriched?
+  "Return whether assignment context contains its final invocation binding."
+  [run]
+  (let [context (attr-get run :harness/context)
+        policy (or (get context "assignment/policy")
+                   (get context :assignment/policy))
+        enriched (or (get context "assignment/run-id")
+                     (get context :assignment/run-id))]
+    (or (nil? policy) (= (:id run) enriched))))
+
+(defn accepted?
+  "Return true only for fully committed publication, including assignment.
+
+  Historical rows have no outcome marker; their published binding and final
+  assignment enrichment together are the retained acceptance evidence."
+  [run]
+  (let [outcome (attr-get run :harness/publication-outcome)]
+    (and (published? run)
+         (assignment-enriched? run)
+         (or (nil? outcome) (= "committed" outcome)))))
 
 (defn active?
   "Return true when a run is ready to start or currently executing."

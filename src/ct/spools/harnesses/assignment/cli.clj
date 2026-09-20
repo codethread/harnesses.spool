@@ -53,9 +53,19 @@
            :target (attr-get run :harness/target)
            :policy (internal/context-get (attr-get run :harness/context)
                                          "assignment/policy")
-           :cwd (attr-get run :harness/cwd)
-           :identity (attr-get run :identity/id)
-           :request-id (attr-get run :harness/request-id)}
+           :cwd (attr-get run :harness/cwd)}
+    (attr-get run :identity/id)
+    (assoc :identity (attr-get run :identity/id))
+    (attr-get run :harness/request-id)
+    (assoc :request-id (attr-get run :harness/request-id))
+    (attr-get run :harness/settlement)
+    (assoc :settlement (attr-get run :harness/settlement))
+    (attr-get run :harness/publication-phase)
+    (assoc :publication-phase (attr-get run :harness/publication-phase))
+    (attr-get run :harness/publication-outcome)
+    (assoc :publication-outcome (attr-get run :harness/publication-outcome))
+    (attr-get run :harness/publication-reason)
+    (assoc :publication-reason (attr-get run :harness/publication-reason))
     (attr-get run :harness/logical-id)
     (assoc :logical-id (attr-get run :harness/logical-id))))
 

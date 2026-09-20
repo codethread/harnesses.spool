@@ -14,6 +14,7 @@
             [clojure.string :as str]
             [ct.spools.harnesses :as harnesses]
             [ct.spools.harnesses.internal.assignment :as internal]
+            [ct.spools.harnesses.internal.lifecycle :as life]
             [millstrand.api.lifecycle.alpha :as lifecycle]
             [millstrand.api.runtime.alpha :as runtime]
             [millstrand.api.spool.alpha :refer [attr-get fail! require-valid!]]
@@ -181,23 +182,17 @@
 (defn launch-ready?
   "Return true when `run` may start.
 
-  Ad-hoc runs (no target) are launch-ready. A targeted run is launch-ready
-  only when its target is ready and an assignment bridge has finished its
-  post-publication identity and run-id enrichment."
+  Only accepted ready runs are launch-ready. A targeted run also requires
+  its target to be ready; acceptance includes the assignment bridge's final
+  identity and run-id enrichment."
   [rt run]
   (require-valid! :ct.spools.harnesses/runtime rt
                   "launch-ready? requires a Weaver runtime")
-  (let [context (attr-get run :harness/context)
-        assignment? (and (map? context)
-                         (or (contains? context "assignment/policy")
-                             (contains? context :assignment/policy)))
-        enriched? (and assignment?
-                       (or (contains? context "assignment/run-id")
-                           (contains? context :assignment/run-id)))]
-    (if-let [target (attr-get run :harness/target)]
-      (and (or (not assignment?) enriched?)
-           (target-ready? rt target))
-      true)))
+  (and (life/accepted? run)
+       (= "ready" (life/status run))
+       (if-let [target (attr-get run :harness/target)]
+         (target-ready? rt target)
+         true)))
 
 (defn- resolve-policy
   [rt request]
@@ -269,10 +264,7 @@
                       :attributes (:attributes request)
                       :append-system-prompt
                       (:append-system-prompt request)})]
-    (if (:existing? accepted)
-      (:run accepted)
-      (internal/enrich-guidance!
-       rt (:run accepted) frozen policy cwd target))))
+    accepted))
 
 (s/fdef assign!
   :args (s/cat :runtime :ct.spools.harnesses/runtime :request ::assign-request)

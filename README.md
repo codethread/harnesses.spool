@@ -851,6 +851,29 @@ closes the target or releases its dependency chain. The launched process
 receives reserved `MILLSTRAND_AGENT_ID` and `MILLSTRAND_RUN_ID` values, which
 override user environment values.
 
+Publication receipts (`agent show` and `agent assign`) expose
+`publication-phase`, `publication-outcome`, and, on interruption,
+`publication-reason`. Binding publication alone is not acceptance: assignment
+identity/run-id enrichment and continuation bookkeeping must commit before the
+run can launch. Phases retain the last completed boundary (`created`, `bound`,
+`published`, or `complete`); the outcome is `publishing`, `committed`, or
+`interrupted`.
+
+If publication fails or a cooperative operation deadline interrupts it, the
+original error remains an error. An incomplete ready run with no execution
+attempt settles as `stopped/requested`, `never-launched`. Its request key,
+fingerprint, partial identity/reservation evidence, and history are retained.
+Exact replay returns that same interruption, never re-enriches it or creates
+another worker. A fully committed run remains accepted even if its response
+was lost. Readback and execution startup recognize retained incomplete rows;
+possible execution custody never acquires invented settlement evidence.
+
+An interrupted child is not an accepted continuation head. Continue only by an
+explicit normal request from a valid accepted predecessor, or by a separately
+authorized fresh assignment. Publication recovery does not retry work, attach
+native sessions, or grant that authorization. These semantics require loading
+the updated source through the consumer's supported activation path.
+
 Blocked targets are accepted but remain queued until their `depends-on`
 blockers close. Independent targets launch concurrently, and scheduling
 rechecks target readiness. Parallel workers use distinct task targets; each run

@@ -7,6 +7,7 @@
             [ct.spools.harnesses.internal.guidance :as guidance]
             [ct.spools.harnesses.internal.guidance-receipts :as guidance-receipts]
             [ct.spools.harnesses.internal.lifecycle :as life]
+            [ct.spools.harnesses.internal.publication :as publication]
             [ct.spools.harnesses.internal.managed-repair :as managed-repair]
             [ct.spools.harnesses.internal.managed-startup :as managed]
             [ct.spools.harnesses.internal.run-continuation :as continuation]
@@ -87,6 +88,7 @@
   [rt id]
   (require-valid! ::runtime rt "run requires a Weaver runtime")
   (require-valid! ::id id "run requires a run id")
+  (publication/recover! rt id)
   (runs/require-run rt id))
 
 (defn create!
@@ -168,7 +170,7 @@
            interactive? (= "interactive" (attr-get run :harness/mode))
            attempt (inc (or (attr-get run :harness/attempt) 0))
            invocation (str (UUID/randomUUID))]
-       (when-not (life/published? run)
+       (when-not (life/accepted? run)
          (fail! "Harness run is not published and cannot start" {:id id}))
        (when (and (seq start-attributes)
                   (not= "interactive" (attr-get run :harness/mode)))
