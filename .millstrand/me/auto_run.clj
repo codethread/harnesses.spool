@@ -46,7 +46,9 @@
   "Return the dispatcher's active automatic delivery configuration."
   [{:keys [runtime]}]
   (when-let [config (:config (auto-run/status runtime))]
-    (cond-> (update config :prepare symbol)
+    (cond-> (-> config
+                (update :prepare symbol)
+                (update :workflows set))
       (:start-params config) (update :start-params symbol))))
 
 (defn reconcile-config!

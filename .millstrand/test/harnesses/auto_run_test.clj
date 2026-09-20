@@ -322,6 +322,17 @@
           (is (= #{:start}
                  (:entrypoints (workflow/resolve-workflow
                                 :auto-human-review)))))
+        (let [desired! @(runtime/resolve-var
+                         rt 'harnesses.auto-run/desired-config)
+              actual! @(runtime/resolve-var
+                        rt 'harnesses.auto-run/actual-config)
+              reconcile! @(runtime/resolve-var
+                           rt 'harnesses.auto-run/reconcile-config!)]
+          (is (false?
+               (:changed?
+                (reconcile! {:runtime rt
+                             :desired (desired! {:runtime rt})
+                             :actual (actual! {:runtime rt})})))))
         (is (empty? (:residuals (runtime/refresh! rt))))
         (is (= wake (vec (auto-run-wakes rt))))
         (is (= "assigned"
