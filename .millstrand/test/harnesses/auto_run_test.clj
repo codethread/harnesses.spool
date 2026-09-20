@@ -180,8 +180,9 @@
               (is (= "sh" (first quality-argv)))
               (is (= "auto-run-quality" (nth quality-argv 3)))
               (is (= "auto/fixture-card" (nth quality-argv 4)))
-              (is (= ["gh" "pr" "checks" "auto/fixture-card" "--watch" "--fail-fast"]
-                     ci-argv))
+              (is (= ["sh" "-c"] (subvec ci-argv 0 2)))
+              (is (= ["pr-checks" "allow-empty" "auto/fixture-card" "120" "5"]
+                     (subvec ci-argv (- (count ci-argv) 5))))
               (is (= [:ci] (:depends-on (step :review-card))))
               (testing "the shared gate accepts a clean published revision"
                 (let [fixture (quality-fixture "#!/bin/sh\nexit 0\n")]
