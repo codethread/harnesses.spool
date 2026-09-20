@@ -3,6 +3,7 @@
   (:require [clojure.spec.alpha :as s]
             [clojure.string :as str]
             [millhouse.spools.land.autonomous :as autonomous]
+            [millhouse.spools.land.support :as land-support]
             [millhouse.spools.workflow :as workflow]
             [millstrand.api.format.alpha :as format]))
 
@@ -16,16 +17,56 @@
 (defn- failure-instruction [{:keys [card]}]
   (autonomous/failure-policy card))
 
-(defn- shell-gate [id title dependencies argv timeout]
-  (workflow/gate id title :shell
-                 :depends-on dependencies
-                 :attributes {"shell/argv" argv
-                              "shell/cwd" (fn [{:keys [worktree]}] worktree)
-                              "shell/timeout-secs" timeout}
-                 failure-instruction))
+(defn- replace-quality-check [script old-check new-check]
+  (if (str/includes? script old-check)
+    (str/replace-first script old-check new-check)
+    (throw (ex-info "Land quality gate no longer contains the expected check"
+                    {:check old-check}))))
+
+(def ^:private upstream-quality-check
+  (str/join
+   "\n"
+   ["  upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null) \\"
+    "    || die \"branch $target has no upstream; push it before running the land quality gate\""
+    "  upstream_head=$(git rev-parse \"$upstream\") || die \"cannot read upstream $upstream\""
+    "  [ \"$upstream_head\" = \"$head_before\" ] \\"
+    "    || die \"unpushed or mismatched HEAD: local $head_before, upstream $upstream_head\""]))
+
+(def ^:private origin-quality-check
+  (str/join
+   "\n"
+   ["  git fetch origin \"refs/heads/$target:refs/remotes/origin/$target\" \\"
+    "    || die \"cannot refresh refs/remotes/origin/$target from origin\""
+    "  origin_head=$(git rev-parse \"refs/remotes/origin/$target\") \\"
+    "    || die \"cannot read refreshed refs/remotes/origin/$target\""
+    "  [ \"$origin_head\" = \"$head_before\" ] \\"
+    "    || die \"unpushed or mismatched HEAD: local $head_before, origin $origin_head\""]))
+
+(def ^:private upstream-quality-check-after
+  (str/join
+   "\n"
+   ["  upstream_head_after=$(git rev-parse \"$upstream\") \\"
+    "    || die \"cannot re-read upstream $upstream after quality checks\""
+    "  [ \"$upstream_head_after\" = \"$head_before\" ] \\"
+    "    || die \"upstream changed during quality checks: expected $head_before, found $upstream_head_after\""]))
+
+(def ^:private origin-quality-check-after
+  (str/join
+   "\n"
+   ["  git fetch origin \"refs/heads/$target:refs/remotes/origin/$target\" \\"
+    "    || die \"cannot refresh refs/remotes/origin/$target from origin after quality checks\""
+    "  origin_head_after=$(git rev-parse \"refs/remotes/origin/$target\") \\"
+    "    || die \"cannot re-read refreshed refs/remotes/origin/$target after quality checks\""
+    "  [ \"$origin_head_after\" = \"$head_before\" ] \\"
+    "    || die \"origin/$target changed during quality checks: expected $head_before, found $origin_head_after\""]))
+
+(def ^:private auto-run-quality-gate-script
+  (-> land-support/land-quality-gate-script
+      (replace-quality-check upstream-quality-check origin-quality-check)
+      (replace-quality-check upstream-quality-check-after origin-quality-check-after)))
 
 (workflow/defworkflow! auto-full-land
-  "Implement, verify, review, then hand landing to an independent finisher."
+  "Implement, publish, verify, review, then hand landing to an independent finisher."
   {:entrypoints #{:start} :param-spec ::params}
   (workflow/workflow
    "Deliver automatically"
@@ -44,14 +85,34 @@
          shared `.millstrand` world as a fixture. Add focused regression tests
          when behavior or ownership boundaries warrant them.
 
-         Run `make check` while iterating. Commit the verified work, then
-         complete this step. Do not start Land; the following steps own review
-         and the independent landing handoff.
+         Run focused checks while iterating. Commit the completed work, then
+         complete this step. Do not start Land; the following steps own
+         publication, quality, review, and the independent landing handoff.
 
          {failure-policy}
        " {:card card :failure-policy (autonomous/failure-policy card)})))
-   (shell-gate :quality "Pass repository quality checks" [:implement]
-               ["make" "check"] 5400)
+   (workflow/step
+    :publish "Publish the committed branch before quality checks" :self
+    :depends-on [:implement]
+    (fn [{:keys [branch]}]
+      (format/prose
+       "
+         Publish the committed branch and establish its upstream before
+         repository quality runs:
+
+         ```sh
+         git push --set-upstream origin {branch}
+         ```
+
+         Do not amend, commit, or otherwise change HEAD after this step. The
+         following quality gate must validate this published revision.
+       " {:branch branch})))
+   (land-support/shell-gate
+    :quality "Pass repository quality checks" [:publish]
+    (fn [{:keys [branch]}]
+      (land-support/sh-gate auto-run-quality-gate-script
+                            "auto-run-quality" branch))
+    5400 failure-instruction)
    (workflow/step
     :prepare-pr "Publish the exact change with its review package" :self
     :depends-on [:quality]
@@ -72,10 +133,11 @@
          only after publishing the committed revision and review package. The
          next gates independently wait for CI and verify the card transition.
        " {:card card :branch branch})))
-   (shell-gate :ci "Wait for the PR checks" [:prepare-pr]
-               (fn [{:keys [branch]}]
-                 ["gh" "pr" "checks" branch "--watch" "--fail-fast"])
-               2100)
+   (land-support/shell-gate
+    :ci "Wait for the PR checks" [:prepare-pr]
+    (fn [{:keys [branch]}]
+      ["gh" "pr" "checks" branch "--watch" "--fail-fast"])
+    2100 failure-instruction)
    (workflow/gate
     :review-card "Move the verified feature into review" :code
     :depends-on [:ci]

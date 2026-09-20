@@ -2,6 +2,7 @@
   "Exercise repository auto-run activation in a disposable Weaver world."
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
+            [clojure.java.shell :as shell]
             [clojure.string :as str]
             [clojure.test :refer [deftest is run-tests testing]]
             [ct.spools.codethread.auto-run :as auto-run]
@@ -49,6 +50,49 @@
 (defn- role-step [strands role]
   (first (filter #(= role (attr-get % :auto-run/role)) strands)))
 
+(defn- git!
+  [dir & args]
+  (let [{:keys [exit out err]}
+        (apply shell/sh (concat ["git" "-C" (.getPath (io/file dir))] args))]
+    (when-not (zero? exit)
+      (throw (ex-info "Git fixture command failed"
+                      {:dir dir :args args :exit exit :out out :err err})))
+    out))
+
+(defn- quality-fixture
+  [contract]
+  (let [root (io/file (System/getProperty "java.io.tmpdir")
+                      (str "harnesses-quality-" (java.util.UUID/randomUUID)))
+        worktree (io/file root "worktree")
+        remote (io/file root "remote.git")
+        branch "feature/quality-test"]
+    (.mkdirs root)
+    (apply git! root ["init" "--bare" (.getPath remote)])
+    (apply git! root ["init" "-b" branch (.getPath worktree)])
+    (git! worktree "config" "user.name" "Harnesses Test")
+    (git! worktree "config" "user.email" "test@harnesses.invalid")
+    (let [quality-contract (io/file worktree ".millstrand/land-quality.sh")]
+      (io/make-parents quality-contract)
+      (spit quality-contract contract)
+      (.setExecutable quality-contract true false))
+    (git! worktree "add" ".")
+    (git! worktree "commit" "-m" "quality fixture")
+    (git! worktree "remote" "add" "origin" (.getPath remote))
+    (git! worktree "push" "-u" "origin" branch)
+    {:root root
+     :worktree worktree
+     :branch branch
+     :head (str/trim (git! worktree "rev-parse" "HEAD"))}))
+
+(defn- delete-tree!
+  [root]
+  (doseq [file (reverse (file-seq root))]
+    (io/delete-file file true)))
+
+(defn- quality-result
+  [argv worktree branch]
+  (apply shell/sh (concat (assoc argv 4 branch) [:dir (.getPath worktree)])))
+
 (deftest repository-activation-and-full-land-contract
   (t/with-weaver-world
     [ctx (world-options)]
@@ -95,7 +139,10 @@
                 (is (= (attr-get receipt :auto-run/worktree)
                        (:worktree context))))))))
       (current/with-runtime rt
-        (let [result (workflow/start!
+        (let [definition (:value (workflow/resolve-workflow :auto-full-land))
+              step (fn [id]
+                     (some #(when (= id (:id %)) %) (:steps definition)))
+              result (workflow/start!
                       "test-auto-full-land"
                       :auto-full-land
                       {:card "fixture-card"
@@ -105,6 +152,15 @@
               root (workflow/current-root "test-auto-full-land")
               strands (:strands (graph/subgraph rt [(:id root)]))
               gates (set (keep #(attr-get % :workflow/gate) strands))
+              quality-argv (attr-get
+                            (some #(when (= "Pass repository quality checks"
+                                            (:title %))
+                                     %)
+                                  strands)
+                            :shell/argv)
+              ci-argv (attr-get
+                       (some #(when (= "Wait for the PR checks" (:title %)) %) strands)
+                       :shell/argv)
               handoff (workflow/step-view (role-step strands "handoff-worker"))
               finisher (workflow/step-view (role-step strands "finisher"))]
           (is (= ["Implement and verify the assigned feature"]
@@ -113,6 +169,67 @@
           (is (contains? gates "code"))
           (is (not (contains? gates "agent"))
               "The finisher is a deliberate handoff, not an eager agent gate")
+          (testing "publication precedes quality"
+            (let [publish (step :publish)
+                  quality (step :quality)
+                  instruction (get-in publish [:attributes "workflow/instruction"])]
+              (is (= [:implement] (:depends-on publish)))
+              (is (= [:publish] (:depends-on quality)))
+              (is (str/includes? (instruction {:branch "auto/fixture-card"})
+                                 "git push --set-upstream origin auto/fixture-card"))
+              (is (= "sh" (first quality-argv)))
+              (is (= "auto-run-quality" (nth quality-argv 3)))
+              (is (= "auto/fixture-card" (nth quality-argv 4)))
+              (is (= ["gh" "pr" "checks" "auto/fixture-card" "--watch" "--fail-fast"]
+                     ci-argv))
+              (is (= [:ci] (:depends-on (step :review-card))))
+              (testing "the shared gate accepts a clean published revision"
+                (let [fixture (quality-fixture "#!/bin/sh\nexit 0\n")]
+                  (try
+                    (is (zero? (:exit (quality-result quality-argv
+                                                       (:worktree fixture)
+                                                       (:branch fixture)))))
+                    (finally
+                      (delete-tree! (:root fixture))))))
+              (testing "the shared gate rejects an unbound or changed revision"
+                (doseq [[label contract mutate!]
+                        [["wrong branch" "#!/bin/sh\nexit 0\n"
+                          #(git! (:worktree %) "checkout" "-b" "feature/other")]
+                         ["dirty worktree" "#!/bin/sh\nexit 0\n"
+                          #(spit (io/file (:worktree %) "dirty") "dirty\n")]
+                         ["unpushed HEAD" "#!/bin/sh\nexit 0\n"
+                          #(do (spit (io/file (:worktree %) "unpushed") "unpushed\n")
+                               (git! (:worktree %) "add" ".")
+                               (git! (:worktree %) "commit" "-m" "unpushed"))]
+                         ["remote target advanced behind a stale tracking ref"
+                          "#!/bin/sh\nexit 0\n"
+                          #(let [{:keys [worktree branch head]} %]
+                             (git! worktree "commit" "--allow-empty" "-m" "remote revision")
+                             (git! worktree "push" "origin"
+                                   (str "HEAD:refs/heads/" branch))
+                             (git! worktree "reset" "--hard" head)
+                             (git! worktree "update-ref"
+                                   (str "refs/remotes/origin/" branch) head))]
+                         ["remote target advances during quality checks"
+                          (str "#!/bin/sh\nset -eu\n"
+                               "git commit --allow-empty -m remote-revision\n"
+                               "git push origin \"HEAD:refs/heads/$LAND_EXPECTED_BRANCH\"\n"
+                               "git reset --hard \"$LAND_EXPECTED_HEAD\"\n"
+                               "git update-ref \"refs/remotes/origin/$LAND_EXPECTED_BRANCH\" "
+                               "\"$LAND_EXPECTED_HEAD\"\n")
+                          identity]
+                         ["changed tested HEAD"
+                          "#!/bin/sh\nset -eu\ngit commit --allow-empty -m changed\n"
+                          identity]]]
+                  (let [fixture (quality-fixture contract)]
+                    (try
+                      (mutate! fixture)
+                      (let [{:keys [exit]} (quality-result quality-argv
+                                                           (:worktree fixture)
+                                                           (:branch fixture))]
+                        (is (not (zero? exit)) label))
+                      (finally
+                        (delete-tree! (:root fixture)))))))))
           (testing "worker and finisher have separate targets and authority"
             (is (= "step" (:role handoff) (:role finisher)))
             (is (not= (:id handoff) (:id finisher)))

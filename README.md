@@ -86,10 +86,13 @@ most two admitted workers. A card may override `auto-run/seat`,
 `auto-run/effort`, or `auto-run/workflow`; only workflows allowed by this
 repository are accepted.
 
-`auto-full-land` separates implementation, repository checks, CI, and the review
-transition from landing. Shared autonomous Land creates a distinct finisher
-target whose worker owns sign-off, FIFO merge, cleanup, and final card closure.
-The implementation worker cannot sign off its own change.
+`auto-full-land` separates implementation, branch publication, repository
+checks, CI, and the review transition from landing. After committing, the
+implementation worker pushes its branch with an upstream before repository
+quality runs, so quality validates the same published HEAD that reaches review.
+Shared autonomous Land creates a distinct finisher target whose worker owns
+sign-off, FIFO merge, cleanup, and final card closure. The implementation
+worker cannot sign off its own change.
 
 Inspect configuration and durable one-shot receipts with:
 
