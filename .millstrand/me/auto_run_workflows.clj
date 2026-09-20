@@ -136,7 +136,7 @@
    (land-support/shell-gate
     :ci "Wait for the PR checks" [:prepare-pr]
     (fn [{:keys [branch]}]
-      ["gh" "pr" "checks" branch "--watch" "--fail-fast"])
+      (land-support/pr-checks-argv "allow-empty" branch))
     2100 failure-instruction)
    (workflow/gate
     :review-card "Move the verified feature into review" :code
