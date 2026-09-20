@@ -168,13 +168,27 @@
 (s/def :ct.spools.harnesses/context (s/and map? registry/json-value?))
 (s/def :ct.spools.harnesses/request-id (s/and string? (complement str/blank?)))
 (s/def :ct.spools.harnesses/logical-id :ct.spools.harnesses/id)
+(s/def :ct.spools.harnesses/run-id :ct.spools.harnesses/id)
+(s/def :ct.spools.harnesses/identity :ct.spools.harnesses/id)
+(s/def :ct.spools.harnesses/resume-selector
+  (s/and
+   (s/keys :opt-un [:ct.spools.harnesses/run-id
+                    :ct.spools.harnesses/session-id
+                    :ct.spools.harnesses/identity
+                    :ct.spools.harnesses/logical-id])
+   #(= 1 (count (select-keys % [:run-id :session-id :identity
+                                :logical-id])))
+   #(every? #{:run-id :session-id :identity :logical-id} (keys %))))
+(s/def :ct.spools.harnesses/resume-selector-intent
+  :ct.spools.harnesses/resume-selector)
 (s/def :ct.spools.harnesses/guidance-transport #{:legacy :native-v1 "legacy" "native-v1"})
 (s/def :ct.spools.harnesses/frozen map?)
 (def create-keys
   "Closed key set accepted by `create!`."
   #{:harness :mode :prompt :cwd :attributes :title :resumes :after :session-id
     :append-system-prompt :literal-extra-argv :by-identity :target :root-targets
-    :context :request-id :logical-id :frozen :guidance-transport})
+    :context :request-id :logical-id :frozen :guidance-transport
+    :resume-selector-intent})
 (s/def :ct.spools.harnesses/create-request
   (s/and
    (s/keys :req-un [:ct.spools.harnesses/harness]
@@ -191,7 +205,8 @@
                     :ct.spools.harnesses/request-id
                     :ct.spools.harnesses/logical-id
                     :ct.spools.harnesses/frozen
-                    :ct.spools.harnesses/guidance-transport])
+                    :ct.spools.harnesses/guidance-transport
+                    :ct.spools.harnesses/resume-selector-intent])
    #(every? create-keys (keys %))
    #(or (not (contains? % :attributes))
         (s/valid? :ct.spools.harnesses/overlay-attributes (:attributes %)))))
@@ -248,17 +263,6 @@
             (keys %))
    #(or (not (contains? % :attributes))
         (s/valid? :ct.spools.harnesses/overlay-attributes (:attributes %)))))
-(s/def :ct.spools.harnesses/run-id :ct.spools.harnesses/id)
-(s/def :ct.spools.harnesses/identity :ct.spools.harnesses/id)
-(s/def :ct.spools.harnesses/resume-selector
-  (s/and
-   (s/keys :opt-un [:ct.spools.harnesses/run-id
-                    :ct.spools.harnesses/session-id
-                    :ct.spools.harnesses/identity
-                    :ct.spools.harnesses/logical-id])
-   #(= 1 (count (select-keys % [:run-id :session-id :identity
-                                :logical-id])))
-   #(every? #{:run-id :session-id :identity :logical-id} (keys %))))
 (s/def :ct.spools.harnesses/resume-request
   (s/and
    (s/keys :opt-un [:ct.spools.harnesses/prompt
@@ -270,9 +274,10 @@
                     :ct.spools.harnesses/target
                     :ct.spools.harnesses/context
                     :ct.spools.harnesses/request-id
-                    :ct.spools.harnesses/guidance-transport])
+                    :ct.spools.harnesses/guidance-transport
+                    :ct.spools.harnesses/resume-selector-intent])
    #(every? #{:prompt :cwd :attributes :mode :title :by-identity :target
-              :context :request-id :guidance-transport}
+              :context :request-id :guidance-transport :resume-selector-intent}
             (keys %))
    #(or (not (contains? % :attributes))
         (s/valid? :ct.spools.harnesses/overlay-attributes (:attributes %)))))

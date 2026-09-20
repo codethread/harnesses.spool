@@ -492,6 +492,23 @@
 
 (s/fdef resume! :args (s/cat :runtime ::runtime :id ::id :request ::resume-request) :ret ::strand)
 
+(defn resume-selected!
+  "Resume one CLI-selected lineage head with request replay convergence.
+
+  For an existing request ID, validate against the original selector and
+  predecessor before consulting the lineage's current head."
+  [rt selector request]
+  (continuation/resume-selected!
+   rt selector request
+   (fn [runtime create-request guidance-template]
+     (binding [*guidance-context-template* guidance-template]
+       (create! runtime create-request)))))
+
+(s/fdef resume-selected!
+  :args (s/cat :runtime ::runtime :selector ::resume-selector
+               :request ::resume-request)
+  :ret ::strand)
+
 (defn migrate-runs!
   "Project every legacy phase-only run onto the public status contract.
 

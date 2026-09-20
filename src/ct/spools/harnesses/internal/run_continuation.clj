@@ -317,7 +317,7 @@
   child is still active. Ineligible predecessors fail loudly and are never
   quietly restarted fresh."
   [rt id {:keys [prompt cwd attributes mode title by-identity request-id
-                 guidance-transport]
+                 guidance-transport resume-selector-intent]
           :as request} create!]
   (require-valid! :ct.spools.harnesses/runtime rt "resume! requires a Weaver runtime")
   (require-valid! :ct.spools.harnesses/id id "resume! requires a predecessor run id")
@@ -377,7 +377,10 @@
                          (some? target) (assoc :target target)
                          (some? root-targets) (assoc :root-targets root-targets)
                          (some? context) (assoc :context context)
-                         (some? request-id) (assoc :request-id request-id))
+                         (some? request-id) (assoc :request-id request-id)
+                         (some? resume-selector-intent)
+                         (assoc :resume-selector-intent
+                                resume-selector-intent))
         fingerprint (life/fingerprint (dissoc create-request :request-id))]
     #_{:clj-kondo/ignore [:locking-suspicious-lock]}
     #_{:splint/disable [lint/locking-object]}
@@ -398,3 +401,28 @@
                :request :ct.spools.harnesses/resume-request
                :create! ifn?)
   :ret :ct.spools.harnesses/strand)
+
+(defn resume-selected!
+  "Resume the predecessor selected by one immutable CLI selector.
+
+  An existing request key recovers its stored predecessor before selector
+  resolution, allowing an exact replay to converge after the lineage advances.
+  The selector remains part of the request fingerprint, so a different selector
+  cannot reuse the key even when it once named the same predecessor."
+  [rt selector {:keys [request-id] :as request} create!]
+  (require-valid! :ct.spools.harnesses/runtime rt
+                  "resume-selected! requires a Weaver runtime")
+  (require-valid! :ct.spools.harnesses/resume-selector selector
+                  "resume-selected! requires exactly one selector")
+  (require-valid! :ct.spools.harnesses/resume-request request
+                  "resume-selected! requires valid continuation options")
+  (let [existing (runs/request-holder rt request-id)
+        predecessor-id
+        (if existing
+          (or (attr-get existing :harness/resumes)
+              (fail! "Request id is already held by a different harness request"
+                     {:request-id request-id :run (:id existing)}))
+          (:id (resolve-resume-run rt selector)))]
+    (resume! rt predecessor-id
+             (assoc request :resume-selector-intent selector)
+             create!)))

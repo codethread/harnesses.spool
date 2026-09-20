@@ -35,7 +35,7 @@
   (let [{:keys [harness mode prompt cwd attributes title resumes after session-id
                 append-system-prompt literal-extra-argv by-identity target
                 root-targets context request-id logical-id frozen
-                guidance-transport]} request
+                guidance-transport resume-selector-intent]} request
         mode (registry/mode-keyword (or mode :headless))
         {:keys [alias harness definition generated env]}
         (if frozen
@@ -95,6 +95,7 @@
      :root-targets root-targets :context context :request-id request-id
      :fingerprint request-fingerprint
      :logical-id logical-id :by-identity by-identity
+     :resume-selector-intent resume-selector-intent
      :guidance-selection guidance-selection
      :guidance-context-template guidance-context-template}))
 
