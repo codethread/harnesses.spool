@@ -815,23 +815,37 @@ The reviewer command composes the existing shell/execution boundary: it captures
 ## Assignment
 
 `strand agent assign` accepts an assignment and publishes a ready headless run
-serving a work target. The
-agent claims the target itself; the bridge does not claim cards or create
-worktrees. `--cwd` is explicit and required.
+serving a work target. Assignment names a worker but does not change Kanban
+ownership, claim a target, create a worktree, or replace the reporter. `--cwd`
+is explicit and required.
 
 ```text
 strand agent assign luna --task F --cwd /worktrees/feature-f --policy NAME
 ```
 
+Generated guidance reads Kanban's durable ownership history. Only an unowned,
+pending feature receives a first-claim command. A worker that is already the
+latest explicit owner continues without another claim; a different current
+owner requires an explicit handoff/reclaim before editing. A task assignment
+serves that task directly and never tells the worker to claim its parent feature
+or emits a `kanban claim` command against the task. Reviewers and note authors
+can participate without becoming owner.
+
 The policy name and exact registered prose are frozen when accepted. Policy
 names do not imply behavior: custom prose registered under a built-in name is
-used verbatim. Process exit never closes the target or releases its dependency
-chain. The launched process receives reserved `MILLSTRAND_AGENT_ID` and
-`MILLSTRAND_RUN_ID` values, which override user environment values.
+used verbatim. Frozen provider guidance carries state-independent ownership
+rules, so native resume does not replay a stale first-claim assertion. A fresh
+`--after` run keeps the target, policy, logical lineage, and ancestor history,
+then receives guidance for ownership at its own acceptance. Process exit never
+closes the target or releases its dependency chain. The launched process
+receives reserved `MILLSTRAND_AGENT_ID` and `MILLSTRAND_RUN_ID` values, which
+override user environment values.
 
 Blocked targets are accepted but remain queued until their `depends-on`
 blockers close. Independent targets launch concurrently, and scheduling
-rechecks target readiness. Wait with positive-evidence queries:
+rechecks target readiness. Parallel workers use distinct task targets; each run
+keeps its direct `serves` edge and every ancestor `serves-root` edge. Wait with
+positive-evidence queries:
 
 ```text
 strand await --query agent-run-terminal --param run-id=<id> --min-count 1

@@ -12,7 +12,7 @@
    :deadline-class :standard
    :flags {:task {:type :string
                   :required? true
-                  :doc "Target strand or kanban feature id."}
+                  :doc "Target strand, Kanban feature, or Kanban task id."}
            :cwd {:type :string
                  :required? true
                  :doc "Explicit work directory. No worktree is created."}

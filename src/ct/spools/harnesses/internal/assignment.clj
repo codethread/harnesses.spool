@@ -2,6 +2,7 @@
   "Private assignment helpers: target checks, guidance, and run accept."
   (:require [clojure.string :as str]
             [ct.spools.harnesses :as harnesses]
+            [millhouse.spools.kanban :as kanban]
             [millstrand.api.format.alpha :as format-alpha]
             [millstrand.api.graph.alpha :as graph]
             [millstrand.api.spool.alpha :refer [attr-get fail!]]
@@ -80,67 +81,227 @@
       (fail! "Strand is not a harness run" {:id id}))
     run))
 
+(defn target-profile
+  "Return the Kanban target kind and latest explicit ownership projection."
+  [rt target]
+  (cond
+    (= "true" (attr-get target :kanban/task))
+    (let [direct (kanban/current-ownership rt (:id target))
+          projected (kanban/task-ownership rt target)]
+      {:kind "task"
+       :owner (:owner (:claim projected))
+       :ownership-source (:source projected)
+       :direct-owner (:owner direct)
+       :feature (:feature projected)})
+
+    (= "feature" (attr-get target :kanban/type))
+    {:kind "feature"
+     :lane (attr-get target :kanban/lane)
+     :owner (:owner (kanban/current-ownership rt (:id target)))}
+
+    :else
+    {:kind "strand"}))
+
 (defn freeze-context
   "Return the durable JSON-ish assignment context."
-  [target cwd policy]
+  [target cwd policy profile]
   {"assignment/policy" (:name policy)
    "assignment/policy-text" (:text policy)
    "assignment/target" (:id target)
+   "assignment/target-kind" (:kind profile)
    "assignment/cwd" cwd})
 
+(defn- target-read-command
+  [target profile]
+  (if (= "feature" (:kind profile))
+    (str "strand kanban card " (:id target))
+    (str "strand show " (:id target))))
+
+(defn- stable-ownership-guidance
+  [profile]
+  (case (:kind profile)
+    "feature"
+    (format-alpha/prose
+     "
+       Before changing the feature, inspect its current ownership. Only an
+       unowned pending feature may follow a first-claim instruction from the
+       current run prompt. If you are already the latest explicit owner,
+       continue without claiming again. If another owner is current, require an
+       explicit handoff/reclaim before editing. Assignment never changes owner.
+       "
+     {})
+
+    "task"
+    (format-alpha/prose
+     "
+       This run serves the task directly, not its parent feature. Do not claim
+       or re-claim the parent feature, and do not issue `kanban claim` against
+       the task from this generated guidance. Inspect the task's direct or
+       inherited ownership and use its supported coordination path. If that
+       ownership does not authorize your work, stop and report the required
+       handoff instead of changing ownership silently.
+       "
+     {})
+
+    (format-alpha/prose
+     "
+       This target is not a Kanban feature or task. Assignment does not create
+       an ownership claim. Follow the target's own coordination contract.
+       "
+     {})))
+
+(defn- current-feature-guidance
+  [target profile identity cwd run-id]
+  (cond
+    (and (nil? (:owner profile)) (= "pending" (:lane profile)))
+    (format-alpha/prose
+     "
+       This is an unowned pending feature. Record its first claim before work:
+
+       ```text
+       strand kanban claim {id} --owner {identity} --branch <your-branch> --worktree {cwd} --run-id {run-id}
+       ```
+       "
+     {:id (:id target)
+      :identity identity
+      :cwd cwd
+      :run-id run-id})
+
+    (= identity (:owner profile))
+    (format-alpha/prose
+     "
+       You are already the feature's latest explicit owner ({identity}).
+       Continue without running `kanban claim` again; a changed run id or other
+       context would make a same-owner claim an invalid retry.
+       "
+     {:identity identity})
+
+    (:owner profile)
+    (format-alpha/prose
+     "
+       The feature's latest explicit owner is {owner}, not {identity}.
+       Assignment does not transfer ownership. Obtain authorization, then use
+       the current `strand kanban claim` handoff/reclaim contract to record
+       {identity} as the new owner before editing. Do not toggle lanes or
+       overwrite owner attributes.
+       "
+     {:owner (:owner profile)
+      :identity identity})
+
+    :else
+    (format-alpha/prose
+     "
+       The feature has no explicit owner, but its lane is {lane}, not pending.
+       This is not a valid first-claim state. Stop and report the ownership/lane
+       inconsistency instead of changing the lane or inventing an owner.
+       "
+     {:lane (or (:lane profile) "missing")})))
+
+(defn- current-task-guidance
+  [profile identity]
+  (cond
+    (= identity (:direct-owner profile))
+    (format-alpha/prose
+     "
+       You are already this task's direct owner ({identity}). Continue the task
+       without changing its ownership or the parent feature's ownership.
+       "
+     {:identity identity})
+
+    (:direct-owner profile)
+    (format-alpha/prose
+     "
+       This task is directly owned by {owner}, not {identity}. Obtain an
+       explicit task handoff through the coordinator-supported path before
+       editing. Do not claim the parent feature or silently replace ownership.
+       "
+     {:owner (:direct-owner profile)
+      :identity identity})
+
+    (= "inherited" (:ownership-source profile))
+    (format-alpha/prose
+     "
+       This task has no direct owner and currently projects inherited feature
+       owner {owner}. Work only on this task. Do not re-claim the feature; if
+       direct task ownership is required, request it through the supported task
+       coordination path.
+       "
+     {:owner (:owner profile)})
+
+    :else
+    (format-alpha/prose
+     "
+       This task has no direct or inherited owner. The assignment still serves
+       only this task and does not claim it or its parent feature. Report any
+       required ownership transition before editing.
+       "
+     {})))
+
+(defn- current-ownership-guidance
+  [target profile identity cwd run-id]
+  (case (:kind profile)
+    "feature" (current-feature-guidance target profile identity cwd run-id)
+    "task" (current-task-guidance profile identity)
+    (stable-ownership-guidance profile)))
+
 (defn build-guidance
-  "Return the work prompt for one assignment."
-  [{:keys [target cwd policy identity run-id]}]
+  "Return the work prompt for one assignment.
+
+  Current ownership guidance is emitted only after the run has a worker
+  identity and run id. Frozen provider guidance contains state-independent
+  rules so native continuation cannot replay a stale first-claim assertion."
+  [{:keys [target cwd policy profile identity run-id current-state?]}]
   (let [body (attr-get target :body)
         body-block (if (and (string? body) (not (str/blank? body)))
                      (str body "\n\n")
-                     "")]
-    (str
-     (format-alpha/prose
-      "
-        You are assigned to work on {title} ({id}).
+                     "")
+        ownership-guidance (if current-state?
+                             (current-ownership-guidance
+                              target profile identity cwd run-id)
+                             (stable-ownership-guidance profile))]
+    (format-alpha/prose
+     "
+       You are assigned to work on {title} ({id}).
 
-        {body-block}Read the work target:
+       {body-block}Read the work target:
 
-        ```text
-        strand kanban card {id}
-        ```
+       ```text
+       {read-command}
+       ```
 
-        Your authoritative identity is {identity-line}.
-        Working directory (explicit; do not create a worktree): {cwd}
-        This run: {run-line}
+       Your authoritative identity is {identity-line}.
+       Working directory (explicit; do not create a worktree): {cwd}
+       This run: {run-line}
 
-        Claim the card yourself when you start. Do not assume it is claimed:
+       {ownership-guidance}
 
-        ```text
-        strand kanban claim {id} --owner {owner-token} --branch <your-branch> --worktree {cwd} --run-id {run-token}
-        ```
+       Work to completion or report a blocker on the work target.
 
-        Work to completion or report a blocker on the card.
-
-        Policy ({policy-name}):
-        {policy-text}
-        "
-      {:title (:title target)
-       :id (:id target)
-       :body-block body-block
-       :identity-line (or identity
-                          "$MILLSTRAND_AGENT_ID (exported to this process)")
-       :cwd cwd
-       :run-line (or run-id "this harness run (the strand that serves the card)")
-       :owner-token (or identity "$MILLSTRAND_AGENT_ID")
-       :run-token (or run-id "<this-run-id>")
-       :policy-name (:name policy)
-       :policy-text (:text policy)}))))
+       Policy ({policy-name}):
+       {policy-text}
+       "
+     {:title (:title target)
+      :id (:id target)
+      :body-block body-block
+      :read-command (target-read-command target profile)
+      :identity-line (or identity
+                         "$MILLSTRAND_AGENT_ID (exported to this process)")
+      :cwd cwd
+      :run-line (or run-id "this harness run (the strand that serves the target)")
+      :ownership-guidance ownership-guidance
+      :policy-name (:name policy)
+      :policy-text (:text policy)})))
 
 (defn build-system-guidance
-  "Return frozen assignment guidance for provider system-prompt replay."
-  [{:keys [target cwd policy]}]
+  "Return state-independent assignment guidance for provider replay."
+  [{:keys [target cwd policy profile]}]
   (build-guidance {:target target
                    :cwd cwd
                    :policy policy
+                   :profile profile
                    :identity "{{AGENT_ID}}"
-                   :run-id "{{RUN_ID}}"}))
+                   :run-id "{{RUN_ID}}"
+                   :current-state? false}))
 
 (defn context-get
   "Return one assignment context value, accepting Weaver key variants."
@@ -188,19 +349,29 @@
     {:run run :existing? (already-assigned? run)}))
 
 (defn enrich-guidance!
-  "Stamp run identity and freeze its ancestor scope into the graph."
+  "Stamp run identity and current ownership guidance into the accepted run."
   [rt run frozen policy cwd target]
   (let [run-id (:id run)
         root-targets (attr-get run :harness/root-targets)
         identity (attr-get run :identity/id)
-        context (assoc frozen
-                       "assignment/run-id" run-id
-                       "assignment/identity" (or identity ""))
+        profile (target-profile rt (weaver/show rt (:id target)))
+        context (cond-> (assoc frozen
+                               "assignment/run-id" run-id
+                               "assignment/identity" (or identity ""))
+                  (:lane profile)
+                  (assoc "assignment/target-lane" (:lane profile))
+                  (:owner profile)
+                  (assoc "assignment/owner-at-acceptance" (:owner profile))
+                  (:ownership-source profile)
+                  (assoc "assignment/ownership-source"
+                         (:ownership-source profile)))
         guidance (build-guidance {:target target
                                   :cwd cwd
                                   :policy policy
+                                  :profile profile
                                   :identity identity
-                                  :run-id run-id})]
+                                  :run-id run-id
+                                  :current-state? true})]
     (when (seq root-targets)
       (weaver/update!
        rt (:id target)
