@@ -29,7 +29,7 @@
    :deps/root "kanban-adapter"}
   codethread/config
   {:git/url "https://github.com/codethread/codethread.spool.git"
-   :git/sha "ef277fc06768c9a842ed6d6313fc85f950855852"
+   :git/sha "45ebeb292e11ffcd32f390788d4f85c66becb307"
    :deps/root "spools/config"}
   ct.spools/harnesses {:local/root ".."}}
  :aliases
