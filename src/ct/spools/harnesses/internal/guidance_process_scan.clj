@@ -13,7 +13,7 @@
             ThreadFactory TimeUnit TimeoutException]))
 
 (def ^:private scanner-capture-limit (* 256 1024))
-(def ^:private scanner-millis 175)
+(def ^:private scanner-millis 350)
 (def ^:private scanner-join-millis 75)
 (def ^:private scanner-retirement-millis 20)
 (def ^:private direct-fallback-millis 60)
