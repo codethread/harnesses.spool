@@ -149,7 +149,7 @@
 
 (deftest bounded-manual-and-scheduled-scans-reach-later-orphans
   (test-alpha/run-with-weaver-world
-   (full-world-options :sqlite-memory)
+   (full-world-options :sqlite-file)
    (fn [ctx]
      (let [result
            (test-alpha/repl!
