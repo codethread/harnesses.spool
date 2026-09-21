@@ -6,7 +6,7 @@
             ThreadFactory TimeUnit TimeoutException]))
 
 (def ^:private timeout-millis 3000)
-(def ^:private cleanup-millis 400)
+(def ^:private cleanup-millis 900)
 
 (defn- daemon-thread-factory []
   (reify ThreadFactory
@@ -15,7 +15,7 @@
         (.setDaemon true)))))
 
 (defn start
-  "Create one 3000 ms total budget with its final 400 ms reserved for cleanup."
+  "Create one 3000 ms total budget with its final 900 ms reserved for cleanup."
   []
   (let [started-at (System/nanoTime)
         deadline (+ started-at
