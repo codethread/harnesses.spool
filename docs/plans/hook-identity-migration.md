@@ -47,6 +47,9 @@ claims about today's CLI.
    and `--cwd` for the session directory. Do not assume exported
    `MILLSTRAND_WORKSPACE` is automatically read by the dispatcher. For managed
    callers, translate the validated launcher value into `--workspace` explicitly.
+   A session whose canonical Git root carries no `.millstrand`, and that selects
+   no explicit workspace, stays a plain native session: the adapter exits before
+   its duplicate-injector probe, lock, and Strand call, and returns no context.
 4. Call the proposed **`strand identity startup <harness> <native-session-id>`**
    (identity-only spool; no dependency on Harnesses activation). Its transaction
    resolves a valid session-scoped supplied identity, else the existing native

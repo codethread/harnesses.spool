@@ -1,4 +1,5 @@
-import { resolve } from "node:path";
+import { statSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -128,6 +129,47 @@ export function getNativeIdentityInputs(
       optionalString(env[MILLSTRAND_WORKSPACE_ENV], MILLSTRAND_WORKSPACE_ENV) ??
       optionalString(env.MILLSTRAND_WORKSPACE, "MILLSTRAND_WORKSPACE"),
   };
+}
+
+const GIT_DISCOVERY_TIMEOUT_MS = 5_000;
+
+function directoryExists(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Return whether a native Pi session runs inside a Millstrand project.
+ *
+ * The adapter stays inert outside a project that carries `.millstrand` at its
+ * root. Subdirectories and linked worktrees resolve through the canonical Git
+ * root, matching Strand's workspace discovery, so every entry point into one
+ * project reaches the same workspace. Unavailable Git, an unsupported Git
+ * layout, and unrelated directories are plain native use.
+ */
+export async function hasMillstrandProject(
+  exec: Exec,
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (directoryExists(join(cwd, ".millstrand"))) return true;
+  let commonDir: string;
+  try {
+    const result = await exec(
+      "git",
+      ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+      { cwd, signal, timeout: GIT_DISCOVERY_TIMEOUT_MS },
+    );
+    if (result.code !== 0) return false;
+    commonDir = result.stdout.trim();
+  } catch {
+    return false;
+  }
+  if (!commonDir || basename(commonDir) !== ".git") return false;
+  return directoryExists(join(dirname(resolve(cwd, commonDir)), ".millstrand"));
 }
 
 export async function resolveNativeIdentity(

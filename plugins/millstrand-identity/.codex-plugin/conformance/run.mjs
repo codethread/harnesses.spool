@@ -77,6 +77,21 @@ function temporaryDirectory(prefix) {
   return directory;
 }
 
+function millstrandProject(root, name = "project") {
+  const cwd = join(root, name);
+  mkdirSync(join(cwd, ".millstrand"), { recursive: true });
+  return cwd;
+}
+
+function millstrandPayload(fileName, { name = "project" } = {}) {
+  const payload = JSON.parse(readFileSync(join(payloadRoot, fileName), "utf8"));
+  payload.cwd = millstrandProject(
+    temporaryDirectory("codex-hook-project-"),
+    name,
+  );
+  return payload;
+}
+
 async function waitForFile(path, timeout = 2_000) {
   const deadline = Date.now() + timeout;
   while (!existsSync(path)) {
@@ -1210,8 +1225,10 @@ async function checkPayloadReplay() {
   ];
 
   for (const [fileName, eventName, source] of cases) {
-    const payloadText = readFileSync(join(payloadRoot, fileName), "utf8");
-    const payload = JSON.parse(payloadText);
+    const payload = millstrandPayload(fileName, {
+      name: source === "startup" ? "project-linked-worktree" : "project",
+    });
+    const payloadText = JSON.stringify(payload);
     assertMatchesSchema(
       payload,
       inputSchemas[eventName],
@@ -1310,9 +1327,10 @@ async function checkPayloadReplay() {
     if (source === "startup") assert.match(payload.cwd, /linked-worktree/);
   }
 
-  const payloadText = readFileSync(
-    join(payloadRoot, "session-start-startup.json"),
-    "utf8",
+  const payloadText = JSON.stringify(
+    millstrandPayload("session-start-startup.json", {
+      name: "project-linked-worktree",
+    }),
   );
   const explicitDirectory = temporaryDirectory(
     "codex-hook-explicit-workspace-",
@@ -1520,6 +1538,87 @@ async function checkPayloadReplay() {
   );
 }
 
+async function checkProjectGate() {
+  // A session outside a Millstrand project stays a plain native session. The
+  // hook must return before the configured-source probe, the OS lock, and
+  // Strand, without emitting any response at all.
+  for (const fileName of [
+    "session-start-startup.json",
+    "subagent-start.json",
+  ]) {
+    const root = temporaryDirectory("codex-hook-plain-project-");
+    const payload = JSON.parse(
+      readFileSync(join(payloadRoot, fileName), "utf8"),
+    );
+    payload.cwd = join(root, "plain-project");
+    mkdirSync(payload.cwd);
+    const logPath = join(root, "fake-strand.jsonl");
+    for (const argv of [[], ["--configured-source"]]) {
+      const result = await run("bash", [identityHook, ...argv], {
+        input: JSON.stringify(payload),
+        env: fixtureEnvironment({
+          MILLSTRAND_CODEX_STRAND_BIN: fakeStrand,
+          FAKE_STRAND_LOG: logPath,
+          TMPDIR: root,
+        }),
+      });
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(
+        result.stdout,
+        "",
+        `${fileName} outside a Millstrand project must stay silent`,
+      );
+      assert.equal(result.stderr, "");
+    }
+    assert.equal(
+      existsSync(logPath),
+      false,
+      `${fileName} outside a Millstrand project must not call Strand`,
+    );
+  }
+
+  // Subdirectories and linked worktrees belong to the canonical Git project
+  // that hosts the workspace, matching Strand's own discovery.
+  const repository = temporaryDirectory("codex-hook-git-project-");
+  const init = await run("git", ["init", "--quiet", repository], {
+    env: fixtureEnvironment(),
+  });
+  assert.equal(init.code, 0, init.stderr);
+  mkdirSync(join(repository, ".millstrand"));
+  const nested = join(repository, "nested", "cwd");
+  mkdirSync(nested, { recursive: true });
+  const nestedPayload = JSON.parse(
+    readFileSync(join(payloadRoot, "session-start-startup.json"), "utf8"),
+  );
+  nestedPayload.cwd = nested;
+  const nestedLog = join(repository, "fake-strand.jsonl");
+  const nestedResult = await run(
+    "bash",
+    [identityHook, "--configured-source"],
+    {
+      input: JSON.stringify(nestedPayload),
+      env: fixtureEnvironment({
+        MILLSTRAND_CODEX_STRAND_BIN: fakeStrand,
+        FAKE_STRAND_LOG: nestedLog,
+        TMPDIR: repository,
+      }),
+    },
+  );
+  assert.equal(nestedResult.code, 0, nestedResult.stderr);
+  assertHookOutput(
+    parseSingleJsonLine(
+      nestedResult.stdout,
+      "nested Millstrand project response",
+    ),
+    "SessionStart",
+  );
+  assert.equal(
+    parseSingleJsonLine(readFileSync(nestedLog, "utf8"), "nested project call")
+      .cwd,
+    nested,
+  );
+}
+
 function writeConfig(codexHome, enabled, hooksEnabled = true) {
   writeFileSync(
     join(codexHome, "config.toml"),
@@ -1544,8 +1643,7 @@ function createCodexWorld({
   mkdirSync(dirname(installedPlugin), { recursive: true });
   cpSync(pluginRoot, installedPlugin, { recursive: true });
   writeConfig(codexHome, enabled, hooksEnabled);
-  const cwd = join(root, "project");
-  mkdirSync(cwd);
+  const cwd = millstrandProject(root, "project");
   return { codexHome, home, installedPlugin, cwd };
 }
 
@@ -2459,12 +2557,9 @@ async function checkManagedGuidancePreflight() {
 async function holdInterruptProbe() {
   const directory = temporaryDirectory("codex-hook-interrupt-");
   writeFileSync(join(directory, "artifact"), "must be removed\n");
-  const payloadText = readFileSync(
-    join(payloadRoot, "session-start-startup.json"),
-    "utf8",
-  );
+  const payload = millstrandPayload("session-start-startup.json");
   await run("bash", [identityHook, "--configured-source"], {
-    input: payloadText,
+    input: JSON.stringify(payload),
     timeout: 120_000,
     env: fixtureEnvironment({
       MILLSTRAND_CODEX_STRAND_BIN: fakeStrand,
@@ -2485,6 +2580,7 @@ try {
   } else {
     checkStrictJsonRegression();
     await checkEarlyStdinCloseReporting();
+    await checkProjectGate();
     await checkPayloadReplay();
     await checkManagedGuidanceReplay();
     await checkCliDiscovery();

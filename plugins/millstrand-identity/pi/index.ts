@@ -22,6 +22,7 @@ import {
   DEBUG_MILLSTRAND_IDENTITY_FLAG,
   formatNativeIdentityState,
   getNativeIdentityInputs,
+  hasMillstrandProject,
   MILLSTRAND_IDENTITY_FLAG,
   MILLSTRAND_WORKSPACE_FLAG,
   nativeIdentityModel,
@@ -120,6 +121,7 @@ export function createMillstrandIdentityLifecycle(
     },
     async sessionStart(ctx) {
       const nativeSessionId = ctx.sessionManager.getSessionId();
+      const nativeInputs = getNativeIdentityInputs(pi);
       let managedSelection: ManagedPiSelection = { kind: "unmanaged" };
       managedTurnBlocked = false;
       publishIdentity(null);
@@ -160,6 +162,27 @@ export function createMillstrandIdentityLifecycle(
         notify(ctx, `[millstrand-guidance] ${message}`, "error");
         process.stderr.write(`[millstrand-guidance] ${message}\n`);
         throw error;
+      }
+
+      if (
+        managedSelection.kind === "unmanaged" &&
+        !nativeInputs.workspace &&
+        !(await hasMillstrandProject(pi.exec, ctx.cwd, ctx.signal))
+      ) {
+        // A project without a Millstrand workspace stays a plain native
+        // session: nothing is resolved, fetched, or injected.
+        publishState({
+          status: "suppressed",
+          reason: "the project has no Millstrand workspace at its root",
+          nativeSessionId,
+        });
+        if (pi.getFlag(DEBUG_MILLSTRAND_IDENTITY_FLAG) === true) {
+          process.stdout.write(
+            `${formatNativeIdentityState(identityState, ctx.cwd)}\n`,
+          );
+          process.exit(0);
+        }
+        return;
       }
 
       if (managedSelection.kind === "native-v1") {
@@ -230,7 +253,7 @@ export function createMillstrandIdentityLifecycle(
             model: nativeIdentityModel(ctx),
             thinkingLevel: ctx.thinkingLevel,
             signal: ctx.signal,
-            ...getNativeIdentityInputs(pi),
+            ...nativeInputs,
           });
           publishState({ status: "bound", ...resolved });
           publishIdentity(resolved);
