@@ -91,9 +91,12 @@ CI, and the review transition. After committing, the implementation worker
 pushes its branch with an upstream before repository quality runs, so quality
 validates the same published HEAD that reaches review.
 
-`auto-full-land` calls shared autonomous Land, which creates a distinct finisher
-target whose worker owns sign-off, FIFO merge, cleanup, and final card closure.
-The implementation worker cannot sign off its own change.
+`auto-full-land` calls Codethread's shared autonomous Land policy, which creates
+a distinct finisher target whose worker owns sign-off, FIFO merge, cleanup, and
+final card closure. The implementation worker cannot sign off its own change.
+Both roles use Codethread's canonical
+[agent blocker contract](https://github.com/codethread/codethread.spool/blob/main/docs/processes/auto-run.md#agent-blocker-contract);
+Harnesses adds only the full-land custody boundaries.
 
 `auto-human-review` instead stops at a human checkpoint after preparing a
 passing, non-draft PR for the exact tested head. It leaves the feature, branch,

@@ -1,6 +1,7 @@
 (ns harnesses.auto-run-test
   "Exercise repository auto-run activation in a disposable Weaver world."
-  (:require [clojure.edn :as edn]
+  (:require [clojure.data.json :as json]
+            [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.java.shell :as shell]
             [clojure.string :as str]
@@ -151,7 +152,21 @@
         (is (= ["auto-full-land" "auto-human-review"]
                (get-in status [:config :workflows])))
         (is (empty? (:cards status)))
-        (is (empty? (:dispatched (auto-run/scan! rt)))))
+        (is (empty? (:dispatched (auto-run/scan! rt))))
+        (let [card (weaver/add! rt {:title "Blocked work"})
+              evidence (weaver/add! rt {:title "Decision context"})]
+          (weaver/op! rt 'weave
+                      ["--pattern" "auto-run-needs-decision" "--input"
+                       (json/write-str {:strand (:id card)
+                                        :evidence (:id evidence)})])
+          (let [reported (weaver/show rt (:id card))]
+            (is (= "needs-decision"
+                   (attr-get reported :auto-run/agent-blocked-status)))
+            (is (= (:id evidence)
+                   (attr-get reported :auto-run/agent-evidence)))
+            (is (= "true" (attr-get reported :kanban.label/agent-blocked)))
+            (is (= "true" (attr-get reported :kanban.label/needs-decision))
+                "The repository activates the reporting patterns and label hook"))))
       (testing "the real policy admits exactly two eligible cards"
         (let [requests (atom [])
               cards [(card! rt "p1") (card! rt "p2") (card! rt "p3")]
@@ -288,7 +303,18 @@
             (is (str/includes? (:instruction finisher)
                                "Verify land is done and the card is closed with outcome done"))
             (is (not (str/includes? (:instruction finisher)
-                                    "agent run grunt")))))))))
+                                    "agent run grunt")))
+            (testing "the separately launched finisher receives shared signalling policy"
+              (is (str/includes? (:instruction finisher)
+                                 "auto-run-needs-decision"))
+              (is (str/includes? (:instruction finisher)
+                                 "auto-run-unknown-failure")))
+            (testing "full-land custody policy preserves failed work"
+              (doseq [view (concat [handoff finisher]
+                                   (filter :gate
+                                           (map workflow/step-view strands)))]
+                (is (str/includes? (:instruction view)
+                                   "Leave card fixture-card open"))))))))))
 
 (deftest source-refresh-reconciles-running-dispatcher
   (t/with-weaver-world

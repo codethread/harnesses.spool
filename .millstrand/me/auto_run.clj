@@ -3,6 +3,7 @@
   (:require [clojure.java.io :as io]
             [clojure.spec.alpha :as s]
             [ct.spools.codethread.auto-run :as auto-run]
+            [ct.spools.codethread.auto-run-reporting :as reporting]
             [ct.spools.codethread.auto-run-worktree]
             [millstrand.api.lifecycle.alpha :as lifecycle]
             [millstrand.api.millstrand.alpha :as millstrand]
@@ -10,6 +11,10 @@
             [millstrand.api.runtime.alpha :as runtime]))
 
 (millstrand/use-op! auto-run/auto-run)
+(millstrand/use-hook! reporting/derive-labels)
+(millstrand/use-pattern! reporting/auto-run-needs-decision
+                         reporting/auto-run-unknown-failure
+                         reporting/auto-run-unblock)
 
 (def ^:private config-kind :harnesses.auto-run/config)
 (def ^:private desired-policy

@@ -1,12 +1,12 @@
 {:paths ["src" "resources"]
  :deps {io.millstrand/millstrand {:git/url "https://github.com/codethread/millstrand.git"
-                                  :git/sha "8e220eab7de2fabe7880c6a4c71de6cd903c34bb"
+                                  :git/sha "91361ef09eda4d09a24515a6ba3f99aa3090525a"
                                   :deps/root "."}
         millhouse.spools/kanban {:git/url "https://github.com/codethread/millhouse.spool.git"
-                                 :git/sha "bd96f5357a335bd17cd22042da1be5bd2200f807"
+                                 :git/sha "373238a56fbed90852e9fe8d90635d848c3faeea"
                                  :deps/root "spools/kanban"}
         millhouse.spools/workflow {:git/url "https://github.com/codethread/millhouse.spool.git"
-                                   :git/sha "bd96f5357a335bd17cd22042da1be5bd2200f807"
+                                   :git/sha "373238a56fbed90852e9fe8d90635d848c3faeea"
                                    :deps/root "spools/workflow"}}
  :aliases {:test {:extra-paths ["test"]
                   :jvm-opts ["--enable-native-access=ALL-UNNAMED"]
