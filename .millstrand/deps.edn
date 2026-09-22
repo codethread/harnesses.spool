@@ -5,19 +5,19 @@
    :deps/root "spools/batteries"}
   millhouse.spools/workflow
   {:git/url "https://github.com/codethread/millhouse.spool.git"
-   :git/sha "373238a56fbed90852e9fe8d90635d848c3faeea"
+   :git/sha "62723b7b1820c7e1723de4a2ff985b069871159e"
    :deps/root "spools/workflow"}
   millhouse.spools/identity
   {:git/url "https://github.com/codethread/millhouse.spool.git"
-   :git/sha "373238a56fbed90852e9fe8d90635d848c3faeea"
+   :git/sha "62723b7b1820c7e1723de4a2ff985b069871159e"
    :deps/root "spools/identity"}
   millhouse.spools/kanban
   {:git/url "https://github.com/codethread/millhouse.spool.git"
-   :git/sha "373238a56fbed90852e9fe8d90635d848c3faeea"
+   :git/sha "62723b7b1820c7e1723de4a2ff985b069871159e"
    :deps/root "spools/kanban"}
   millhouse.spools/land
   {:git/url "https://github.com/codethread/millhouse.spool.git"
-   :git/sha "373238a56fbed90852e9fe8d90635d848c3faeea"
+   :git/sha "62723b7b1820c7e1723de4a2ff985b069871159e"
    :deps/root "spools/land"}
   codethread/devflow
   {:git/url "https://github.com/codethread/devflow.spool.git"
@@ -29,7 +29,7 @@
    :deps/root "kanban-adapter"}
   codethread/config
   {:git/url "https://github.com/codethread/codethread.spool.git"
-   :git/sha "6545ac4bb2907ef21766abe3e8af8d764fb03a20"
+   :git/sha "dc25ea43f7a271a435d62daf855a202d69a62b0c"
    :deps/root "spools/config"}
   ct.spools/harnesses {:local/root ".."}}
  :aliases

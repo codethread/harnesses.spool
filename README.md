@@ -163,7 +163,7 @@ before the shared executor:
 {:deps {ct.spools/harnesses {:local/root "../harnesses.spool"}
         codethread/config
         {:git/url "https://github.com/codethread/codethread.spool.git"
-         :git/sha "252eeaee216a5e4d4e82c6b2948dd9eba1dafc9d"
+         :git/sha "dc25ea43f7a271a435d62daf855a202d69a62b0c"
          :deps/root "spools/config"}}}
 
 ;; consumer .millstrand/init.clj

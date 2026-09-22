@@ -2,9 +2,9 @@
   "Activate bounded automatic pickup through Harnesses' full-land workflow."
   (:require [clojure.java.io :as io]
             [clojure.spec.alpha :as s]
-            [ct.spools.codethread.auto-run :as auto-run]
-            [ct.spools.codethread.auto-run-reporting :as reporting]
-            [ct.spools.codethread.auto-run-worktree]
+            [millhouse.spools.auto-run :as auto-run]
+            [millhouse.spools.auto-run-reporting :as reporting]
+            [millhouse.spools.auto-run-worktree]
             [millstrand.api.lifecycle.alpha :as lifecycle]
             [millstrand.api.millstrand.alpha :as millstrand]
             [millstrand.api.registry.alpha :as registry]
@@ -22,7 +22,7 @@
    :effort "high"
    :workflow "auto-full-land"
    :workflows #{"auto-full-land" "auto-human-review"}
-   :prepare 'ct.spools.codethread.auto-run-worktree/prepare!
+   :prepare 'millhouse.spools.auto-run-worktree/prepare!
    :enabled? true
    :max-running 2
    :interval-ms 15000})
