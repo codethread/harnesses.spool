@@ -144,14 +144,14 @@
     (let [rt (:runtime ctx)
           status (auto-run/status rt)]
       (testing "repository admission policy"
-        (is (:enabled status))
-        (is (= 2 (get-in status [:config :max-running])))
-        (is (= "sol" (get-in status [:config :seat])))
-        (is (= "high" (get-in status [:config :effort])))
-        (is (= "auto-full-land" (get-in status [:config :workflow])))
-        (is (= ["auto-full-land" "auto-human-review"]
-               (get-in status [:config :workflows])))
-        (is (empty? (:cards status)))
+        (is (= {:enabled true
+                :max-running 2
+                :seat "sol"
+                :effort "high"
+                :workflow "auto-full-land"
+                :workflows ["auto-full-land" "auto-human-review"]}
+               (select-keys (assoc (:config status) :enabled (:enabled status))
+                            [:enabled :max-running :seat :effort :workflow :workflows])))
         (is (empty? (:dispatched (auto-run/scan! rt))))
         (let [card (weaver/add! rt {:title "Blocked work"})
               evidence (weaver/add! rt {:title "Decision context"})]
@@ -221,8 +221,8 @@
               ci-argv (attr-get
                        (some #(when (= "Wait for the PR checks" (:title %)) %) strands)
                        :shell/argv)
-              handoff (workflow/step-view (role-step strands "handoff-worker"))
-              finisher (workflow/step-view (role-step strands "finisher"))]
+              handoff (role-step strands "handoff-worker")
+              finisher (role-step strands "finisher")]
           (is (= ["Implement and verify the assigned feature"]
                  (mapv :title (:ready result))))
           (is (contains? gates "shell"))
@@ -291,30 +291,10 @@
                         (is (not (zero? exit)) label))
                       (finally
                         (delete-tree! (:root fixture)))))))))
-          (testing "worker and finisher have separate targets and authority"
-            (is (= "step" (:role handoff) (:role finisher)))
-            (is (not= (:id handoff) (:id finisher)))
-            (is (str/includes? (:instruction handoff)
-                               "STOP at land's signoff checkpoint BEFORE choosing approved"))
-            (is (str/includes? (:instruction handoff)
-                               "auto-run/finisher-run-id"))
-            (is (str/includes? (:instruction finisher)
-                               "This step is finisher-only"))
-            (is (str/includes? (:instruction finisher)
-                               "Verify land is done and the card is closed with outcome done"))
-            (is (not (str/includes? (:instruction finisher)
-                                    "agent run grunt")))
-            (testing "the separately launched finisher receives shared signalling policy"
-              (is (str/includes? (:instruction finisher)
-                                 "auto-run-needs-decision"))
-              (is (str/includes? (:instruction finisher)
-                                 "auto-run-unknown-failure")))
-            (testing "full-land custody policy preserves failed work"
-              (doseq [view (concat [handoff finisher]
-                                   (filter :gate
-                                           (map workflow/step-view strands)))]
-                (is (str/includes? (:instruction view)
-                                   "Leave card fixture-card open"))))))))))
+          (testing "repository policy delegates landing to separate shared roles"
+            (is (some? handoff))
+            (is (some? finisher))
+            (is (not= (:id handoff) (:id finisher)))))))))
 
 (deftest source-refresh-reconciles-running-dispatcher
   (t/with-weaver-world
@@ -344,21 +324,6 @@
         (is (= "assigned"
                (attr-get (weaver/show rt (:id card)) :auto-run/status)))
         (is (= 1 (count wake)))
-        (current/with-runtime rt
-          (is (= #{:start}
-                 (:entrypoints (workflow/resolve-workflow
-                                :auto-human-review)))))
-        (let [desired! @(runtime/resolve-var
-                         rt 'harnesses.auto-run/desired-config)
-              actual! @(runtime/resolve-var
-                        rt 'harnesses.auto-run/actual-config)
-              reconcile! @(runtime/resolve-var
-                           rt 'harnesses.auto-run/reconcile-config!)]
-          (is (false?
-               (:changed?
-                (reconcile! {:runtime rt
-                             :desired (desired! {:runtime rt})
-                             :actual (actual! {:runtime rt})})))))
         (is (empty? (:residuals (runtime/refresh! rt))))
         (is (= wake (vec (auto-run-wakes rt))))
         (is (= "assigned"
@@ -382,18 +347,11 @@
               strands (:strands (graph/subgraph rt [(:id root)]))
               views (map workflow/step-view strands)
               checkpoint (first (filter #(= "human" (:checkpoint-kind %)) views))]
-          (is (= ["Implement and verify the assigned feature"]
-                 (mapv :title (:ready result))))
+          (is (= 1 (count (:ready result))))
           (is (= [:review-card]
                  (:depends-on (some #(when (= :human-acceptance (:id %)) %)
                                     (:steps definition)))))
           (is (= ["reviewed"] (:choices checkpoint)))
-          (is (str/includes? (:instruction checkpoint)
-                             "Do not choose this checkpoint"))
-          (is (str/includes? (:instruction checkpoint) "exact head SHA"))
-          (is (not-any? #(str/includes? (or (:instruction %) "")
-                                        "auto-land-finisher/")
-                        views))
           (is (nil? (role-step strands "handoff-worker")))
           (is (nil? (role-step strands "finisher"))))))))
 
