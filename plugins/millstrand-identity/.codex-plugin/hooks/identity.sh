@@ -114,6 +114,31 @@ model=$(jq -er '.model' <<<"$payload")
 source=$(jq -er '.source // "child"' <<<"$payload")
 agent_id=$(jq -er '.agent_id // "root"' <<<"$payload")
 
+# This is a host/user routing setting, not launcher identity transport. An
+# unmanaged MILLSTRAND_WORKSPACE remains accepted for the established client
+# convention; managed roots returned above before consulting it.
+workspace=${MILLSTRAND_CODEX_WORKSPACE:-${MILLSTRAND_WORKSPACE:-}}
+
+# Millstrand identity belongs only to a project that carries its workspace at
+# the root. Subdirectories and linked worktrees resolve through the canonical
+# Git root, matching Strand's workspace discovery. Without an explicit
+# workspace, any other session stays a plain native Codex session: no
+# configured-source probe, no lock, and no Strand call.
+project_has_workspace() {
+	local session_cwd=$1
+	local common_dir repo_root
+	[[ -d "$session_cwd/.millstrand" ]] && return 0
+	common_dir=$(git -C "$session_cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+	[[ "$(basename "$common_dir")" == ".git" ]] || return 1
+	repo_root=$(dirname "$common_dir")
+	[[ -d "$repo_root/.millstrand" ]]
+}
+
+if [[ "$managed_guidance_mode" != native-v1 && -z "$workspace" ]] &&
+	! project_has_workspace "$cwd"; then
+	exit 0
+fi
+
 managed_runtime_failure() {
 	local code=$1
 	local diagnostic=$2
@@ -150,11 +175,6 @@ if [[ ${1:-} != --configured-source && ${1:-} != --locked ]]; then
 	printf '%s' "$payload" | bash "$script_path" --configured-source
 	exit 0
 fi
-
-# This is a host/user routing setting, not launcher identity transport. An
-# unmanaged MILLSTRAND_WORKSPACE remains accepted for the established client
-# convention; managed roots returned above before consulting it.
-workspace=${MILLSTRAND_CODEX_WORKSPACE:-${MILLSTRAND_WORKSPACE:-}}
 
 lock_root=${XDG_RUNTIME_DIR:-${XDG_STATE_HOME:-${HOME:-}/.local/state}}/codex-millstrand-identity
 lock_key=$(jq -nr \

@@ -32,6 +32,13 @@ A native Pi child must use `buildMillstrandChildEnvironment` so inherited root
 ownership is scrubbed and only parent attribution plus workspace routing pass to
 the new session.
 
+The extension stays inert outside a Millstrand project. Without an explicit
+workspace, a session whose canonical project root carries no `.millstrand`
+publishes no identity or guidance and reports a `suppressed` state naming the
+missing workspace. Subdirectories and linked worktrees resolve through the
+canonical Git root, matching Strand's workspace discovery, so every entry point
+into one project reaches the same workspace.
+
 ## Codex
 
 Add this checkout as a local Codex marketplace and enable
@@ -42,3 +49,9 @@ context.
 
 The optional managed-guidance adapter remains subject to Harnesses capability
 admission. Installing these files alone does not enable `native-v1`.
+
+The hook stays inert outside a Millstrand project. Without an explicit
+`MILLSTRAND_CODEX_WORKSPACE` or unmanaged `MILLSTRAND_WORKSPACE`, a project whose
+canonical Git root carries no `.millstrand` exits before the configured-source
+probe, the OS lock, and Strand, and returns no context. Managed `native-v1`
+launches keep their launcher-provided workspace and routing.

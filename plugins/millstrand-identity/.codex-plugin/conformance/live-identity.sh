@@ -71,6 +71,9 @@ git -C "$project" add .gitignore
 git -C "$project" commit --quiet -m fixture
 git -C "$project" worktree add --quiet -b live-linked "$linked_project"
 mkdir -p "$project/nested/cwd" "$linked_project/nested/cwd"
+plain_project="$tmp_root/plain-project"
+git init --quiet "$plain_project"
+mkdir -p "$plain_project/nested/cwd"
 
 cat >"$workspace/deps.edn" <<EOF
 {:deps
@@ -189,6 +192,11 @@ discovered_output=$(invoke_discovered "$(session_payload "live-discovery" "start
 discovered_identity=$(identity_from_output <<<"$discovered_output")
 linked_output=$(invoke_discovered "$(session_payload "live-linked-discovery" "startup" "$linked_project/nested/cwd")")
 linked_identity=$(identity_from_output <<<"$linked_output")
+plain_output=$(invoke_discovered "$(session_payload "live-plain" "startup" "$plain_project/nested/cwd")")
+[[ -z "$plain_output" ]] || {
+	echo "a project without .millstrand must stay unbound: $plain_output" >&2
+	exit 1
+}
 
 child_payload=$(subagent_payload "live-parent" "live-child")
 child_output=$(invoke_explicit "$child_payload")
@@ -260,4 +268,4 @@ printf '%s\n' \
 	"  identity=$parent_identity recovered=$recovered_identity" \
 	"  discovered-subdir=$discovered_identity linked-worktree=$linked_identity" \
 	"  child=$child_identity parent-edge=verified" \
-	"  negatives=native-binding-conflict,unavailable-runtime"
+	"  negatives=native-binding-conflict,unavailable-runtime,outside-project-silent"

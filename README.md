@@ -41,6 +41,12 @@ The marketplace exposes the `millstrand-identity` plugin package. Enable
 `millstrand-identity@harnesses`; the plugin owns only `SessionStart` and
 `SubagentStart`, and dialogue capture and other harness UI remain separate.
 
+Both adapters stay inert outside a Millstrand project. Without an explicit
+workspace, a session whose canonical Git root carries no `.millstrand` exits
+before probing, locking, or calling Strand. Subdirectories and linked worktrees
+resolve to the same project workspace, and launcher-managed transports keep
+their established routing.
+
 Run `pnpm check:plugins` for Pi unit/preflight checks, Codex 0.154.0 CLI
 conformance, and formatting. Installing these adapters does not activate the
 managed `native-v1` transport while Harnesses' production capability allowlist

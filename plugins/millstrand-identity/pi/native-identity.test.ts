@@ -1,6 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   getNativeIdentityInputs,
+  hasMillstrandProject,
   isLegacyManagedPiEnvironment,
   resolveNativeIdentity,
 } from "./native-identity.js";
@@ -142,5 +146,92 @@ describe("native identity inputs", () => {
       isLegacyManagedPiEnvironment({ MILLSTRAND_AGENT_ID: "ambient-parent" }),
     ).toBe(false);
     expect(isLegacyManagedPiEnvironment({})).toBe(false);
+  });
+});
+
+describe("hasMillstrandProject", () => {
+  const roots: string[] = [];
+  const temporaryDirectory = () => {
+    const root = mkdtempSync(join(tmpdir(), "millstrand-project-"));
+    roots.push(root);
+    return root;
+  };
+
+  afterEach(() => {
+    for (const root of roots.splice(0))
+      rmSync(root, { recursive: true, force: true });
+  });
+
+  it("accepts a project that carries its workspace at the session root without consulting Git", async () => {
+    const project = temporaryDirectory();
+    mkdirSync(join(project, ".millstrand"));
+    const exec = vi.fn();
+
+    await expect(hasMillstrandProject(exec as any, project)).resolves.toBe(
+      true,
+    );
+    expect(exec).not.toHaveBeenCalled();
+  });
+
+  it("accepts a session directory inside the canonical Git project root", async () => {
+    const project = temporaryDirectory();
+    mkdirSync(join(project, ".millstrand"));
+    const nested = join(project, "nested", "cwd");
+    mkdirSync(nested, { recursive: true });
+    const exec = vi.fn(async () => ({
+      stdout: `${join(project, ".git")}\n`,
+      stderr: "",
+      code: 0,
+      killed: false,
+    }));
+
+    await expect(hasMillstrandProject(exec as any, nested)).resolves.toBe(true);
+    expect(exec).toHaveBeenCalledWith(
+      "git",
+      ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+      expect.objectContaining({ cwd: nested, timeout: 5_000 }),
+    );
+  });
+
+  it("rejects unrelated, unsupported, and unresolvable projects", async () => {
+    const project = temporaryDirectory();
+    const unrelated = vi.fn(async () => ({
+      stdout: `${join(project, ".git")}\n`,
+      stderr: "",
+      code: 0,
+      killed: false,
+    }));
+    await expect(hasMillstrandProject(unrelated as any, project)).resolves.toBe(
+      false,
+    );
+
+    mkdirSync(join(project, ".millstrand"));
+    mkdirSync(join(project, "nested"), { recursive: true });
+    const unsupportedLayout = vi.fn(async () => ({
+      stdout: `${join(project, "bare.git")}\n`,
+      stderr: "",
+      code: 0,
+      killed: false,
+    }));
+    await expect(
+      hasMillstrandProject(unsupportedLayout as any, join(project, "nested")),
+    ).resolves.toBe(false);
+
+    const unavailable = vi.fn(async () => {
+      throw new Error("spawn git ENOENT");
+    });
+    await expect(
+      hasMillstrandProject(unavailable as any, join(project, "nested")),
+    ).resolves.toBe(false);
+
+    const failed = vi.fn(async () => ({
+      stdout: "",
+      stderr: "not a git repository",
+      code: 128,
+      killed: false,
+    }));
+    await expect(
+      hasMillstrandProject(failed as any, join(project, "nested")),
+    ).resolves.toBe(false);
   });
 });
