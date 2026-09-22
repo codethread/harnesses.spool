@@ -154,7 +154,7 @@
               :deps/root "spools/batteries"}
              'millhouse.spools/identity
              {:git/url "https://github.com/codethread/millhouse.spool.git"
-              :git/sha "bd96f5357a335bd17cd22042da1be5bd2200f807"
+              :git/sha "62723b7b1820c7e1723de4a2ff985b069871159e"
               :deps/root "spools/identity"}
              'ct.spools/harnesses
              {:local/root project-root}}}))

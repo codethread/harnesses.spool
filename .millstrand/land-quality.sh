@@ -7,5 +7,5 @@ cd "$root"
 echo "==> git diff --check"
 git diff --check
 
-echo "==> make check"
-make check
+echo "==> flock -w 180 /tmp/millstrand-test.lock make check"
+flock -w 180 /tmp/millstrand-test.lock make check
