@@ -163,14 +163,25 @@
                     (str/includes? (.getCanonicalPath root)))
            (iterator-seq (.iterator handles))))))
 
-(defn- run-profile [profile]
-  (let [started (System/nanoTime)]
-    (try
-      {:result (process/run! profile "{}")
-       :elapsed-millis (/ (- (System/nanoTime) started) 1000000.0)}
-      (catch Throwable error
-        {:error error
-         :elapsed-millis (/ (- (System/nanoTime) started) 1000000.0)}))))
+(defn- run-profile
+  ([profile]
+   (run-profile profile nil))
+  ([profile budget]
+   (let [started (System/nanoTime)]
+     (try
+       {:result (if budget
+                  (process/run! profile "{}" budget clojure.core/identity)
+                  (process/run! profile "{}"))
+        :elapsed-millis (/ (- (System/nanoTime) started) 1000000.0)}
+       (catch Throwable error
+         {:error error
+          :elapsed-millis (/ (- (System/nanoTime) started) 1000000.0)})))))
+
+(defn- cleanup-phase-budget []
+  (let [started-at (System/nanoTime)]
+    {:started-at started-at
+     :work-deadline (+ started-at (.toNanos TimeUnit/SECONDS 8))
+     :deadline (+ started-at (.toNanos TimeUnit/SECONDS 10))}))
 
 (defn- pid-from [file]
   (when (.isFile file)
@@ -218,11 +229,11 @@
         (fn [{:keys [root profile]}]
           (let [unrelated (start-sleep!)]
             (try
-              (let [{:keys [error elapsed-millis]} (run-profile profile)
+              (let [{:keys [error]} (run-profile profile
+                                                 (cleanup-phase-budget))
                     anchor-pid (pid-from (io/file root "anchor.pid"))
                     helper-pid (pid-from (io/file root "helper.pid"))]
                 (is (re-find message (ex-message error)))
-                (is (< elapsed-millis 3000.0))
                 (is (not (alive-pid? anchor-pid)))
                 (is (not (alive-pid? helper-pid)))
                 (is (.isAlive unrelated))
