@@ -1,7 +1,6 @@
 (ns ct.spools.harnesses.internal.launcher
   "Host-TTY launcher materialization for interactive harness runs."
-  (:require [clojure.data.json :as json]
-            [clojure.java.io :as io]
+  (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [ct.spools.harnesses.internal.native-environment :as native-env]
             [ct.spools.harnesses.native-session :as native-session]
@@ -23,8 +22,8 @@
   (doto (io/file (get-in runtime [:metadata :state-dir]) "harness-launchers")
     (.mkdirs)))
 
-(def ^:private bootstrap-sentinel
-  "# MILLSTRAND_MANAGED_BOOTSTRAP_PENDING\nprintf '%s\\n' 'managed agent launcher was not armed' >&2\nexit 1\n")
+(def ^:private native-reference-sentinel
+  "# MILLSTRAND_NATIVE_REFERENCE_PENDING\nprintf '%s\\n' 'managed agent launcher was not armed' >&2\nexit 1\n")
 
 (defn workspace
   "Return the authoritative workspace configured for `runtime`."
@@ -59,8 +58,7 @@
                       "\"$MILLSTRAND_INVOCATION\"\n"
                       "fi\n"))
                provider-exports
-               (when (or codex? (attr-get run :identity/reservation-id))
-                 bootstrap-sentinel)
+               (when codex? native-reference-sentinel)
                "export MILLSTRAND_RUN_ID=" (sh-quote (:id run)) "\n"
                (cond
                  codex?
@@ -91,34 +89,14 @@
      (PosixFilePermissions/fromString "rwx------"))
     (.getCanonicalPath file)))
 
-(defn arm!
-  "Replace one managed launcher's fail-closed sentinel with bootstrap exports."
-  [runtime run bootstrap guidance]
-  (let [file (io/file (launcher-dir runtime) (str (:id run) ".sh"))
-        source (slurp file)
-        first-index (str/index-of source bootstrap-sentinel)
-        last-index (str/last-index-of source bootstrap-sentinel)]
-    (when-not (and (some? first-index) (= first-index last-index))
-      (fail! "Managed launcher has no unique bootstrap sentinel"
-             {:run-id (:id run) :launcher (.getCanonicalPath file)}))
-    (spit file
-          (str/replace
-           source bootstrap-sentinel
-           (str "export MILLSTRAND_MANAGED_BOOTSTRAP="
-                (sh-quote (json/write-str bootstrap)) "\n"
-                (when guidance
-                  (str "export MILLSTRAND_MANAGED_GUIDANCE="
-                       (sh-quote (json/write-str guidance)) "\n")))))
-    (.getCanonicalPath file)))
-
 (defn arm-native!
   "Arm a native launcher with only its current run reference."
   [runtime run]
   (let [file (io/file (launcher-dir runtime) (str (:id run) ".sh"))
         source (slurp file)]
-    (when-not (str/includes? source bootstrap-sentinel)
+    (when-not (str/includes? source native-reference-sentinel)
       (fail! "Native launcher has no arming sentinel" {:run-id (:id run)}))
-    (spit file (str/replace source bootstrap-sentinel
+    (spit file (str/replace source native-reference-sentinel
                             (str "export MILLSTRAND_RUN_REFERENCE="
                                  (sh-quote (native-session/reference run)) "\n")))
     (.getCanonicalPath file)))

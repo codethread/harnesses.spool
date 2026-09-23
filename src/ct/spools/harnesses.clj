@@ -36,14 +36,6 @@
 (def open-harness-core! catalog/open-harness-core!)
 (def close-harness-core! catalog/close-harness-core!)
 
-(def managed-bootstrap-schema
-  "Schema identifier for managed launch bootstrap metadata."
-  managed/managed-bootstrap-schema)
-
-(def managed-context-schema
-  "Schema identifier for context returned by managed native startup."
-  managed/managed-context-schema)
-
 (def guidance-bootstrap-schema
   "Schema identifier for managed guidance launcher metadata."
   guidance/guidance-bootstrap-schema)
@@ -80,21 +72,6 @@
     "pi" (native-registration/register! rt (dissoc request :run-reference))
     (fail! "Native startup requires a codex or pi harness"
            {:harness (:harness request)})))
-
-(defn managed-bootstrap
-  "Return prompt-free bootstrap metadata for a managed running invocation."
-  [rt id]
-  (require-valid! ::runtime rt "managed-bootstrap requires a Weaver runtime")
-  (require-valid! ::id id "managed-bootstrap requires a run id")
-  (managed/bootstrap rt (runs/require-run rt id)))
-
-(defn managed-startup!
-  "Attach a managed Codex/Pi run to its actual native root session.
-
-  The request must carry the exact versioned bootstrap exported for the current
-  launch plus explicit native harness, session, cwd, and root scope."
-  [rt request]
-  (managed/startup! rt request))
 
 (defn run
   "Return one harness run strand by id, failing when it is absent or foreign."
@@ -229,37 +206,35 @@
              (or (some-> guidance-patch :harness/guidance-attempts
                          peek (get "started-at"))
                  (life/now))]
-         (guidance/carry-launch-plan
-          guidance-patch
-          (require-valid!
-           ::started
-           {:strand (guidance/validation-run
-                     rt
-                     (require-valid!
-                      ::strand
-                      (weaver/update!
-                       rt id
-                       {:attributes
-                        (merge
-                         (when interactive? (retired-interactive-custody))
-                         {:harness/status "running"
-                          :harness/substatus nil
-                          :harness/settled "false"
-                          :harness/settlement nil
-                          :harness/attempt attempt
-                          :harness/invocation invocation
-                          :harness/started-at attempt-started-at}
-                         guidance-patch
-                         start-attributes
-                         (when interactive?
-                           {:harness/interactive-callback-contract
-                            (if (seq start-attributes) "v2" "legacy")})
-                         (when (seq start-attributes)
-                           {:harness/completion-owner-invocation invocation}))})
-                      "begin-attempt! produced an invalid run strand"))
-            :invocation invocation
-            :attempt attempt}
-           "begin-attempt! produced an invalid start record")))))))
+         (require-valid!
+          ::started
+          {:strand (guidance/validation-run
+                    rt
+                    (require-valid!
+                     ::strand
+                     (weaver/update!
+                      rt id
+                      {:attributes
+                       (merge
+                        (when interactive? (retired-interactive-custody))
+                        {:harness/status "running"
+                         :harness/substatus nil
+                         :harness/settled "false"
+                         :harness/settlement nil
+                         :harness/attempt attempt
+                         :harness/invocation invocation
+                         :harness/started-at attempt-started-at}
+                        guidance-patch
+                        start-attributes
+                        (when interactive?
+                          {:harness/interactive-callback-contract
+                           (if (seq start-attributes) "v2" "legacy")})
+                        (when (seq start-attributes)
+                          {:harness/completion-owner-invocation invocation}))})
+                     "begin-attempt! produced an invalid run strand"))
+           :invocation invocation
+           :attempt attempt}
+          "begin-attempt! produced an invalid start record"))))))
 
 (s/fdef begin-attempt!
   :args (s/or :plain (s/cat :runtime ::runtime :id ::id)
@@ -277,13 +252,10 @@
   attach native identity, finish newer work, or rewrite a settled result.
   Settlement evidence remains separate from identity attachment.
 
-  Positive Codex/Pi session evidence first attaches the reserved identity. A
+  Codex/Pi identity must already be registered by native startup. A
   hook-confirmed session survives an interactive finish that cannot observe
   provider stdout; clean completion plus that binding makes native resume
-  usable.
-
-  A pre-reservation Codex/Pi run retains its historical identity binding and
-  provider session evidence without claiming native startup attachment."
+  usable. Completion never mints or attaches an identity."
   [rt id {:keys [invocation evidence] :as outcome}]
   (require-valid! ::runtime rt "finish! requires a Weaver runtime")
   (require-valid! ::id id "finish! requires a run id")
@@ -336,9 +308,6 @@
               evidence (if guidance-evidence
                          (merge (or evidence {}) guidance-evidence)
                          evidence)
-              guidance-failed? (some? (:attributes guidance-completion))
-              _ (managed/require-legacy-positive-attempt!
-                 run outcome)
               _ (when-not (contains? #{"ready" "running"} (life/status run))
                   (fail! "Harness finish transition is invalid"
                          {:id id :status (life/status run) :outcome status}))
@@ -350,10 +319,6 @@
                            (str/blank? result))
                   (fail! "Successful headless harness outcome requires a result"
                          {:id id}))
-              legacy-managed? (managed/legacy-managed-run? run)
-              _ (when-not guidance-failed?
-                  (managed/attach-outcome! rt run outcome))
-              run (runs/require-run rt id)
               attached? (= "true" (attr-get run :harness/native-attached))
               session-id (if attached?
                            (attr-get run :harness/session-id)
@@ -363,12 +328,11 @@
               _ (when (and (managed/managed-harness?
                             (attr-get run :harness/harness))
                            (true? session-usable)
-                           (not (or attached? legacy-managed?)))
+                           (not attached?))
                   (fail! "Managed session evidence was not attached to the run"
                          {:id id :session-id session-id}))
               usable? (or (and attached? (true? session-usable))
                           (and attached? (= :done status) (zero? exit-code))
-                          (and legacy-managed? (true? session-usable))
                           (and (not (managed/managed-harness?
                                      (attr-get run :harness/harness)))
                                (true? session-usable)))

@@ -11,9 +11,10 @@
     (is (contains? (get-in cli/agent-arg-spec
                            [:subcommands command :flags])
                    :guidance-transport)))
+  (is (not (contains? (:subcommands cli/agent-arg-spec) "startup")))
   (is (= :string
          (get-in cli/agent-arg-spec
-                 [:subcommands "startup" :flags :guidance :type])))
+                 [:subcommands "native-startup" :flags :run-reference :type])))
   (doseq [command ["acknowledge" "fail"]]
     (is (= :string
            (get-in cli/agent-arg-spec

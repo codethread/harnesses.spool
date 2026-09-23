@@ -3,7 +3,6 @@
   (:require [clojure.string :as str]
             [ct.spools.harnesses.internal.guidance :as guidance]
             [ct.spools.harnesses.internal.lifecycle :as life]
-            [ct.spools.harnesses.internal.managed-legacy :as legacy]
             [ct.spools.harnesses.internal.managed-startup :as managed]
             [ct.spools.harnesses.internal.registry :as registry]
             [ct.spools.harnesses.internal.publication :as publication]
@@ -139,8 +138,6 @@
                        (= "true" (attr-get predecessor :harness/native-attached)))
           (fail! "Pi continuation requires its attached native session"
                  {:predecessor resumes})))
-      (legacy/validate-continuation-request!
-       rt predecessor harness requested-session-id)
       (require-continuation-head! rt resumes)))
   (when after
     (require-continuation-head! rt after))
@@ -211,16 +208,10 @@
             identity-id (:identity identity-binding)
             _ (weaver/update!
                rt run-id
-               {:attributes (merge
-                             {:identity/id identity-id
-                              :identity/prompt (:prompt identity-binding)
-                              :harness/publication-phase "bound"
-                              :harness/native-attached (when (= "codex" harness) "false")}
-                             (when-let [reservation-id (:reservation-id identity-binding)]
-                               {:identity/reservation-id reservation-id
-                                :harness/provisional-session-id session-id
-                                :harness/native-attached
-                                (if (:native-attached identity-binding) "true" "false")}))})
+               {:attributes {:identity/id identity-id
+                             :identity/prompt (:prompt identity-binding)
+                             :harness/publication-phase "bound"
+                             :harness/native-attached (when (= "codex" harness) "false")}})
             _ (publication/check-interrupted!)
             guidance-patch
             (guidance/publication-patch
@@ -381,11 +372,7 @@
               :identity/prompt nil
               :harness/native-attached nil})
            (when identity-binding
-             (merge
-              {:identity/id identity-id
-               :identity/prompt (:prompt identity-binding)}
-              (when-not (:legacy-pi identity-binding)
-                {:identity/reservation-id (:reservation-id identity-binding)
-                 :harness/provisional-session-id (when-not (= "codex" concrete) session-id)
-                 :harness/native-attached
-                 (if (:native-attached identity-binding) "true" "false")}))))))
+             {:identity/id identity-id
+              :identity/prompt (:prompt identity-binding)
+              :harness/native-attached
+              (if (:native-attached identity-binding) "true" "false")}))))

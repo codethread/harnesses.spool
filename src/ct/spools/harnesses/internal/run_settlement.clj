@@ -2,7 +2,6 @@
   "Durable late-outcome settlement and attachment transitions."
   (:require [clojure.spec.alpha :as s]
             [ct.spools.harnesses.catalog :as catalog]
-            [ct.spools.harnesses.internal.guidance :as guidance]
             [ct.spools.harnesses.internal.lifecycle :as life]
             [ct.spools.harnesses.internal.managed-startup :as managed]
             [ct.spools.harnesses.internal.native-registration :as native-registration]
@@ -18,16 +17,9 @@
 (defn settle-outcome!
   "Record provider outcome and settlement for an already terminal run.
 
-  Custody evidence is persisted independently before optional
-  reservation-backed Codex/Pi attachment. An attachment failure therefore
-  cannot erase proof that the provider process settled. Existing hook-confirmed
+  Custody evidence is independent of native startup. Existing hook-confirmed
   session evidence is never replaced by an unobserved interactive outcome.
-
-  Positive legacy evidence is validated before the custody update so malformed
-  callbacks write nothing. A fenced failed outcome with no usable session has
-  no identity evidence to attach, so its custody settlement remains recordable
-  even when the historical identity is damaged. Valid pre-reservation runs keep
-  their historical representation without invented attachment evidence."
+  Settlement never mints or attaches an identity."
   [rt id outcome evidence]
   (require-valid! :ct.spools.harnesses/runtime rt "settle-outcome! requires a Weaver runtime")
   (require-valid! :ct.spools.harnesses/id id "settle-outcome! requires a run id")
@@ -44,7 +36,6 @@
       (when-not (life/terminal? run)
         (fail! "Only a terminal harness run may receive late outcome evidence"
                {:id id :status (life/status run)}))
-      (managed/validate-legacy-outcome! rt run outcome)
       (when (and (attr-get run :harness/invocation)
                  (not= invocation (attr-get run :harness/invocation)))
         (fail! "Late harness outcome has a missing or stale invocation"
@@ -88,19 +79,5 @@
                          :harness/settlement (:settlement evidence)}
                         (when-let [gap (:gap evidence)]
                           {:harness/settlement-gap gap}))})
-                     "settle-outcome! produced an invalid run strand")
-            bootstrap-failed?
-            (and (guidance/native? run)
-                 (= "bootstrap" (life/substatus run)))
-            attached-result (when-not bootstrap-failed?
-                              (managed/attach-outcome! rt settled outcome))]
-        (if attached-result
-          (require-valid!
-           :ct.spools.harnesses/strand
-           (weaver/update!
-            rt id
-            {:attributes
-             {:harness/session-usable
-              (if (true? (:session-usable outcome)) "true" "false")}})
-           "settle-outcome! produced invalid attached session evidence")
-          settled)))))
+                     "settle-outcome! produced an invalid run strand")]
+        settled))))

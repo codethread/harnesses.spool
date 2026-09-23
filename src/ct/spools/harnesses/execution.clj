@@ -10,7 +10,6 @@
             [ct.spools.harnesses.internal.launcher :as launcher]
             [ct.spools.harnesses.internal.lifecycle :as life]
             [ct.spools.harnesses.internal.publication :as publication]
-            [ct.spools.harnesses.internal.managed-startup :as managed]
             [ct.spools.harnesses.internal.process-custody :as custody]
             [ct.spools.harnesses.reconciliation :as reconciliation]
             [millstrand.api.current.alpha :as current]
@@ -137,7 +136,7 @@
       (throw e))))
 
 (defn mark-interactive-running!
-  "Start an interactive run and arm its managed bootstrap.
+  "Start an interactive run and arm its native run correlation.
 
   When supplied, `completion-owner-pid` records the callback owner's exact
   process identity in the same fenced attempt transition."
@@ -156,11 +155,6 @@
        (try
          (when (= "codex" (attr-get strand :harness/harness))
            (launcher/arm-native! rt strand))
-         (when-let [bootstrap (managed/bootstrap rt strand)]
-           (launcher/arm!
-            rt strand bootstrap
-            (when (some? (attr-get strand :harness/guidance-version))
-              (guidance/bootstrap strand))))
          (when (guidance/native? strand)
            (schedule-guidance-deadline! rt strand))
          strand
@@ -293,10 +287,6 @@
 
 (defn- prepare-launch [rt definition run]
   (execution-headless/prepare-launch rt definition run))
-
-#_{:clj-kondo/ignore [:unused-private-var]}
-(defn- apply-native-launch-plan [run launch-spec plan]
-  (execution-headless/apply-native-launch-plan run launch-spec plan))
 
 #_{:clj-kondo/ignore [:unused-private-var]}
 (defn- process-spec [rt run launch-spec]

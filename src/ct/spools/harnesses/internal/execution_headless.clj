@@ -1,13 +1,11 @@
 (ns ct.spools.harnesses.internal.execution-headless
   "Headless launch planning, process custody, and terminal transitions."
-  (:require [clojure.data.json :as json]
-            [ct.spools.harnesses :as harness]
+  (:require [ct.spools.harnesses :as harness]
             [ct.spools.harnesses.assignment :as assignment]
             [ct.spools.harnesses.native-session :as native-session]
             [ct.spools.harnesses.internal.guidance :as guidance]
             [ct.spools.harnesses.internal.launcher :as launcher]
             [ct.spools.harnesses.internal.lifecycle :as life]
-            [ct.spools.harnesses.internal.managed-startup :as managed]
             [ct.spools.harnesses.internal.native-environment :as native-env]
             [ct.spools.harnesses.internal.process-custody :as custody]
             [millstrand.api.spool.alpha :refer [attr-get fail! require-valid!]]
@@ -66,94 +64,34 @@
      (update launch-spec :env #(merge alias-env (or % {})))
      "Harness prepare must return a valid launch specification")))
 
-(defn- current-launch-selectors [run]
-  (cond-> {"extra-argv" (or (attr-get run :harness/extra-argv) [])
-           "resumes" (boolean (attr-get run :harness/resumes))}
-    (attr-get run :harness/model)
-    (assoc "model" (attr-get run :harness/model))
-    (attr-get run :harness/effort)
-    (assoc "effort" (attr-get run :harness/effort))
-    (attr-get run :harness/resumes)
-    (assoc "native-session-id" (attr-get run :harness/session-id))))
-
-(defn- launch-plan-failure! [run reason data]
-  (fail! "Native guidance launch no longer matches its validated preflight"
-         (merge {:code "guidance/launch-plan-mismatch"
-                 :run-id (:id run)
-                 :reason reason}
-                data)))
-
-(defn apply-native-launch-plan
-  "Apply only an exact transient native launch plan to a launch spec."
-  [run launch-spec plan]
-  (if-not (guidance/native? run)
-    launch-spec
-    (let [{:keys [argv env]} launch-spec
-          harness (attr-get run :harness/harness)
-          canonical-cwd (.getCanonicalPath
-                         (java.io.File. ^String
-                          (attr-get run :harness/cwd)))]
-      (when-not (and (map? plan)
-                     (= harness (:harness plan))
-                     (string? (:executable plan))
-                     (= (:executable plan)
-                        (.getCanonicalPath
-                         (java.io.File. ^String (:executable plan))))
-                     (= canonical-cwd (:cwd plan))
-                     (map? (:env plan))
-                     (every? (fn [[key value]]
-                               (and (string? key) (string? value)))
-                             (:env plan))
-                     (= (current-launch-selectors run) (:selectors plan)))
-        (launch-plan-failure! run "transient plan fields changed" {}))
-      (when-not (= harness (first argv))
-        (launch-plan-failure! run "provider command changed"
-                              {:provider-command (first argv)}))
-      (when-not (= (:env plan) (merge (:env plan) (or env {})))
-        (launch-plan-failure! run "provider environment changed" {}))
-      (assoc launch-spec
-             :argv (assoc argv 0 (:executable plan))
-             :env (:env plan)
-             :validated-cwd (:cwd plan)))))
-
 (defn process-spec
-  "Build Mill custody input with reserved run and workspace environment."
-  [rt run {:keys [argv env stdin validated-cwd]}]
-  (let [bootstrap (managed/bootstrap rt run)
-        guidance-document
-        (when (and bootstrap
-                   (some? (attr-get run :harness/guidance-version)))
-          (guidance/bootstrap run))]
-    {:argv (case (attr-get run :harness/harness)
-             "codex" (into ["/usr/bin/env" "-u" "MILLSTRAND_AGENT_ID"
-                            "-u" "MILLSTRAND_MANAGED_BOOTSTRAP"
-                            "-u" "MILLSTRAND_MANAGED_GUIDANCE"] argv)
-             "pi" (native-env/scrub-command argv)
-             argv)
-     :cwd (or validated-cwd (attr-get run :harness/cwd))
-     :env (case (attr-get run :harness/harness)
-            "codex"
-            (-> (or env {})
-                (dissoc "MILLSTRAND_AGENT_ID"
-                        "MILLSTRAND_MANAGED_BOOTSTRAP"
-                        "MILLSTRAND_MANAGED_GUIDANCE")
-                (assoc "MILLSTRAND_RUN_ID" (:id run)
-                       "MILLSTRAND_WORKSPACE" (launcher/workspace rt)
-                       "MILLSTRAND_RUN_REFERENCE" (native-session/reference run)))
-            "pi"
-            (assoc (apply dissoc (or env {}) native-env/ownership-keys)
-                   "MILLSTRAND_RUN_ID" (:id run))
-            (cond-> (assoc (or env {})
-                           "MILLSTRAND_RUN_ID" (:id run)
-                           "MILLSTRAND_WORKSPACE" (launcher/workspace rt))
-              (attr-get run :identity/id)
-              (assoc "MILLSTRAND_AGENT_ID" (attr-get run :identity/id))
-              bootstrap
-              (assoc "MILLSTRAND_MANAGED_BOOTSTRAP" (json/write-str bootstrap))
-              guidance-document
-              (assoc "MILLSTRAND_MANAGED_GUIDANCE"
-                     (json/write-str guidance-document))))
-     :stdin stdin}))
+  "Build Mill custody input with run correlation and maintenance identity."
+  [rt run {:keys [argv env stdin]}]
+  {:argv (case (attr-get run :harness/harness)
+           "codex" (into ["/usr/bin/env" "-u" "MILLSTRAND_AGENT_ID"
+                          "-u" "MILLSTRAND_MANAGED_BOOTSTRAP"
+                          "-u" "MILLSTRAND_MANAGED_GUIDANCE"] argv)
+           "pi" (native-env/scrub-command argv)
+           argv)
+   :cwd (attr-get run :harness/cwd)
+   :env (case (attr-get run :harness/harness)
+          "codex"
+          (-> (or env {})
+              (dissoc "MILLSTRAND_AGENT_ID"
+                      "MILLSTRAND_MANAGED_BOOTSTRAP"
+                      "MILLSTRAND_MANAGED_GUIDANCE")
+              (assoc "MILLSTRAND_RUN_ID" (:id run)
+                     "MILLSTRAND_WORKSPACE" (launcher/workspace rt)
+                     "MILLSTRAND_RUN_REFERENCE" (native-session/reference run)))
+          "pi"
+          (assoc (apply dissoc (or env {}) native-env/ownership-keys)
+                 "MILLSTRAND_RUN_ID" (:id run))
+          (cond-> (assoc (or env {})
+                         "MILLSTRAND_RUN_ID" (:id run)
+                         "MILLSTRAND_WORKSPACE" (launcher/workspace rt))
+            (attr-get run :identity/id)
+            (assoc "MILLSTRAND_AGENT_ID" (attr-get run :identity/id))))
+   :stdin stdin})
 
 (defn finish-process!
   "Persist one terminal custody fact and acknowledge its opaque handle."
@@ -197,14 +135,11 @@
                      (assignment/launch-ready? rt candidate))
         (throw (ex-info "Harness run is no longer ready to launch"
                         {:run-id id :deferred true}))))
-    (let [{:keys [attempt invocation] :as started}
-          (harness/begin-attempt! rt id)
-          launch-plan (guidance/launch-plan started)]
+    (let [{:keys [attempt invocation]} (harness/begin-attempt! rt id)]
       (try
         (let [run (full-run rt id)
               definition (resolved-definition rt run)
-              launch-spec (apply-native-launch-plan
-                           run (prepare-launch rt definition run) launch-plan)
+              launch-spec (prepare-launch rt definition run)
               _ (weaver/update! rt id
                                 {:attributes
                                  (custody/durable-attributes
@@ -230,9 +165,7 @@
                                (when error-data
                                  (str " " (pr-str error-data))))
                   evidence
-                  (if (contains? #{"process/malformed-launch"
-                                   "guidance/launch-plan-mismatch"}
-                                 (:code error-data))
+                  (if (= "process/malformed-launch" (:code error-data))
                     (assoc (life/settlement-evidence
                             {:launch-failure error-data})
                            :failure-class "launch")
