@@ -286,7 +286,7 @@
       :body-block body-block
       :read-command (target-read-command target profile)
       :identity-line (or identity
-                         "$MILLSTRAND_AGENT_ID (exported to this process)")
+                         "the identity in this session's canonical identity instruction")
       :cwd cwd
       :run-line (or run-id "this harness run (the strand that serves the target)")
       :ownership-guidance ownership-guidance
@@ -300,7 +300,7 @@
                    :cwd cwd
                    :policy policy
                    :profile profile
-                   :identity "{{AGENT_ID}}"
+                   :identity "the identity in this session's canonical identity instruction"
                    :run-id "{{RUN_ID}}"
                    :current-state? false}))
 
@@ -358,9 +358,9 @@
         root-targets (attr-get run :harness/root-targets)
         identity (attr-get run :identity/id)
         profile (target-profile rt (weaver/show rt (:id target)))
-        context (cond-> (assoc frozen
-                               "assignment/run-id" run-id
-                               "assignment/identity" (or identity ""))
+        context (cond-> (assoc frozen "assignment/run-id" run-id)
+                  identity
+                  (assoc "assignment/identity" identity)
                   (:lane profile)
                   (assoc "assignment/target-lane" (:lane profile))
                   (:owner profile)
@@ -374,7 +374,7 @@
                                   :profile profile
                                   :identity identity
                                   :run-id run-id
-                                  :current-state? true})]
+                                  :current-state? (some? identity)})]
     (when (seq root-targets)
       (weaver/update!
        rt (:id target)

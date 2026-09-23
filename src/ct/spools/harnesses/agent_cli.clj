@@ -10,6 +10,7 @@
             [ct.spools.harnesses.internal.cli :as cli]
             [ct.spools.harnesses.internal.lifecycle :as life]
             [ct.spools.harnesses.reconciliation :as reconciliation]
+            [ct.spools.harnesses.native-session :as native-session]
             [ct.spools.harnesses.reviewers :as reviewers]
             [millhouse.spools.identity :as identity]
             [millstrand.api.graph.alpha :as graph]
@@ -32,9 +33,9 @@
   (s/and map?
          #(s/valid? ::harness/runtime (:op/runtime %))
          #(map? (:op/args %))))
-(s/def ::alias string?)
+(s/def ::alias (s/nilable string?))
 (s/def ::harness string?)
-(s/def ::mode #{"headless" "interactive"})
+(s/def ::mode #{"headless" "interactive" "external"})
 (s/def ::status life/statuses)
 (s/def ::substatus (s/nilable life/substatuses))
 (s/def ::session-id string?)
@@ -121,9 +122,11 @@
      ["run"] (op-run runtime args cwd)
      ["show"] (op-show runtime args)
      ["runs"] (op-runs runtime args)
-     ["repair-startup"]
-     (harness/repair-managed-startup!
-      runtime (select-keys args [:run-id :identity :native-session-id]))
+     ["native-startup"]
+     (native-session/register!
+      runtime (assoc (select-keys args [:harness :native-session-id :model :thinking-level
+                                        :run-reference :parent-identity])
+                     :cwd cwd))
      ["startup"] (harness/managed-startup!
                   runtime
                   {:harness (:harness args)
@@ -298,6 +301,12 @@
            :substatus (life/substatus run)
            :settled (life/settled? run)
            :session-id (attr-get run :harness/session-id)}
+    (attr-get run :harness/observed-model)
+    (assoc :model (attr-get run :harness/observed-model))
+    (attr-get run :harness/observed-effort)
+    (assoc :effort (attr-get run :harness/observed-effort))
+    (attr-get run :harness/ownership)
+    (assoc :origin (attr-get run :harness/ownership))
     (attr-get run :harness/settlement)
     (assoc :settlement (attr-get run :harness/settlement))
     (attr-get run :harness/settlement-gap)

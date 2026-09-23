@@ -20,6 +20,7 @@
   "Return whether retained publication evidence lacks a committed outcome."
   [run]
   (and (= "true" (attr-get run :harness/run))
+       (not= "external" (attr-get run :harness/ownership))
        (not= "interrupted" (attr-get run :harness/publication-outcome))
        (not (life/accepted? run))))
 

@@ -1,5 +1,13 @@
 # Native startup identity for Codex and Pi
 
+> Historical plan, superseded on 23 September 2026 by native identity epic
+> **j6fae** and provider features **z5qkr** / **luvpl**. The current contract is
+> documented in the repository README. In particular, pre-launch reservation,
+> compatibility transports, identity-only direct startup, environment routing
+> overrides and hook-delivered ordinary guidance below are no longer the Codex
+> design. Native startup registers direct/managed runs; ordinary guidance stays
+> on launch paths. Preserve this document only as historical design evidence.
+
 Design/backlog: **nsl12** · implementation epic: **k5zd2** · author: **steady-gentle-fox**
 
 ## Decision and boundaries

@@ -225,6 +225,10 @@
                  (not (life/accepted? run))
                  {:eligible? false :reason "run publication was not accepted"}
 
+                 (and (= "codex" (attr-get run :harness/harness))
+                      (not= "native-startup" (attr-get run :harness/native-attachment-source)))
+                 {:eligible? false :reason "Codex native startup has not registered this run"}
+
                  (and legacy? (= "pi" (attr-get run :harness/harness)))
                  (do
                    (managed/require-legacy-pi-continuation! rt run)
@@ -384,6 +388,9 @@
                          (some? resume-selector-intent)
                          (assoc :resume-selector-intent
                                 resume-selector-intent))
+        create-request (cond-> create-request
+                         (= "codex" (attr-get run :harness/harness))
+                         (dissoc :guidance-transport))
         fingerprint (life/fingerprint (dissoc create-request :request-id))]
     #_{:clj-kondo/ignore [:locking-suspicious-lock]}
     #_{:splint/disable [lint/locking-object]}

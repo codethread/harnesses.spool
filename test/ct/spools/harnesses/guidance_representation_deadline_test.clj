@@ -2,9 +2,7 @@
   "Required timestamp and locked admission regressions."
   (:require [clojure.test :refer [deftest is]]
             [ct.spools.harnesses.guidance-representation-fixture :as fixture]
-            [ct.spools.harnesses.guidance-test :as guidance-test]
-            [ct.spools.harnesses.internal.guidance :as guidance]
-            [millstrand.test.alpha :as test-alpha]))
+            [ct.spools.harnesses.internal.guidance :as guidance]))
 
 (defn- failure [operation]
   (try
@@ -232,82 +230,3 @@
                      (guidance/validate-representation! selected-legacy))))
     (is (corrupt? (update-record selected-legacy
                                  #(assoc % "deadline-at" nil))))))
-
-(deftest locked-admission-reloads-and-rejects-corruption-without-writes
-  (guidance-test/with-guidance-world
-    (fn [ctx]
-      (let [result
-            (test-alpha/repl!
-             ctx
-             (list
-              'do guidance-test/lifecycle-setup
-              '(do
-                 (require '[ct.spools.harnesses.catalog :as catalog])
-                 (let [run
-                       (harnesses/create!
-                        rt {:harness :native-codex
-                            :mode :headless
-                            :cwd "/tmp"
-                            :prompt "locked representation reload"
-                            :guidance-transport "legacy"})
-                       lock (catalog/publication-lock rt)
-                       entered (java.util.concurrent.CountDownLatch. 1)
-                       selection-calls (atom 0)
-                       worker (atom nil)
-                       before (atom nil)
-                       error
-                       (with-redefs
-                        [guidance/select!
-                         (fn [& _]
-                           (swap! selection-calls inc)
-                           (throw (ex-info "selection must not run" {})))]
-                         (locking lock
-                           (reset!
-                            worker
-                            (future
-                              (.countDown entered)
-                              (try
-                                (harnesses/begin-attempt! rt (:id run))
-                                nil
-                                (catch clojure.lang.ExceptionInfo failure
-                                  failure))))
-                           (.await entered)
-                           (weaver/update!
-                            rt (:id run)
-                            {:attributes
-                             {:harness/attempt 1
-                              :harness/invocation nil
-                              :harness/native-attached "true"
-                              :harness/native-attachment-attempt 1
-                              :harness/native-attachment-invocation
-                              "retired-native"
-                              :harness/settled "true"
-                              :harness/settlement "process-exit"
-                              :harness/guidance-attempts
-                              [{"attempt" 1
-                                "invocation" "retired-native"
-                                "transport" "native-v1"
-                                "harness" "codex"
-                                "mode" "headless"
-                                "state" "failed"
-                                "started-at" "2026-09-14T00:00:00Z"
-                                "failure" {"stage" "preflight"
-                                           "code" "fixture"
-                                           "diagnostic" "attached failure"}
-                                "bundle-sha256"
-                                (apply str (repeat 64 "a"))
-                                "capability-sha256"
-                                (apply str (repeat 64 "b"))}]}})
-                           (reset! before (weaver/list rt)))
-                         (deref @worker 1000
-                                (ex-info "admission did not finish" {})))
-                       after (weaver/list rt)
-                       current (weaver/show rt (:id run))]
-                   {:message (ex-message error)
-                    :no-write (= @before after)
-                    :selection-calls @selection-calls
-                    :status (attr current :harness/status)}))))]
-        (is (re-find #"corrupt partial guidance metadata" (:message result)))
-        (is (true? (:no-write result)))
-        (is (zero? (:selection-calls result)))
-        (is (= "ready" (:status result)))))))

@@ -32,8 +32,7 @@
                    "--model" "gpt-test"
                    "--config" "model_reasoning_effort=light"
                    "--config"
-                   (str "developer_instructions=\"You are agent tidy-brave-swan."
-                        "\\n\\nReview changes only."
+                   (str "developer_instructions=\"Review changes only."
                         "\\n\\nDo not edit files.\"")
                    "--skip-git-repo-check"
                    "--provider-option" "value with spaces" ""]
@@ -44,8 +43,7 @@
                    "--model" "gpt-test"
                    "--config" "model_reasoning_effort=light"
                    "--config"
-                   (str "developer_instructions=\"You are agent tidy-brave-swan."
-                        "\\n\\nReview changes only."
+                   (str "developer_instructions=\"Review changes only."
                         "\\n\\nDo not edit files.\"")
                    "--skip-git-repo-check"
                    "--provider-option" "value with spaces" "" "provisional" "-"]
@@ -57,8 +55,7 @@
                    "--model" "gpt-test"
                    "--config" "model_reasoning_effort=light"
                    "--config"
-                   (str "developer_instructions=\"You are agent tidy-brave-swan."
-                        "\\n\\nReview changes only."
+                   (str "developer_instructions=\"Review changes only."
                         "\\n\\nDo not edit files.\"")
                    "--skip-git-repo-check"
                    "--provider-option" "value with spaces" ""
@@ -71,8 +68,7 @@
                    "--model" "gpt-test"
                    "--config" "model_reasoning_effort=light"
                    "--config"
-                   (str "developer_instructions=\"You are agent tidy-brave-swan."
-                        "\\n\\nReview changes only."
+                   (str "developer_instructions=\"Review changes only."
                         "\\n\\nDo not edit files.\"")
                    "--skip-git-repo-check"
                    "--provider-option" "value with spaces" "" "Do the work"]

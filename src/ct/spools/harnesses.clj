@@ -8,7 +8,6 @@
             [ct.spools.harnesses.internal.guidance-receipts :as guidance-receipts]
             [ct.spools.harnesses.internal.lifecycle :as life]
             [ct.spools.harnesses.internal.publication :as publication]
-            [ct.spools.harnesses.internal.managed-repair :as managed-repair]
             [ct.spools.harnesses.internal.managed-startup :as managed]
             [ct.spools.harnesses.internal.run-continuation :as continuation]
             [ct.spools.harnesses.internal.run-creation :as creation]
@@ -77,11 +76,6 @@
   launch plus explicit native harness, session, cwd, and root scope."
   [rt request]
   (managed/startup! rt request))
-
-(defn repair-managed-startup!
-  "Repair one explicitly identified completed legacy Codex binding."
-  [rt request]
-  (managed-repair/repair! rt request))
 
 (defn run
   "Return one harness run strand by id, failing when it is absent or foreign."
@@ -258,6 +252,8 @@
   #_{:splint/disable [lint/locking-object]}
   (locking (catalog/publication-lock rt)
     (let [run (runs/require-run rt id)
+          _ (when (= "external" (attr-get run :harness/ownership))
+              (fail! "Harnesses does not own external session completion" {:id id}))
           current (life/invocation run)
           status (let [status (:status outcome)]
                    (if (keyword? status) status (keyword (str status))))
@@ -277,6 +273,17 @@
               guidance-completion
               (guidance-receipts/completion run (assoc outcome :status status))
               outcome (:outcome guidance-completion)
+              native-failure? (and (= "codex" (attr-get run :harness/harness))
+                                   (life/invocation run)
+                                   (or (not= (life/invocation run)
+                                             (attr-get run :harness/native-attachment-invocation))
+                                       (and (:session-id outcome)
+                                            (not= (:session-id outcome)
+                                                  (attr-get run :harness/session-id)))))
+              outcome (if native-failure?
+                        (assoc outcome :status :failed :session-usable false
+                               :error "Codex native startup missing or inconsistent with the current invocation")
+                        outcome)
               status (:status outcome)
               exit-code (:exit-code outcome)
               result (:result outcome)
@@ -323,7 +330,10 @@
                           (and (not (managed/managed-harness?
                                      (attr-get run :harness/harness)))
                                (true? session-usable)))
-              patch (life/terminal-patch run status evidence usable?)]
+              patch (life/terminal-patch run status
+                                         (cond-> evidence native-failure?
+                                                 (assoc :failure-class "bootstrap"))
+                                         (and (not native-failure?) usable?))]
           (require-valid!
            ::strand
            (weaver/update!
@@ -356,6 +366,8 @@
   #_{:splint/disable [lint/locking-object]}
   (locking (catalog/publication-lock rt)
     (let [run (runs/require-run rt id)]
+      (when (= "external" (attr-get run :harness/ownership))
+        (fail! "Harnesses does not own external session processes" {:id id}))
       (if-let [patch (life/stop-patch run (:reason request))]
         (let [updated
               (require-valid!

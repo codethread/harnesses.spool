@@ -26,25 +26,23 @@ managed_failure() {
 }
 
 script_dir=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd) || {
-	warning "Millstrand identity startup cannot resolve its packaged hook path; this session is unbound."
+	managed_failure "Millstrand identity startup cannot resolve its packaged hook path; this session is unbound."
 	exit 0
 }
 script_path="$script_dir/identity.sh"
 source_probe="$script_dir/identity-sources.sh"
-managed_guidance_helper="$script_dir/../lib/managed-guidance.mjs"
 if [[ ! -x "$source_probe" ]]; then
-	warning "Millstrand identity startup cannot inspect configured injector sources; this session is unbound."
+	managed_failure "Millstrand identity startup cannot inspect configured injector sources; this session is unbound."
 	exit 0
 fi
 
 payload=$(cat) || {
-	warning "Millstrand identity startup could not read the Codex hook payload; this session is unbound."
+	managed_failure "Millstrand identity startup could not read the Codex hook payload; this session is unbound."
 	exit 0
 }
 
-managed_guidance_mode=unmanaged
 event_name=$(jq -er '.hook_event_name' <<<"$payload" 2>/dev/null) || {
-	warning "Millstrand identity startup received an invalid Codex hook payload; this session is unbound."
+	managed_failure "Millstrand identity startup received an invalid Codex hook payload; this session is unbound."
 	exit 0
 }
 
@@ -58,33 +56,10 @@ case "$event_name" in
 			(.model | type == "string" and length > 0) and
 			(.source == "startup" or .source == "resume" or .source == "clear" or .source == "compact")
 		' >/dev/null 2>&1 <<<"$payload"; then
-			warning "Millstrand identity startup received an invalid SessionStart payload; this session is unbound."
+			managed_failure "Millstrand identity startup received an invalid SessionStart payload; this session is unbound."
 			exit 0
 		fi
 
-		if [[ ${MILLSTRAND_MANAGED_GUIDANCE+x} == x ]]; then
-			if ! command -v node >/dev/null 2>&1 || [[ ! -f "$managed_guidance_helper" ]]; then
-				managed_failure "Millstrand managed guidance adapter is missing; the selected native-v1 launch was stopped."
-				exit 0
-			fi
-			managed_guidance_mode=$(node "$managed_guidance_helper" classify 2>&1)
-			managed_guidance_status=$?
-			if ((managed_guidance_status != 0)); then
-				managed_diagnostic=$(LC_ALL=C printf '%s' "$managed_guidance_mode" | head -c 300 | tr '\n\r\t' '   ')
-				managed_failure "Millstrand managed guidance metadata is invalid: $managed_diagnostic"
-				exit 0
-			fi
-			if [[ "$managed_guidance_mode" == legacy ]]; then
-				exit 0
-			fi
-			if [[ "$managed_guidance_mode" != native-v1 ]]; then
-				managed_failure "Millstrand managed guidance selected an unsupported transport."
-				exit 0
-			fi
-		elif [[ ${MILLSTRAND_AGENT_ID+x} == x || ${MILLSTRAND_RUN_ID+x} == x ]]; then
-			# Old spool/new adapter: keep the existing managed prompt transport authoritative.
-			exit 0
-		fi
 		;;
 	SubagentStart)
 		if ! jq -e '
@@ -98,12 +73,12 @@ case "$event_name" in
 			(.model | type == "string" and length > 0) and
 			(has("source") | not)
 		' >/dev/null 2>&1 <<<"$payload"; then
-			warning "Millstrand identity startup received an invalid SubagentStart payload; this child is unbound."
+			managed_failure "Millstrand identity startup received an invalid SubagentStart payload; this child is unbound."
 			exit 0
 		fi
 		;;
 	*)
-		warning "Millstrand identity startup received an unsupported Codex hook event; this session is unbound."
+		managed_failure "Millstrand identity startup received an unsupported Codex hook event; this session is unbound."
 		exit 0
 		;;
 esac
@@ -114,14 +89,22 @@ model=$(jq -er '.model' <<<"$payload")
 source=$(jq -er '.source // "child"' <<<"$payload")
 agent_id=$(jq -er '.agent_id // "root"' <<<"$payload")
 
+# Project routing is authoritative; inherited workspace/identity hints never
+# activate the adapter outside the launch project.
+workspace=
+common_dir=$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common_dir=
+if [[ -n "$common_dir" && "$(basename "$common_dir")" == .git ]]; then
+	workspace="$(dirname "$common_dir")/.millstrand"
+elif [[ -d "$cwd/.millstrand" ]]; then
+	workspace="$cwd/.millstrand"
+fi
+[[ -n "$workspace" && -d "$workspace" ]] || exit 0
+workspace=$(cd -P "$workspace" && pwd) || exit 1
+
 managed_runtime_failure() {
 	local code=$1
 	local diagnostic=$2
-	if [[ "$event_name" == SessionStart && "$managed_guidance_mode" == native-v1 ]]; then
-		node "$managed_guidance_helper" fail "$session_id" "$cwd" "$code" "$diagnostic"
-	else
-		warning "$diagnostic This session is unbound."
-	fi
+	managed_failure "$diagnostic Native startup did not complete."
 }
 
 if [[ ${1:-} != --configured-source && ${1:-} != --locked ]]; then
@@ -150,11 +133,6 @@ if [[ ${1:-} != --configured-source && ${1:-} != --locked ]]; then
 	printf '%s' "$payload" | bash "$script_path" --configured-source
 	exit 0
 fi
-
-# This is a host/user routing setting, not launcher identity transport. An
-# unmanaged MILLSTRAND_WORKSPACE remains accepted for the established client
-# convention; managed roots returned above before consulting it.
-workspace=${MILLSTRAND_CODEX_WORKSPACE:-${MILLSTRAND_WORKSPACE:-}}
 
 lock_root=${XDG_RUNTIME_DIR:-${XDG_STATE_HOME:-${HOME:-}/.local/state}}/codex-millstrand-identity
 lock_key=$(jq -nr \
@@ -192,13 +170,8 @@ if [[ ${1:-} != --locked ]]; then
 	exit 0
 fi
 
-if [[ "$event_name" == SessionStart && "$managed_guidance_mode" == native-v1 ]]; then
-	node "$managed_guidance_helper" handoff "$session_id" "$cwd" "$event_name"
-	exit 0
-fi
-
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/codex-millstrand-identity.XXXXXX") || {
-	warning "Millstrand identity startup could not allocate bounded response storage; this session is unbound."
+	managed_failure "Millstrand identity startup could not allocate bounded response storage; this session is unbound."
 	exit 0
 }
 strand_pid=
@@ -217,11 +190,11 @@ trap 'exit 143' TERM
 strand_bin=${MILLSTRAND_CODEX_STRAND_BIN:-strand}
 if [[ "$strand_bin" == */* ]]; then
 	if [[ ! -x "$strand_bin" ]]; then
-		warning "Millstrand identity startup cannot execute Strand; this session is unbound."
+		managed_failure "Millstrand identity startup cannot execute Strand; this session is unbound."
 		exit 0
 	fi
 elif ! command -v "$strand_bin" >/dev/null 2>&1; then
-	warning "Millstrand identity startup cannot find Strand; this session is unbound."
+	managed_failure "Millstrand identity startup cannot find Strand; this session is unbound."
 	exit 0
 fi
 
@@ -236,6 +209,7 @@ call_strand() {
 	local -a scrubbed_names=(
 		MILLSTRAND_AGENT_ID
 		MILLSTRAND_RUN_ID
+		MILLSTRAND_RUN_REFERENCE
 		MILLSTRAND_MANAGED_BOOTSTRAP
 		MILLSTRAND_MANAGED_GUIDANCE
 		MILLSTRAND_WORKSPACE
@@ -274,7 +248,7 @@ call_strand() {
 }
 
 bounded_diagnostic() {
-	LC_ALL=C head -c 160 "$last_stderr" 2>/dev/null | tr '\n\r\t' '   '
+	LC_ALL=C head -c 80 "$last_stderr" 2>/dev/null | tr '\n\r\t' '   '
 }
 
 validate_startup_response() {
@@ -282,8 +256,10 @@ validate_startup_response() {
 		select(length == 1) | .[0] |
 		select(
 			(type == "object") and
-			(keys | sort == ["identity", "instruction", "operation", "result", "strand-id"]) and
-			(.operation == "identity startup") and
+			(.operation == "identity startup" or
+             (.operation == "agent native-startup" and
+              (."run-id" | type == "string" and length > 0) and
+              (."observed-effort" | type == "string" and length > 0))) and
 			(.identity | type == "string" and length > 0) and
 			(."strand-id" | type == "string" and length > 0) and
 			(.result == "minted" or .result == "recovered" or .result == "attached") and
@@ -303,23 +279,28 @@ startup() {
 	local label=$1
 	local native_session_id=$2
 	local parent_identity=${3:-}
-	local -a args=(identity startup codex "$native_session_id" --model "$model")
+	local -a args=(agent native-startup codex "$native_session_id" --model "$model")
+	if [[ "$label" == parent ]]; then
+		args=(identity startup codex "$native_session_id" --model "$model")
+	elif [[ "$label" == root && -n "${MILLSTRAND_RUN_REFERENCE:-}" ]]; then
+		args+=(--run-reference "$MILLSTRAND_RUN_REFERENCE")
+	fi
 	if [[ -n "$parent_identity" ]]; then
 		args+=(--parent-identity "$parent_identity")
 	fi
 	call_strand "$label" "${args[@]}"
 	if ((last_status != 0)); then
-		warning "Millstrand identity startup is unavailable ($label, exit $last_status): $(bounded_diagnostic). This session is unbound."
+		managed_failure "Millstrand identity startup is unavailable ($label, exit $last_status): $(bounded_diagnostic). This session is unbound."
 		return 1
 	fi
 	local bytes
 	bytes=$(LC_ALL=C wc -c <"$last_stdout" | tr -d ' ')
 	if ((bytes > context_max_bytes * 4)); then
-		warning "Millstrand identity startup returned an oversized response; required context was not injected and this session is unbound."
+		managed_failure "Millstrand identity startup returned an oversized response; required context was not injected and this session is unbound."
 		return 1
 	fi
 	if ! validate_startup_response "$last_stdout" >/dev/null; then
-		warning "Millstrand identity startup returned an invalid response; required context was not injected and this session is unbound."
+		managed_failure "Millstrand identity startup returned an invalid response; required context was not injected and this session is unbound."
 		return 1
 	fi
 	return 0
@@ -349,7 +330,7 @@ fi
 
 context_bytes=$(LC_ALL=C printf '%s' "$context" | wc -c | tr -d ' ')
 if ((context_bytes > context_max_bytes)); then
-	warning "Millstrand identity context exceeds its reviewed byte budget; required context was not injected and this session is unbound."
+	managed_failure "Millstrand identity context exceeds its reviewed byte budget; required context was not injected and this session is unbound."
 	exit 0
 fi
 

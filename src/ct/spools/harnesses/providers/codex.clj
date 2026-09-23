@@ -121,8 +121,6 @@
      :session-id (attribute run :harness/session-id)
      :model (attribute run :harness/model)
      :effort (attribute run :harness/effort)
-     :identity-prompt (attribute run :identity/prompt)
-     :guidance-transport (guidance/transport run)
      :appended-system-prompts
      (or (attribute run :harness/appended-system-prompts) [])
      :prompt (attribute run :harness/prompt)
@@ -144,25 +142,16 @@
            {:extra-argv extra})))
 
 (defn- option-argv
-  [{:keys [model effort identity-prompt appended-system-prompts extra
-           guidance-transport]}]
-  ;; developer_instructions is rebuilt from config on every launch and
-  ;; `exec resume` accepts -c/--config, so resumed runs must reapply the pinned
-  ;; identity and policy guidance rather than inherit it.
-  (let [system-prompt (str/join "\n\n"
-                                (remove str/blank?
-                                        (cons identity-prompt
-                                              appended-system-prompts)))]
+  [{:keys [model effort appended-system-prompts extra]}]
+  (let [system-prompt (str/join "\n\n" appended-system-prompts)]
     (vec
      (concat
       (when model ["--model" model])
       (when effort
         ["--config"
          (str "model_reasoning_effort=" (get effort-names effort effort))])
-      (when (and (= "legacy" guidance-transport)
-                 (not (str/blank? system-prompt)))
-        ["--config"
-         (str "developer_instructions=" (json/write-str system-prompt))])
+      (when-not (str/blank? system-prompt)
+        ["--config" (str "developer_instructions=" (json/write-str system-prompt))])
       extra))))
 
 (defn- codex-command [{:keys [mode resumes session-id prompt] :as options}]

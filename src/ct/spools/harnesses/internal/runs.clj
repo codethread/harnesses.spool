@@ -15,9 +15,8 @@
   "Replace assignment markers with the current published invocation values."
   [value run-id identity-id]
   (cond
-    (string? value) (-> value
-                        (str/replace "{{RUN_ID}}" run-id)
-                        (str/replace "{{AGENT_ID}}" identity-id))
+    (string? value) (cond-> (str/replace value "{{RUN_ID}}" run-id)
+                      identity-id (str/replace "{{AGENT_ID}}" identity-id))
     (map? value) (into {} (map (fn [[key item]]
                                  [key (bind-invocation-markers item run-id identity-id)]))
                        value)
@@ -128,6 +127,12 @@
           (if (contains? request :requested-session-id)
             requested-session-id
             session-id)]
+      (when (= "codex" (attr-get predecessor :harness/harness))
+        (when-not (and (= harness "codex")
+                       (= requested-session-id (attr-get predecessor :harness/session-id))
+                       (= "native-startup" (attr-get predecessor :harness/native-attachment-source)))
+          (fail! "Codex continuation requires its registered native provider and session"
+                 {:predecessor resumes})))
       (legacy/validate-continuation-request!
        rt predecessor harness requested-session-id)
       (require-continuation-head! rt resumes)))
@@ -203,7 +208,8 @@
                {:attributes (merge
                              {:identity/id identity-id
                               :identity/prompt (:prompt identity-binding)
-                              :harness/publication-phase "bound"}
+                              :harness/publication-phase "bound"
+                              :harness/native-attached (when (= "codex" harness) "false")}
                              (when-let [reservation-id (:reservation-id identity-binding)]
                                {:identity/reservation-id reservation-id
                                 :harness/provisional-session-id session-id
@@ -307,8 +313,9 @@
   (let [old-attrs (:attributes run)
         old-generated (registry/normalize-overlay (attr-get run :harness/generated))
         old-overrides (registry/normalize-overlay (attr-get run :harness/overrides))
-        identity-id (or (:identity identity-binding)
-                        (attr-get run :identity/id))
+        identity-id (when-not (= "codex" concrete)
+                      (or (:identity identity-binding)
+                          (attr-get run :identity/id)))
         literal-extra-argv?
         (= "true" (attr-get run :harness.internal/literal-extra-argv))
         literal-extra-argv (when literal-extra-argv?
@@ -351,6 +358,8 @@
             :harness/error nil
             :harness/result nil
             :harness/exit-code nil
+            :harness/observed-model nil
+            :harness/observed-effort nil
             :harness/native-attached-at nil
             :harness/native-attachment-source nil
             :harness/native-attachment-attempt nil
@@ -367,6 +376,6 @@
                :identity/prompt (:prompt identity-binding)}
               (when-not (:legacy-pi identity-binding)
                 {:identity/reservation-id (:reservation-id identity-binding)
-                 :harness/provisional-session-id session-id
+                 :harness/provisional-session-id (when-not (= "codex" concrete) session-id)
                  :harness/native-attached
                  (if (:native-attached identity-binding) "true" "false")}))))))

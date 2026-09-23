@@ -154,6 +154,8 @@
            {:keys [strand invocation]}
            (harness/begin-attempt! rt id owner-attributes)]
        (try
+         (when (= "codex" (attr-get strand :harness/harness))
+           (launcher/arm-native! rt strand))
          (when-let [bootstrap (managed/bootstrap rt strand)]
            (launcher/arm!
             rt strand bootstrap
