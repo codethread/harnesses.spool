@@ -80,6 +80,18 @@
                           :type :string
                           :required? true
                           :doc "Available provider harness or alias."}]}
+    "native-startup"
+    {:doc "Register actual native identity and run participation without launching."
+     :hook-class :mutating
+     :deadline-class :standard
+     :flags {:model {:type :string :required? true :doc "Actual host model."}
+             :thinking-level {:type :string :doc "Observed reasoning effort, when available."}
+             :run-reference {:type :string :doc "Managed run ID:invocation reference."}
+             :parent-identity {:type :string :doc "Resolved native parent identity."}}
+     :positionals [{:name :harness :type :string :required? true
+                    :doc "Actual native provider: codex or pi."}
+                   {:name :native-session-id :type :string :required? true
+                    :doc "Actual native session key."}]}
     "startup"
     {:doc "Attach a managed Codex/Pi run at native root startup."
      :hook-class :mutating
@@ -104,22 +116,6 @@
                     :type :string
                     :required? true
                     :doc "Actual native session ID reported by the host."}]}
-    "repair-startup"
-    {:doc "Explicitly repair one completed legacy Codex native binding."
-     :hook-class :mutating
-     :deadline-class :standard
-     :flags {:identity
-             {:type :string
-              :required? true
-              :doc "Exact friendly identity recorded on the run."}
-             :native-session-id
-             {:type :string
-              :required? true
-              :doc "Exact usable native session recorded on the run."}}
-     :positionals [{:name :run-id
-                    :type :string
-                    :required? true
-                    :doc "Exact completed legacy Codex run ID."}]}
     "show" {:doc "Show one agent run, or the run serving a task or request."
             :hook-class :read
             :deadline-class :standard

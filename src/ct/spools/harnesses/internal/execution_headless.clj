@@ -3,6 +3,7 @@
   (:require [clojure.data.json :as json]
             [ct.spools.harnesses :as harness]
             [ct.spools.harnesses.assignment :as assignment]
+            [ct.spools.harnesses.native-session :as native-session]
             [ct.spools.harnesses.internal.guidance :as guidance]
             [ct.spools.harnesses.internal.launcher :as launcher]
             [ct.spools.harnesses.internal.lifecycle :as life]
@@ -122,12 +123,23 @@
         (when (and bootstrap
                    (some? (attr-get run :harness/guidance-version)))
           (guidance/bootstrap run))]
-    {:argv argv
+    {:argv (if (= "codex" (attr-get run :harness/harness))
+             (into ["/usr/bin/env" "-u" "MILLSTRAND_AGENT_ID"
+                    "-u" "MILLSTRAND_MANAGED_BOOTSTRAP"
+                    "-u" "MILLSTRAND_MANAGED_GUIDANCE"] argv)
+             argv)
      :cwd (or validated-cwd (attr-get run :harness/cwd))
-     :env (cond-> (assoc (or env {})
+     :env (cond-> (assoc (if (= "codex" (attr-get run :harness/harness))
+                           (dissoc env "MILLSTRAND_AGENT_ID"
+                                   "MILLSTRAND_MANAGED_BOOTSTRAP"
+                                   "MILLSTRAND_MANAGED_GUIDANCE")
+                           (or env {}))
                          "MILLSTRAND_RUN_ID" (:id run)
                          "MILLSTRAND_WORKSPACE" (launcher/workspace rt))
-            (attr-get run :identity/id)
+            (= "codex" (attr-get run :harness/harness))
+            (assoc "MILLSTRAND_RUN_REFERENCE" (native-session/reference run))
+            (and (not= "codex" (attr-get run :harness/harness))
+                 (attr-get run :identity/id))
             (assoc "MILLSTRAND_AGENT_ID" (attr-get run :identity/id))
             bootstrap
             (assoc "MILLSTRAND_MANAGED_BOOTSTRAP" (json/write-str bootstrap))

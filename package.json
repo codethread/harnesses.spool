@@ -10,6 +10,7 @@
   "files": [
     "plugins/millstrand-identity",
     "scripts/managed-guidance-preflight.mjs",
+    "scripts/strict-json.mjs",
     "pnpm-lock.yaml"
   ],
   "exports": {

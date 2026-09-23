@@ -30,7 +30,7 @@
 
 (def transports
   "Public managed-guidance transport names."
-  #{"legacy" "native-v1"})
+  #{"legacy" "native-v1" "launch"})
 
 (def ^:private managed-harnesses #{"codex" "pi"})
 (def ^:private bootstrap-keys
@@ -95,45 +95,50 @@
 (defn select!
   "Select and preflight guidance before run publication or identity reservation."
   [rt {:keys [harness mode requested inherited effective] :as request}]
-  (let [transport (parse-transport (or requested inherited "legacy"))]
-    (when (and (= "native-v1" transport)
-               (= :interactive mode)
-               (contains? managed-harnesses harness))
-      (spool/fail!
-       "Native guidance does not support interactive launches; submit legacy work"
-       {:harness harness :mode mode :guidance-transport transport}))
-    (if-not (contains? managed-harnesses harness)
-      (do
-        (when (= "native-v1" transport)
-          (spool/fail! "Native guidance supports only Codex and Pi"
-                       {:harness harness}))
-        nil)
-      (if (= "legacy" transport)
-        {:transport transport}
+  (if (= "codex" harness)
+    (do
+      (when (and requested (not= "launch" requested))
+        (spool/fail! "Codex uses ordinary launch guidance; transport selection is unsupported" {}))
+      nil)
+    (let [transport (parse-transport (or requested inherited "legacy"))]
+      (when (and (= "native-v1" transport)
+                 (= :interactive mode)
+                 (contains? managed-harnesses harness))
+        (spool/fail!
+         "Native guidance does not support interactive launches; submit legacy work"
+         {:harness harness :mode mode :guidance-transport transport}))
+      (if-not (contains? managed-harnesses harness)
         (do
-          (prompt-controls/reject! harness
-                                   (or (:harness/extra-argv effective) []))
-          (let [preflight (preflight-request rt request)
-                capability (capability/preflight! preflight)]
-            (when-not (= (get provider-context-limits harness)
-                         (get capability "max-context-bytes"))
-              (spool/fail! "Guidance capability has an unaccepted context limit"
-                           {:harness harness
-                            :expected (get provider-context-limits harness)
-                            :actual (get capability "max-context-bytes")}))
-            {:transport transport
-             :capability capability
-             :capability-sha256
-             (strict-json/canonical-sha256 capability)
-             :launch-plan
-             {:harness harness
-              :executable (get preflight "executable")
-              :cwd (get preflight "cwd")
-              :env (get preflight "env")
-              :selectors
-              (select-keys preflight
-                           ["extra-argv" "model" "effort" "resumes"
-                            "native-session-id"])}}))))))
+          (when (= "native-v1" transport)
+            (spool/fail! "Native guidance supports only Codex and Pi"
+                         {:harness harness}))
+          nil)
+        (if (= "legacy" transport)
+          {:transport transport}
+          (do
+            (prompt-controls/reject! harness
+                                     (or (:harness/extra-argv effective) []))
+            (let [preflight (preflight-request rt request)
+                  capability (capability/preflight! preflight)]
+              (when-not (= (get provider-context-limits harness)
+                           (get capability "max-context-bytes"))
+                (spool/fail! "Guidance capability has an unaccepted context limit"
+                             {:harness harness
+                              :expected (get provider-context-limits harness)
+                              :actual (get capability "max-context-bytes")}))
+              {:transport transport
+               :capability capability
+               :capability-sha256
+               (strict-json/canonical-sha256 capability)
+               :launch-plan
+               {:harness harness
+                :executable (get preflight "executable")
+                :cwd (get preflight "cwd")
+                :env (get preflight "env")
+                :selectors
+                (select-keys preflight
+                             ["extra-argv" "model" "effort" "resumes"
+                              "native-session-id"])}})))))))
 
 (defn publication-patch
   "Freeze and digest one selected guidance bundle before final publication."
@@ -185,7 +190,9 @@
 (defn transport
   "Return and validate a run's selected transport; absent old metadata is legacy."
   [run]
-  (:transport (validate-representation! run)))
+  (if (= "codex" (spool/attr-get run :harness/harness))
+    "launch"
+    (:transport (validate-representation! run))))
 
 (defn native?
   "Return whether `run` has a complete native-v1 selection."

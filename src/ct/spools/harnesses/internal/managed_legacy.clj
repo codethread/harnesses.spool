@@ -6,7 +6,7 @@
             [millstrand.api.spool.alpha :refer [attr-get fail!]]
             [millstrand.api.weaver.alpha :as weaver]))
 
-(def ^:private managed-harnesses #{"codex" "pi"})
+(def ^:private managed-harnesses #{"pi"})
 
 (defn- managed-provider? [run]
   (contains? managed-harnesses (attr-get run :harness/harness)))

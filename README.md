@@ -344,8 +344,8 @@ strand agent run reviewer --prompt "Review this change" \
   --append-system-prompt "Focus on concurrency risks."
 ```
 
-Claude and Pi receive one native append flag per contribution. Codex and Cursor
-receive the identity and accumulated contributions joined with blank lines.
+Claude and Pi receive one native append flag per contribution. Codex receives accumulated ordinary contributions joined with blank lines; its
+identity comes from the native hook. Cursor receives identity plus appends.
 System-prompt injection is rebuilt from frozen run data for every launch,
 including native resume.
 
@@ -428,269 +428,76 @@ values rather than encoding shell argv as JSON. The created run remains the
 same tracked interactive lifecycle driven by `agent run --interactive`, its
 private launcher, `_started`, and `_finished`.
 
-## Managed Codex/Pi native startup
+## Codex native identity and run registration
 
-Managed Codex and Pi runs reserve identity before run publication. This is an
-optional compatibility adapter: unmanaged desktop startup continues to use the
-identity spool directly and requires no Harnesses run, launcher environment, or
-reservation. Claude and Cursor retain their existing binding and prompt paths.
+Codex creates no identity before launch. Its ordinary task, role, frozen policy,
+and ordered alias/user appends stay on the launch prompt and developer-instruction
+paths. Only the canonical identity contribution comes from native startup.
+Claude and Cursor retain their maintenance transports. Pi's adapter cutover is
+tracked separately; its existing managed transport remains operational here.
 
-Every running managed root receives `MILLSTRAND_MANAGED_BOOTSTRAP` as JSON. The
-document contains routing and fencing metadata only—never the user prompt,
-identity instruction, assignment policy, or appended guidance. Its exact v1
-shape is:
+The packaged hook gates on the launch project's canonical `.millstrand`
+workspace, including Git linked worktrees. Outside such a project it does
+nothing—even if workspace or managed hints were inherited. It never starts a
+Weaver, creates a workspace, or uses a global fallback. Enable/trust the packaged
+SessionStart and SubagentStart hooks in the host before using this integration.
 
-```json
-{
-  "schema": "millstrand.agent-managed-bootstrap/v1",
-  "run-id": "abc12",
-  "harness": "codex",
-  "identity": "warm-silver-lemur",
-  "reservation-id": "907302db-f1a1-4f20-9908-da397415a7c8",
-  "cwd": "/canonical/session/cwd",
-  "workspace": "/canonical/workspace",
-  "attempt": 1,
-  "invocation": "fencing-uuid",
-  "scope": "root"
-}
-```
-
-`expected-native-session-id` is additionally present for Pi, whose pinned
-session ID must equal the host's actual ID, and for an already attached Codex
-native resume. The adapter passes the complete document unchanged and supplies
-the host event's actual harness, native session ID, cwd, and scope:
+The small registration boundary is:
 
 ```text
-strand --workspace WORKSPACE --cwd SESSION_CWD \
-  agent startup HARNESS ACTUAL_NATIVE_ID \
-  --scope root --bootstrap "$MILLSTRAND_MANAGED_BOOTSTRAP"
+strand --workspace PROJECT_WORKSPACE --cwd SESSION_CWD \
+  agent native-startup codex ACTUAL_NATIVE_ID --model ACTUAL_MODEL \
+  [--run-reference RUN_ID:INVOCATION] [--parent-identity FRIENDLY]
 ```
 
-Startup validates the published run, concrete Codex/Pi provider, canonical cwd
-and workspace, root scope, positive durable attempt, nonblank durable invocation,
-reservation, friendly identity, immutable prior attachment, target writer, and
-native-session writer. Pi additionally requires the bootstrap pin and compares
-both it and the actual host ID independently with the durable provisional ID.
-Identity binding, `performed` provenance, and run attachment evidence then
-commit in one transaction. Operation caller attribution is not a native parent
-reference and cannot block startup. Exact replay converges. Never-launched runs,
-child scope, stale launch metadata, and conflicts fail without attachment writes.
+`ct.spools.harnesses.native-session/register!` composes Millhouse Identity startup.
+The callback returns `identity`, `strand-id`, `instruction`, `result`, `run-id`,
+and `observed-effort`. The hook awaits this result, validates the canonical
+instruction, and returns developer `additionalContext` before model work.
+Startup, resume, clear, and compact each reconstruct one current contribution.
+SubagentStart uses `codex-child:v1:<base64url(parent)>:<base64url(agent)>`, resolves
+parent identity separately, and never consumes inherited root run correlation.
 
-A successful startup response has this exact context structure (normal Strand
-output also adds its `operation` key):
+### Shared persistence contract
 
-```json
-{
-  "schema": "millstrand.agent-managed-context/v1",
-  "run-id": "abc12",
-  "harness": "codex",
-  "native-session-id": "actual-thread-id",
-  "identity": "warm-silver-lemur",
-  "strand-id": "identity-strand-id",
-  "result": "attached",
-  "instruction": "Your Millstrand identity is …",
-  "context": {
-    "schema": "millstrand.agent-managed-context/v1",
-    "identity-instruction": "Your Millstrand identity is …",
-    "appended-system-prompts": ["ordered frozen contribution"]
-  }
-}
-```
+- Managed launch correlation is only `MILLSTRAND_RUN_REFERENCE=RUN_ID:INVOCATION`.
+  `MILLSTRAND_RUN_ID` remains ordinary run metadata, not identity authority.
+  There is no Codex identity reservation, identity environment variable, rich
+  bootstrap document, transport selection, completion-time mint, or legacy repair.
+- Publication commits request/target tracking without a worker identity.
+  Native registration validates the running invocation, provider, canonical cwd,
+  expected resume session and competing writers. It sets `identity/id`, the actual
+  `harness/session-id`, and the identity's `performed` edge to that exact run.
+- Attachment retains `harness/native-attached=true`, `native-attached-at`,
+  `native-attachment-source=native-startup`, and managed
+  `native-attachment-attempt`/`native-attachment-invocation`. Provenance and the run
+  patch commit together. Identity lookup/mint is independently idempotent.
+- Without a managed reference, registration creates/reuses one run per
+  provider/native session. It has `harness/mode=external` and
+  `harness/ownership=external`, no alias, target, attempt, invocation, launch
+  custody or settlement assertion. It does not spawn an agent or claim work.
+  Harnesses refuses process stop/completion for these externally owned sessions.
+- `harness/observed-model` records the actual host model. Codex hooks do not
+  report reasoning effort: `harness/observed-effort` is the literal **`unknown`**
+  unless an authoritative managed selection supplies it. Consumers display
+  **Unknown**. This metadata is separate from `harness/effort`, the provider
+  option; the unknown marker is never passed as a reasoning-effort setting.
+- Alias visibility policy is unchanged. An external run without an alias does
+  not acquire unrestricted delegation visibility.
 
-The context omits the main user task. Identity instruction comes first;
-`appended-system-prompts` retains parent-to-child-to-run ordering. The Codex/Pi
-native adapters own how this structured result is delivered. Existing CLI prompt
-flags remain active until an explicit native transport version selects their
-replacement.
+Same-session callbacks recover the identity and direct registration. Managed
+resume keeps its true lineage but waits for its own native callback to record
+participation. Fresh retries/children get fresh native identities. Request replay
+and target exclusivity are independent of registration. A missing callback or
+inconsistent observed thread produces a visible bootstrap failure at completion,
+without discarding genuine process settlement. Registration is not custody or
+proof that a model obeyed its context. Missing/disabled hooks cannot themselves
+block a host; completion never pretends that such a run integrated successfully.
 
-### Managed guidance transport
-
-New managed Codex/Pi requests accept an explicit delivery selection:
-
-```text
-strand agent run pi --guidance-transport legacy ...
-strand agent resume RUN_ID --guidance-transport legacy ...
-strand agent retry RUN_ID --guidance-transport legacy
-```
-
-The values are exactly `legacy` and `native-v1`. Fresh work defaults to `legacy`;
-a continuation inherits its predecessor's selection. The exact choice, frozen
-context template, materialized current-run context, RFC 8785 bundle digest, and
-ordered attempt records are durable. Intentionally equal appended strings remain
-separate vector positions. Older rows with no guidance attributes remain legacy;
-a partial versioned representation is corruption rather than a downgrade signal.
-
-`native-v1` is deliberately unavailable in this release. Harnesses' production
-capability allowlist is empty until the repository-owned adapter artifacts and
-exact Codex 0.154.0/Pi 0.84.4 host profiles are independently accepted. An explicit native
-request therefore fails before run publication or identity reservation with the
-remedy to submit legacy work. Native interactive selection is also rejected for
-fresh work, continuation, retry, and queued execution revalidation because a
-terminal launcher environment cannot yet be proven equal to the preflight
-environment. Interactive work remains available through default or explicit
-legacy transport; admitted native profiles apply only to headless work. Harnesses
-never infers capability from installed files, startup-v1 metadata, package
-versions, branches, or helper claims.
-
-When profiles are eventually accepted, Harnesses runs the approved no-model
-preflight against the actual executable, cwd, workspace, environment, provider
-selectors, and resume settings before publication and again before each attempt.
-The canonical executable and effective environment are carried only in a
-process-local launch plan into custody; delayed launches recheck the provider
-command and configuration selectors, use the validated path as `argv[0]`, and
-never persist the inherited environment. The accepted capability wire document
-remains the frozen `millstrand.agent-guidance-capability/v1` schema: process
-ownership and executable-closure fields are rejected on that wire. Harnesses
-instead keeps this evidence in a closed local profile whose digest binds the wire
-capability to a finite canonical manifest. The manifest hashes and sizes the
-reviewed interpreter, preflight entrypoint, direct and transitive imports,
-package or module selectors, helper subprocesses, and ownership scanner that the
-profile needs. A mandatory Darwin resolver policy binds cwd and PATH exactly,
-with absent and empty selectors remaining distinct. It requires explicit absence
-of NODE_OPTIONS, NODE_PATH, OPENSSL_CONF, DYLD loader/library redirection,
-LD_PRELOAD, and LD_LIBRARY_PATH; listing those unsafe inputs or their artifacts
-never authorizes them. Missing policy keys and incomplete, duplicate,
-noncanonical, or changed artifacts fail before the first process starts. The
-same closure is checked again
-before helper release, after completion, and before every cleanup scanner.
-
-The local profile must also contain exact reviewed evidence that its closure
-keeps every child in the inherited private process group. A private supervisor
-then establishes and verifies that group identity across root and intermediate
-exits. Verified helper completion retires the supervisor's stream handles
-independently from the retained cleanup identity. Cleanup scanners drain bounded
-stdout and stderr concurrently on dedicated workers. Scanner timeout, overflow,
-malformed output, nonzero exit, or drain failure still retires and joins the
-scanner and all safely retained identities.
-
-Numerical PID and PGID rows are discovery evidence only. Harnesses retains each
-actual process handle plus its start identity. Anchor and helper handles become
-authoritative only after stable direct-child provenance is established against
-the already retained live spawning parent, then confirmed against the expected
-process group before their gates open. It signals and joins only those same
-birth-fenced identities. It never reacquires a PID for authority or adopts a
-replacement child or group after parent or anchor disappearance. Incomplete
-state can add only independently parent-proven handles to bounded cleanup.
-Group members are confirmed independently and preserved as soon as their
-original birth is verified, so one sibling's exit cannot discard another's
-cleanup authority. Parent-proven descendants are retained before cleanup, all
-safe identities are signalled before joins, and correlation failures remain
-visible. Input, execution, capture, cleanup, and worker joins share one monotonic
-3,000 ms budget with 400 ms reserved for cleanup; unrelated processes are never
-selected by command pattern.
-Evidence must match one approved preflight source and the complete approved
-adapter/executable/package/profile/ownership closure. Missing, changed, untrusted,
-duplicate, malformed, oversized, nonzero, or mismatched evidence fails loudly;
-there is no retry or native-to-legacy fallback.
-
-A selected native launch exports both prompt-free routing documents:
-
-```text
-MILLSTRAND_MANAGED_BOOTSTRAP
-MILLSTRAND_MANAGED_GUIDANCE
-```
-
-The native guidance document fences run ID, positive attempt, invocation,
-provider, bundle digest, and capability digest. `agent startup` additionally
-accepts `--guidance` and returns the frozen
-`millstrand.agent-guidance-bundle/v1` only after the actual native root session
-passes every attachment fence. The digest is:
-
-```text
-SHA256(UTF8(RFC8785([run-id, canonical-workspace, context])))
-```
-
-The adapter renders identity first, then every ordered append, then the
-current-run/workspace footer. It records adapter handoff with `agent guidance
-acknowledge --receipt JSON`, or failure with `agent guidance fail --receipt
-JSON`. Attempt states are `pending`, `fetched`, `acknowledged`, and `failed`;
-legacy attempts are `not-required`. Exact receipt replay is no-write, stale
-receipts cannot satisfy a newer attempt. All protocol JSON requires ASCII hex
-characters in `\\uXXXX` escapes; malformed capability, startup, acknowledgement,
-or failure documents are rejected without mutation. An unacknowledged native
-process exit is a bootstrap failure with an unusable projection and durable stop intent,
-while genuine attachment, reservation, and custody remain intact for later
-evidence. A later exact-current reconstruction failure may move an acknowledged
-attempt to failed without discarding its real attachment. Durable handoff
-deadlines are restored after execution reopens. Nanosecond scheduling and locked
-early-callback rearming retain the persisted deadline and exact
-attempt/invocation plus execution-resource generation. Reload, validation,
-expiry/rearm, generation activation, and retirement serialize under the
-publication lock. Headless custody inspections carry their originating opened
-state through reload, attempt/invocation checks, expiry, reconciliation, and
-rearming. Retirement detaches its generation before performing shutdown waits.
-Obsolete callbacks cannot fail retries or completed work, write after close,
-adopt a reopened generation, rearm after shutdown, or reset deadlines. Fetched
-interactive Pi remains exempt. Acknowledgement proves adapter handoff only—not
-atomic host ingestion, model
-obedience, or removal of historical transcript instructions.
-
-Native mode removes only Harnesses-generated Codex `developer_instructions` or
-Pi `--append-system-prompt` arguments. Token-aware, case-sensitive filtering
-rejects only Codex `developer_instructions`, `instructions`, and
-`model_instructions_file` assignments at the root, plus the profile-supported
-`profiles.<name>.model_instructions_file` path, and Pi's exact system-prompt
-options. Pi scanning mirrors the pinned 0.84.4 parser's unconditional and
-conditional value consumption, equals forms, unknown long options, repeated
-options, list-models, print, positional arguments, aliases, and literal tail.
-Quoted Codex key segments and CLI literal tails retain their provider grammar. Competing controls fail before
-publication, while wrapper-level `--append-system-prompt`, main task prompts,
-model/effort, native session/resume, aliases, and unrelated provider argv remain
-byte-for-byte intact. Verified failures before launch may
-settle without inventing an attempt or custody, while unknown custody remains
-unsettled. Pre-reservation Pi continuations and retries remain legacy-only even
-when their rows contain current guidance templates. Claude and Cursor retain
-their maintenance transports unchanged.
-
-Provider finish and late custody settlement use the same fenced attachment when
-they observe usable native evidence. Hook-confirmed interactive Codex identity
-survives a finish callback with no stdout. Attachment never substitutes for
-process settlement, and settlement evidence remains durable when attachment
-fails. Fresh retry and `--after` reserve fresh identities. Native resume and a
-retry of that continuation retain the attached identity, session, cwd, provider
-settings, and frozen guidance without consulting a changed or disabled alias;
-incompatible retry replacements fail before writes.
-
-A managed Codex/Pi run accepted before reservation-backed startup has no
-`identity/reservation-id`, `harness/native-attached`, or
-`harness/provisional-session-id`. Positive completion or usable session evidence
-after a Weaver upgrade validates that the original unreserved identity belongs
-to the provider and performed the run. It also requires a durable positive
-attempt and an exact nonblank invocation fence before preserving that evidence.
-Every positive legacy outcome—completion or usable-session evidence—must supply
-its nonblank observed session ID. Pi must exactly match its durable binding;
-Codex may differ but remains eligible only for explicit repair. A failed outcome with no usable session
-carries no optional identity attachment; its exact-invocation custody settlement
-remains recordable even if the historical identity is missing or damaged. A genuine prelaunch failure remains recordable
-without an attempt. A damaged current run still has startup-v1 representation
-and is rejected by the strict reservation checks; it is never treated as legacy.
-
-A legacy Pi run may continue only when its stored session exactly matches one
-unique unreserved Pi identity and the `performed` provenance is intact. A raw
-continuation request must explicitly retain both the resolved Pi provider and
-that exact session before any child or provenance write. Reservation-backed
-Codex/Pi continuations enforce the same explicit provider/session intent before
-commit. That continuation and an in-place retry retain the identity, session,
-frozen settings, and legacy
-launcher transport without claiming startup-v1 bootstrap or attachment evidence. A legacy Codex binding cannot prove that its provisional identity names
-the observed session, so Codex native resume remains unavailable until explicit
-repair. Fresh `--after` work uses a new reservation. Cancellation settlement says
-only that custody is settled; it never invents successful completion.
-
-One completed legacy Codex mismatch can be repaired only with all three recorded
-values supplied explicitly:
-
-```text
-strand agent repair-startup RUN_ID \
-  --identity FRIENDLY_ID --native-session-id ACTUAL_NATIVE_ID
-```
-
-Repair requires a settled, usable Codex run, matching `performed` provenance, an
-unoccupied native session, and no conflicting active target/session writer. It
-converts only that identity to an attached reservation, committing identity,
-provenance, and run evidence atomically, and is replay-safe. There is no
-discovery scan, broad migration, fallback mint, identity stealing, or automatic
-repair.
+Pi's prior reservation/guidance APIs remain provider-scoped until its independent
+cutover lands; Codex rejects their transport selection and does not use them.
+Source delivery does not install plugins, update consumers, or restart a runtime.
+Combined provider acceptance and package/runtime rollout are downstream.
 
 ### Reconcile orphaned interactive runs
 
@@ -850,9 +657,9 @@ used verbatim. Frozen provider guidance carries state-independent ownership
 rules, so native resume does not replay a stale first-claim assertion. A fresh
 `--after` run keeps the target, policy, logical lineage, and ancestor history,
 then receives guidance for ownership at its own acceptance. Process exit never
-closes the target or releases its dependency chain. The launched process
-receives reserved `MILLSTRAND_AGENT_ID` and `MILLSTRAND_RUN_ID` values, which
-override user environment values.
+closes the target or releases its dependency chain. Codex assignment guidance refers to the native startup identity instead of
+interpolating a pre-created name. Other providers retain their current launch
+identity paths.
 
 Publication receipts (`agent show` and `agent assign`) expose
 `publication-phase`, `publication-outcome`, and, on interruption,

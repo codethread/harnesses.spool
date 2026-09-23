@@ -37,6 +37,8 @@
   (locking (catalog/publication-lock rt)
     (let [run (runs/require-run rt id)
           invocation (:invocation outcome)]
+      (when (= "external" (attr-get run :harness/ownership))
+        (fail! "Harnesses does not own external session settlement" {:id id}))
       (when-not (life/terminal? run)
         (fail! "Only a terminal harness run may receive late outcome evidence"
                {:id id :status (life/status run)}))
@@ -54,9 +56,15 @@
                          (attr-get run :harness/session-id)
                          (or (:session-id outcome)
                              (attr-get run :harness/session-id)))
-            usable? (or (= "true" (attr-get run :harness/session-usable))
-                        (and (or (not managed?) attached?)
-                             (true? (:session-usable outcome))))
+            native-mismatch? (and (= "codex" (attr-get run :harness/harness))
+                                  (or (not= invocation
+                                            (attr-get run :harness/native-attachment-invocation))
+                                      (and (:session-id outcome)
+                                           (not= session-id (:session-id outcome)))))
+            usable? (and (not native-mismatch?)
+                         (or (= "true" (attr-get run :harness/session-usable))
+                             (and (or (not managed?) attached?)
+                                  (true? (:session-usable outcome)))))
             settled (require-valid!
                      :ct.spools.harnesses/strand
                      (weaver/update!
@@ -68,7 +76,9 @@
                          :harness/session-id session-id
                          :harness/session-usable (if usable? "true" "false")
                          :harness/error
-                         (or (attr-get run :harness/error)
+                         (or (when native-mismatch?
+                               "Codex native startup missing or inconsistent with the current invocation")
+                             (attr-get run :harness/error)
                              (when (= :failed (:status outcome))
                                (or (:error outcome)
                                    "Harness process failed")))

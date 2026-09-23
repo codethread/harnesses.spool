@@ -14,7 +14,7 @@
 (def ^:private runtime {:metadata {:config-dir "/tmp"}})
 
 (deftest guidance-deadlines-distinguish-pi-idle-after-fetch
-  (let [run (-> (fixture/run "codex" "native-v1")
+  (let [run (-> (fixture/run "pi" "native-v1")
                 fixture/with-pending-attempt
                 (assoc-in [:attributes :harness/attempt] 1)
                 (assoc-in [:attributes :harness/invocation] "invocation"))
@@ -38,14 +38,12 @@
   (is (empty? (capability/production-allowlist)))
   (is (thrown-with-msg?
        clojure.lang.ExceptionInfo
-       #"no accepted production capability"
+       #"transport selection is unsupported"
        (guidance/select!
         {:metadata {:config-dir "/tmp"}}
         {:harness "codex" :requested "native-v1" :mode :headless
          :cwd "/tmp" :env {} :effective {:harness/extra-argv []}})))
-  (doseq [[harness argv] [["codex" ["--config" "'developer_instructions'=\"x\""]]
-                          ["codex" ["-cdeveloper_instructions=\"x\""]]
-                          ["pi" ["--append-system-prompt=x"]]
+  (doseq [[harness argv] [["pi" ["--append-system-prompt=x"]]
                           ["pi" ["--system-prompt" "x"]]]]
     (is (thrown-with-msg?
          clojure.lang.ExceptionInfo
@@ -67,8 +65,8 @@
                               (fixture/run "pi" "native-v1"))]
     (is (some #(str/starts-with? % "developer_instructions=")
               (:argv legacy-codex)))
-    (is (not-any? #(str/starts-with? % "developer_instructions=")
-                  (:argv native-codex)))
+    (is (some #(str/starts-with? % "developer_instructions=")
+              (:argv native-codex)))
     (is (= 3 (count (filter #{"--append-system-prompt"}
                             (:argv legacy-pi)))))
     (is (zero? (count (filter #{"--append-system-prompt"}

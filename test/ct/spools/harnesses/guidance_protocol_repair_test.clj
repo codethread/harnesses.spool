@@ -2,12 +2,10 @@
   "Protocol grammar failures remain side-effect free in disposable worlds."
   (:require [clojure.test :refer [deftest is]]
             [ct.spools.harnesses.guidance-representation-fixture :as representation-fixture]
-            [ct.spools.harnesses.guidance-test :as guidance-test]
             [ct.spools.harnesses.internal.cli :as cli]
             [ct.spools.harnesses.internal.guidance :as guidance]
             [ct.spools.harnesses.internal.guidance-prompt-controls :as prompt]
-            [ct.spools.harnesses.providers.pi :as pi]
-            [millstrand.test.alpha :as test-alpha]))
+            [ct.spools.harnesses.providers.pi :as pi]))
 
 (deftest public-cli-exposes-explicit-transport-and-receipts
   (doseq [command ["run" "retry" "resume"]]
@@ -119,90 +117,3 @@
         runtime {:metadata {:config-dir "/tmp"}}
         argv (:argv (pi/prepare runtime (pi/harness runtime) run))]
     (is (= extra (vec (take-last (count extra) argv))))))
-
-(deftest invalid-capability-unicode-precedes-publication-and-reservation
-  (guidance-test/with-guidance-world
-    (fn [ctx]
-      (let [result
-            (test-alpha/repl!
-             ctx
-             (list
-              'do guidance-test/lifecycle-setup
-              '(let [calls (atom 0)
-                     count-runs
-                     #(count (weaver/list rt
-                                          [:= [:attr "harness/run"] "true"]
-                                          {}))
-                     before (count-runs)
-                     _
-                     (harnesses/register-alias!
-                      rt :injected-codex
-                      {:doc "Disposable loader-injection profile."
-                       :parent :codex
-                       :env {"PATH" (.getCanonicalPath fixture-dir)
-                             "OPENSSL_CONF"
-                             "/tmp/unreviewed-openssl.cnf"}
-                       :attributes {}})
-                     injection-error
-                     (binding
-                      [capability/*test-capability-profiles* [profile]
-                       capability/*test-preflight-runner* accepted-runner]
-                       (try
-                         (harnesses/create!
-                          rt {:harness :injected-codex
-                              :mode :headless
-                              :cwd "/tmp"
-                              :prompt "Injected constructor fixture"
-                              :guidance-transport "native-v1"})
-                         nil
-                         (catch clojure.lang.ExceptionInfo failure
-                           (ex-message failure))))
-                     malformed-runner
-                     (fn [accepted _]
-                       (swap! calls inc)
-                       {:source (:preflight accepted)
-                        :reviewed-closure-sha256
-                        (get-in accepted
-                                [:process-ownership
-                                 :reviewed-closure-sha256])
-                        :exit-code 0
-                        :stdout "{\"schema\":\"\\u００４１\"}"
-                        :stderr ""})
-                     create #(harnesses/create!
-                              rt {:harness :native-codex
-                                  :mode :headless
-                                  :cwd "/tmp"
-                                  :prompt "Invalid capability fixture"
-                                  :guidance-transport "native-v1"})
-                     error
-                     (binding
-                      [capability/*test-capability-profiles* [profile]
-                       capability/*test-preflight-runner* malformed-runner]
-                       (try (create) nil
-                            (catch clojure.lang.ExceptionInfo failure
-                              (ex-message failure))))
-                     _ (spit preflight-file "// changed closure artifact\n")
-                     closure-error
-                     (binding
-                      [capability/*test-capability-profiles* [profile]
-                       capability/*test-preflight-runner* malformed-runner]
-                       (try (create) nil
-                            (catch clojure.lang.ExceptionInfo failure
-                              (ex-message failure))))]
-                 {:error error
-                  :injection-error injection-error
-                  :closure-error closure-error
-                  :calls @calls
-                  :no-publication (= before (count-runs))
-                  :no-reservation
-                  (empty? (weaver/list rt
-                                       [:= [:attr "identity/reservation-state"] "reserved"]
-                                       {}))})))]
-        (is (re-find #"unsupported dynamic resolution inputs"
-                     (:injection-error result)))
-        (is (re-find #"invalid Unicode escape" (:error result)))
-        (is (re-find #"artifact (size|bytes) changed"
-                     (:closure-error result)))
-        (is (= 1 (:calls result)))
-        (is (true? (:no-publication result)))
-        (is (true? (:no-reservation result)))))))

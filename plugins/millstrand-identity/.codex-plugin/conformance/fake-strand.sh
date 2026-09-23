@@ -24,13 +24,19 @@ while (($# > 0)); do
 done
 
 [[ -n "$cwd" && "$timeout" == "3s" ]]
-[[ "${1:-}" == "identity" && "${2:-}" == "startup" && "${3:-}" == "codex" ]]
+[[ ( "${1:-}" == "identity" && "${2:-}" == "startup" || "${1:-}" == "agent" && "${2:-}" == "native-startup" ) && "${3:-}" == "codex" ]]
+operation="$1 $2"
 native_session_id=${4:?native session ID is required}
 shift 4
 model=
 parent_identity=
+run_reference=
 while (($# > 0)); do
 	case "$1" in
+		--run-reference)
+			run_reference=$2
+			shift 2
+			;;
 		--model)
 			model=$2
 			shift 2
@@ -79,6 +85,7 @@ fi
 
 if [[ -n "${FAKE_STRAND_LOG:-}" ]]; then
 	jq -cn \
+		--arg run_reference "$run_reference" \
 		--arg workspace "$workspace" \
 		--arg cwd "$cwd" \
 		--arg timeout "$timeout" \
@@ -86,7 +93,7 @@ if [[ -n "${FAKE_STRAND_LOG:-}" ]]; then
 		--arg model "$model" \
 		--arg parent_identity "$parent_identity" \
 		--argjson managed_environment_present "$managed_environment_present" \
-		'{workspace: $workspace, cwd: $cwd, timeout: $timeout,
+		'{run_reference: $run_reference, workspace: $workspace, cwd: $cwd, timeout: $timeout,
 		  native_session_id: $native_session_id, model: $model,
 		  parent_identity: $parent_identity,
 		  managed_environment_present: $managed_environment_present}' \
@@ -109,7 +116,7 @@ case "$mode" in
 			--arg identity "$identity" \
 			--arg instruction "$instruction" \
 			--arg result "$result" \
-			'{operation: "identity startup", identity: $identity, "strand-id": "fixture-strand", result: $result, instruction: $instruction}'
+			'{operation: "agent native-startup", "run-id": "fixture-run", "observed-effort": "unknown", identity: $identity, "strand-id": "fixture-strand", result: $result, instruction: $instruction}'
 		;;
 	oversized)
 		instruction="Your Millstrand identity is $identity."
@@ -119,7 +126,7 @@ case "$mode" in
 		jq -cn \
 			--arg identity "$identity" \
 			--arg instruction "$instruction" \
-			'{operation: "identity startup", identity: $identity, "strand-id": "fixture-strand", result: "minted", instruction: $instruction}'
+			'{operation: "agent native-startup", "run-id": "fixture-run", "observed-effort": "unknown", identity: $identity, "strand-id": "fixture-strand", result: "minted", instruction: $instruction}'
 		;;
 	failure | no-workspace | invalid-binding)
 		case "$FAKE_STRAND_MODE" in

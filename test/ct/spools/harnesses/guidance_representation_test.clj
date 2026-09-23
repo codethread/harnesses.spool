@@ -2,13 +2,11 @@
   "Closed guidance representation and no-write start regressions."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
-            [ct.spools.harnesses.guidance-test :as guidance-test]
             [ct.spools.harnesses.internal.guidance :as guidance]
             [ct.spools.harnesses.internal.guidance-context :as context]
             [ct.spools.harnesses.guidance-representation-fixture :as fixture]
             [ct.spools.harnesses.internal.guidance-representation :as representation]
-            [ct.spools.harnesses.internal.strict-json :as strict-json]
-            [millstrand.test.alpha :as test-alpha]))
+            [ct.spools.harnesses.internal.strict-json :as strict-json]))
 
 (def ^:private workspace "/tmp")
 (def ^:private identity-id "steady-fair-lynx")
@@ -309,9 +307,6 @@
                 (with-mode (active-native-run "pi" "pending")
                   "interactive"))))
     (is (true? (expired? (with-mode fetched-pi "headless"))))
-    (is (true? (expired?
-                (with-mode (active-native-run "codex" "fetched")
-                  "interactive"))))
     (let [late-ack
           (fn [run]
             (-> run
@@ -325,172 +320,3 @@
       (is (corrupt? (late-ack
                      (with-mode (active-native-run "codex" "fetched")
                        "interactive")))))))
-
-(deftest corrupt-durable-rows-reject-before-all-start-side-effects
-  (guidance-test/with-guidance-world
-    (fn [ctx]
-      (let [result
-            (test-alpha/repl!
-             ctx
-             (list
-              'do guidance-test/lifecycle-setup
-              '(do
-                 (require '[ct.spools.harnesses.providers.pi :as pi])
-                 (harnesses/register-harness! rt :pi (pi/harness rt))
-                 (let [capture-failure
-                       (fn [operation]
-                         (try (operation) nil
-                              (catch clojure.lang.ExceptionInfo error error)))
-                       create-legacy
-                       (fn [harness suffix]
-                         (harnesses/create!
-                          rt {:harness harness :mode :headless
-                              :prompt (str "representation " suffix)
-                              :cwd "/tmp" :guidance-transport "legacy"}))
-                       valid (mapv #(harnesses/begin-attempt!
-                                     rt (:id (create-legacy % "valid")))
-                                   [:codex :pi])
-                       historical (create-legacy :codex "historical")
-                       _ (weaver/update!
-                          rt (:id historical)
-                          {:attributes
-                           (zipmap
-                            [:harness/guidance-version
-                             :harness/guidance-transport
-                             :harness/guidance-capability
-                             :harness/guidance-capability-sha256
-                             :harness/guidance-context-template
-                             :harness/guidance-context
-                             :harness/guidance-bundle-sha256
-                             :harness/guidance-attempts]
-                            (repeat nil))})
-                       historical-start
-                       (harnesses/begin-attempt! rt (:id historical))
-                       corrupt-legacy
-                       (mapv (fn [harness]
-                               (let [run (create-legacy harness "corrupt")]
-                                 (weaver/update!
-                                  rt (:id run)
-                                  {:attributes
-                                   {:harness/guidance-version nil}})
-                                 (weaver/show rt (:id run))))
-                             [:codex :pi])
-                       corrupt-native
-                       (mapv
-                        (fn [harness]
-                          (let [run (create-legacy harness "native-corrupt")
-                                capability-document
-                                (if (= :codex harness)
-                                  capability-document pi-capability-document)
-                                selection
-                                {:transport "native-v1"
-                                 :capability capability-document
-                                 :capability-sha256
-                                 (strict-json/canonical-sha256
-                                  capability-document)}
-                                patch
-                                (guidance/publication-patch
-                                 rt (:id run) (attr run :identity/id)
-                                 (attr run :identity/prompt)
-                                 (attr run :harness/appended-system-prompts)
-                                 selection nil [])]
-                            (weaver/update! rt (:id run) {:attributes patch})
-                            (weaver/update!
-                             rt (:id run)
-                             {:attributes
-                              {:harness/guidance-capability
-                               (assoc capability-document "unknown" true)}})
-                            (weaver/show rt (:id run))))
-                        [:codex :pi])
-                       corrupt (into corrupt-legacy corrupt-native)
-                       before corrupt
-                       helper-calls (atom 0)
-                       provider-calls (atom 0)
-                       errors
-                       (with-redefs
-                        [capability/preflight!
-                         (fn [& _] (swap! helper-calls inc))
-                         codex/prepare
-                         (fn [& _] (swap! provider-calls inc))
-                         pi/prepare
-                         (fn [& _] (swap! provider-calls inc))]
-                         (mapv #(capture-failure
-                                 (fn [] (harnesses/begin-attempt! rt (:id %))))
-                               corrupt))
-                       after (mapv #(weaver/show rt (:id %)) corrupt)]
-                   {:valid-states
-                    (mapv #(let [record
-                                 (first (attr (:strand %)
-                                              :harness/guidance-attempts))]
-                             (or (get record "state")
-                                 (get record :state)))
-                          valid)
-                    :historical-status (attr (:strand historical-start)
-                                             :harness/status)
-                    :errors (mapv ex-message errors)
-                    :unchanged (= before after)
-                    :identity-before
-                    (mapv #(select-keys (:attributes %)
-                                        [:identity/id :identity/reservation-id
-                                         :harness/session-id
-                                         :harness/provisional-session-id])
-                          before)
-                    :identity-after
-                    (mapv #(select-keys (:attributes %)
-                                        [:identity/id :identity/reservation-id
-                                         :harness/session-id
-                                         :harness/provisional-session-id])
-                          after)
-                    :attempts (mapv #(attr % :harness/attempt) after)
-                    :invocations (mapv #(attr % :harness/invocation) after)
-                    :helper-calls @helper-calls
-                    :provider-calls @provider-calls}))))]
-        (is (= ["not-required" "not-required"] (:valid-states result)))
-        (is (= "running" (:historical-status result)))
-        (is (every? #(re-find #"corrupt partial guidance metadata" %)
-                    (:errors result)))
-        (is (true? (:unchanged result)))
-        (is (= (:identity-before result) (:identity-after result)))
-        (is (= [nil nil nil nil] (:attempts result)))
-        (is (= [nil nil nil nil] (:invocations result)))
-        (is (zero? (:helper-calls result)))
-        (is (zero? (:provider-calls result)))))))
-
-(deftest begin-attempt-reloads-after-waiting-for-publication-lock
-  (guidance-test/with-guidance-world
-    (fn [ctx]
-      (let [result
-            (test-alpha/repl!
-             ctx
-             (list
-              'do guidance-test/lifecycle-setup
-              '(do
-                 (require '[ct.spools.harnesses.catalog :as catalog])
-                 (let [run (harnesses/create!
-                            rt {:harness :codex :mode :headless
-                                :prompt "locked reload" :cwd "/tmp"
-                                :guidance-transport "legacy"})
-                       started (promise)
-                       attempt
-                       (locking (catalog/publication-lock rt)
-                         (let [future (future
-                                        (deliver started true)
-                                        (try
-                                          (harnesses/begin-attempt! rt (:id run))
-                                          nil
-                                          (catch Throwable error error)))]
-                           @started
-                           (weaver/update!
-                            rt (:id run)
-                            {:attributes {:harness/guidance-version nil}})
-                           future))
-                       error @attempt
-                       after (weaver/show rt (:id run))]
-                   {:message (ex-message error)
-                    :status (attr after :harness/status)
-                    :attempt (attr after :harness/attempt)
-                    :invocation (attr after :harness/invocation)}))))]
-        (is (re-find #"corrupt partial guidance metadata" (:message result)))
-        (is (= "ready" (:status result)))
-        (is (nil? (:attempt result)))
-        (is (nil? (:invocation result)))))))

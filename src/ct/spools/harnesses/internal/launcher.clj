@@ -3,6 +3,7 @@
   (:require [clojure.data.json :as json]
             [clojure.java.io :as io]
             [clojure.string :as str]
+            [ct.spools.harnesses.native-session :as native-session]
             [millstrand.api.spool.alpha :refer [attr-get fail!]])
   (:import [java.nio.file Files]
            [java.nio.file.attribute PosixFilePermissions]))
@@ -40,6 +41,7 @@
   [runtime run argv env]
   (let [file (io/file (launcher-dir runtime) (str (:id run) ".sh"))
         workspace (workspace runtime)
+        codex? (= "codex" (attr-get run :harness/harness))
         managed-exec? (contains? #{"codex" "pi"}
                                  (attr-get run :harness/harness))
         provider-exports (->> env
@@ -56,11 +58,13 @@
                       "\"$MILLSTRAND_INVOCATION\"\n"
                       "fi\n"))
                provider-exports
-               (when (attr-get run :identity/reservation-id)
+               (when (or codex? (attr-get run :identity/reservation-id))
                  bootstrap-sentinel)
                "export MILLSTRAND_RUN_ID=" (sh-quote (:id run)) "\n"
-               "export MILLSTRAND_AGENT_ID="
-               (sh-quote (attr-get run :identity/id)) "\n"
+               (if codex?
+                 "unset MILLSTRAND_AGENT_ID MILLSTRAND_MANAGED_BOOTSTRAP MILLSTRAND_MANAGED_GUIDANCE\n"
+                 (str "export MILLSTRAND_AGENT_ID="
+                      (sh-quote (attr-get run :identity/id)) "\n"))
                "export MILLSTRAND_WORKSPACE=" (sh-quote workspace) "\n"
                "export XDG_STATE_HOME=" (sh-quote (state-root runtime)) "\n"
                "cd " (sh-quote (attr-get run :harness/cwd)) " || exit 1\n"
@@ -100,4 +104,16 @@
                 (when guidance
                   (str "export MILLSTRAND_MANAGED_GUIDANCE="
                        (sh-quote (json/write-str guidance)) "\n")))))
+    (.getCanonicalPath file)))
+
+(defn arm-native!
+  "Arm a native launcher with only its current run reference."
+  [runtime run]
+  (let [file (io/file (launcher-dir runtime) (str (:id run) ".sh"))
+        source (slurp file)]
+    (when-not (str/includes? source bootstrap-sentinel)
+      (fail! "Native launcher has no arming sentinel" {:run-id (:id run)}))
+    (spit file (str/replace source bootstrap-sentinel
+                            (str "export MILLSTRAND_RUN_REFERENCE="
+                                 (sh-quote (native-session/reference run)) "\n")))
     (.getCanonicalPath file)))

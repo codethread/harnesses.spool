@@ -5,7 +5,7 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)
 source_plugin_root="$repo_root/plugins/millstrand-identity"
 plugin_root=
 identity_hook=
-identity_sha="f17ad387b2825887b736cab597b33af84cff13cb"
+identity_sha="62723b7b1820c7e1723de4a2ff985b069871159e"
 identity_url="https://github.com/codethread/millhouse.spool.git"
 
 tmp_root=$(mktemp -d /tmp/cia.XXXXXX)
@@ -74,18 +74,32 @@ mkdir -p "$project/nested/cwd" "$linked_project/nested/cwd"
 
 cat >"$workspace/deps.edn" <<EOF
 {:deps
- {millhouse.spools/identity
+ {ct.spools/harnesses {:local/root "$repo_root"}
+  millhouse.spools/identity
   {:git/url "$identity_url"
    :git/sha "$identity_sha"
    :deps/root "spools/identity"}}}
 EOF
 cat >"$workspace/init.clj" <<'EOF'
 (require '[millstrand.api.current.alpha :as current]
-         '[millstrand.api.runtime.alpha :as runtime])
+         '[millstrand.api.runtime.alpha :as runtime]
+         '[ct.spools.harnesses.agent-cli])
 (def runtime (current/runtime))
 (runtime/module! runtime :millhouse/spools-identity
                  {:ns 'millhouse.spools.identity
                   :required? true})
+(runtime/module! runtime :harnesses-registration
+                 {:file "registration.clj" :after [:millhouse/spools-identity]
+                  :required? true})
+EOF
+cat >"$workspace/registration.clj" <<'EOF'
+(ns registration
+  (:require [ct.spools.harnesses :as harnesses]
+            [ct.spools.harnesses.agent-cli :as agent-cli]
+            [millstrand.api.lifecycle.alpha :as lifecycle]
+            [millstrand.api.millstrand.alpha :as millstrand]))
+(lifecycle/use-resource! harnesses/harness-core-runtime)
+(millstrand/use-op! agent-cli/agent)
 EOF
 
 mill_log="$tmp_root/mill.log"
@@ -142,7 +156,7 @@ subagent_payload() {
 invoke_explicit() {
 	local payload=$1
 	printf '%s' "$payload" | env \
-		-u MILLSTRAND_AGENT_ID -u MILLSTRAND_RUN_ID \
+		-u MILLSTRAND_AGENT_ID -u MILLSTRAND_RUN_ID -u MILLSTRAND_RUN_REFERENCE \
 		-u MILLSTRAND_CODEX_STRAND_BIN -u MILLSTRAND_CODEX_REQUEST_TIMEOUT \
 		-u MILLSTRAND_CODEX_CONTEXT_MAX_BYTES \
 		PLUGIN_ROOT="$plugin_root" \
@@ -153,7 +167,7 @@ invoke_explicit() {
 invoke_discovered() {
 	local payload=$1
 	printf '%s' "$payload" | env \
-		-u MILLSTRAND_AGENT_ID -u MILLSTRAND_RUN_ID \
+		-u MILLSTRAND_AGENT_ID -u MILLSTRAND_RUN_ID -u MILLSTRAND_RUN_REFERENCE \
 		-u MILLSTRAND_CODEX_STRAND_BIN -u MILLSTRAND_CODEX_REQUEST_TIMEOUT \
 		-u MILLSTRAND_CODEX_CONTEXT_MAX_BYTES \
 		-u MILLSTRAND_CODEX_WORKSPACE -u MILLSTRAND_WORKSPACE \
@@ -235,7 +249,7 @@ conflict_seed=$(mill weaver repl --stdin --workspace "$workspace" <"$tmp_root/co
 jq -e '. == "conflict-seeded"' <<<"$conflict_seed" >/dev/null
 conflict_output=$(invoke_explicit "$parent_payload")
 jq -e '
-  .continue == true and
+  .continue == false and
   (.hookSpecificOutput | not) and
   (.systemMessage | test("failed|resolve|bound|conflict"; "i"))
 ' <<<"$conflict_output" >/dev/null || {
@@ -247,7 +261,7 @@ mill weaver stop --workspace "${workspace:?}" >/dev/null
 weaver_started=0
 unavailable_output=$(invoke_explicit "$(session_payload "live-unavailable" "startup")")
 jq -e '
-  .continue == true and
+  .continue == false and
   (.hookSpecificOutput | not) and
   (.systemMessage | test("failed|unavailable|not running|connect"; "i"))
 ' <<<"$unavailable_output" >/dev/null || {

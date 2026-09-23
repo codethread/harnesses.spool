@@ -1,5 +1,5 @@
 (ns ct.spools.harnesses.internal.managed-startup
-  "Managed Codex/Pi identity reservation and native startup attachment."
+  "Pi reservation startup and maintenance identity binding during cutover."
   (:require [clojure.java.io :as io]
             [clojure.spec.alpha :as s]
             [clojure.string :as str]
@@ -71,12 +71,14 @@
     (guidance/validation-run rt run)))
 
 (defn commit-identity!
-  "Bind or reserve worker identity before a managed run is published.
+  "Bind maintenance identity, reserve Pi identity, or defer Codex to startup.
 
   Operation caller attribution is durable run evidence and never participates
   in strict worker identity binding."
   [rt {:keys [harness session-id run predecessor effective]}]
-  (if-not (managed-harness? harness)
+  (cond
+    (= "codex" harness) {}
+    (not (managed-harness? harness))
     (identity/bind!
      rt
      (cond-> {:harness harness
@@ -85,6 +87,7 @@
        predecessor
        (assoc :expected-identity
               (attr-get predecessor :identity/id))))
+    :else
     (if predecessor
       (if (legacy-managed-run? predecessor)
         (legacy/commit-pi-identity! rt run predecessor)
@@ -129,44 +132,47 @@
 (defn retry-identity!
   "Return a coherent identity binding for one managed retry.
 
-  Ordinary retries reserve a fresh identity. Retrying a native resume keeps its
+  Codex defers identity to native startup. Pi retries reserve a fresh identity.
+  Retrying a Pi native resume keeps its
   attached identity. A validated pre-reservation Pi continuation keeps its exact
   legacy binding and transport. Maintenance-only providers return nil."
   [rt run harness session-id effective]
-  (when (managed-harness? harness)
-    (if (attr-get run :harness/resumes)
-      (do
-        (when-not (= harness (attr-get run :harness/harness))
-          (fail! "Native resume retry cannot change its managed provider"
-                 {:run-id (:id run)
-                  :retained (attr-get run :harness/harness)
-                  :requested harness}))
-        (if (legacy-managed-run? run)
-          (legacy/retry-pi-binding! rt run)
-          (do
-            (when-not (= "true" (attr-get run :harness/native-attached))
-              (fail! "Native resume retry requires an attached identity"
-                     {:run-id (:id run)}))
-            {:identity (attr-get run :identity/id)
-             :prompt (attr-get run :identity/prompt)
-             :reservation-id (attr-get run :identity/reservation-id)
-             :native-attached true})))
-      (let [reservation (identity/reserve!
-                         rt
-                         (cond-> {:harness harness}
-                           (string? (:harness/model effective))
-                           (assoc :model (:harness/model effective))
-                           (string? (:harness/effort effective))
-                           (assoc :thinking-level
-                                  (:harness/effort effective))))
-            identity-strand (identity/current rt (:identity reservation))]
-        (managed-identity/persist-provenance! rt identity-strand run)
-        {:identity (:identity reservation)
-         :strand-id (:strand-id reservation)
-         :prompt (identity-instruction (:identity reservation))
-         :reservation-id (:reservation-id reservation)
-         :native-attached false
-         :session-id session-id}))))
+  (if (= "codex" harness)
+    {}
+    (when (managed-harness? harness)
+      (if (attr-get run :harness/resumes)
+        (do
+          (when-not (= harness (attr-get run :harness/harness))
+            (fail! "Native resume retry cannot change its managed provider"
+                   {:run-id (:id run)
+                    :retained (attr-get run :harness/harness)
+                    :requested harness}))
+          (if (legacy-managed-run? run)
+            (legacy/retry-pi-binding! rt run)
+            (do
+              (when-not (= "true" (attr-get run :harness/native-attached))
+                (fail! "Native resume retry requires an attached identity"
+                       {:run-id (:id run)}))
+              {:identity (attr-get run :identity/id)
+               :prompt (attr-get run :identity/prompt)
+               :reservation-id (attr-get run :identity/reservation-id)
+               :native-attached true})))
+        (let [reservation (identity/reserve!
+                           rt
+                           (cond-> {:harness harness}
+                             (string? (:harness/model effective))
+                             (assoc :model (:harness/model effective))
+                             (string? (:harness/effort effective))
+                             (assoc :thinking-level
+                                    (:harness/effort effective))))
+              identity-strand (identity/current rt (:identity reservation))]
+          (managed-identity/persist-provenance! rt identity-strand run)
+          {:identity (:identity reservation)
+           :strand-id (:strand-id reservation)
+           :prompt (identity-instruction (:identity reservation))
+           :reservation-id (:reservation-id reservation)
+           :native-attached false
+           :session-id session-id})))))
 
 (defn- workspace [rt]
   (or (get-in rt [:metadata :config-dir])
@@ -181,10 +187,10 @@
   "Return prompt-free managed startup metadata for a running invocation.
 
   Maintenance providers and validated pre-reservation Pi continuations use the
-  legacy launcher transport and return nil. Reservation-backed Codex/Pi runs
+  legacy launcher transport and return nil. Reservation-backed Pi runs
   must carry the attempt and invocation minted for this exact launch."
   [rt run]
-  (when (managed-harness? (attr-get run :harness/harness))
+  (when (= "pi" (attr-get run :harness/harness))
     (if (legacy-managed-run? run)
       (do (legacy/require-launch! rt run) nil)
       (let [attempt (attr-get run :harness/attempt)
@@ -271,8 +277,8 @@
         durable-pi-pin (when (= "pi" stored-harness)
                          (attr-get run
                                    :harness/provisional-session-id))]
-    (when-not (managed-harness? stored-harness)
-      (fail! "Managed startup applies only to Codex and Pi"
+    (when-not (= "pi" stored-harness)
+      (fail! "Reservation startup applies only to Pi"
              {:run-id (:id run) :harness stored-harness}))
     (when-not (= "true" (attr-get run :harness/published))
       (fail! "Managed startup run is not published" {:run-id (:id run)}))
@@ -458,7 +464,7 @@
   Returns nil for maintenance providers and failed legacy outcomes without a
   usable session. The caller must hold the lifecycle publication lock."
   [rt run {:keys [session-id session-usable invocation] :as outcome}]
-  (when (managed-harness? (attr-get run :harness/harness))
+  (when (= "pi" (attr-get run :harness/harness))
     (if (legacy-managed-run? run)
       (when (legacy/positive-outcome? outcome)
         (validate-legacy-outcome! rt run outcome)

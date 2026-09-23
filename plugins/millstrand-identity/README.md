@@ -34,11 +34,21 @@ the new session.
 
 ## Codex
 
-Add this checkout as a local Codex marketplace and enable
-`millstrand-identity@harnesses`. The plugin registers one `SessionStart` and one
-`SubagentStart` hook. Hooks bind the actual native ID, reject duplicate
-injectors, and return the canonical identity instruction as additional developer
-context.
+Enable and trust `millstrand-identity@harnesses` from this checkout. The packaged
+SessionStart and SubagentStart hooks run only in the launch project's canonical
+Millstrand workspace, including linked Git worktrees. In other projects they do
+nothing; inherited workspace configuration does not bypass the gate.
 
-The optional managed-guidance adapter remains subject to Harnesses capability
-admission. Installing these files alone does not enable `native-v1`.
+The hook awaits `agent native-startup codex ACTUAL_ID --model MODEL`, composing
+Harnesses registration with Millhouse Identity startup. Managed roots pass only
+`MILLSTRAND_RUN_REFERENCE=RUN_ID:INVOCATION`; direct sessions register an external
+run without a seat, alias, task or process custody. Actual model is recorded;
+unavailable Codex effort is explicitly `harness/observed-effort=unknown`, with a
+managed selected effort retained when present. The marker is not a launch option.
+
+Startup/resume/clear/compact reconstruct canonical developer `additionalContext`.
+Children use the parent-session/agent composite and parent attribution, never the
+parent's run reference. Ordinary task/policy/alias appends remain on normal launch
+paths. No Codex bootstrap/guidance transport, reservation or legacy fallback
+remains. Duplicate injectors and startup failures stop before model work when the
+hook runs. Source installation and runtime activation are separate operations.

@@ -28,7 +28,7 @@ import {
   hashFile,
   parseStrictJson,
   sha256CanonicalJson,
-} from "../plugins/millstrand-identity/.codex-plugin/lib/managed-guidance.mjs";
+} from "./strict-json.mjs";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const packageRoot = resolve(dirname(scriptPath), "..");
@@ -416,7 +416,6 @@ function codexClosureHash(root = codexPluginRoot) {
     ".codex-plugin/hooks/hooks.json",
     ".codex-plugin/hooks/identity.sh",
     ".codex-plugin/hooks/identity-sources.sh",
-    ".codex-plugin/lib/managed-guidance.mjs",
   ];
   return sha256CanonicalJson(
     paths.map((path) => [path, hashFile(join(root, path))]),

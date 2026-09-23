@@ -226,7 +226,7 @@
      :elapsed-millis (/ (- (System/nanoTime) started) 1000000.0)}))
 
 (deftest validated-executable-environment-and-selectors-reach-custody
-  (doseq [harness ["codex" "pi"]]
+  (doseq [harness ["pi"]]
     (with-profile
       harness
       (fn [{:keys [profile document request]}]
