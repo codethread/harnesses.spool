@@ -17,54 +17,6 @@
 (defn- failure-instruction [{:keys [card]}]
   (autonomous/failure-policy card))
 
-(defn- replace-quality-check [script old-check new-check]
-  (if (str/includes? script old-check)
-    (str/replace-first script old-check new-check)
-    (throw (ex-info "Land quality gate no longer contains the expected check"
-                    {:check old-check}))))
-
-(def ^:private upstream-quality-check
-  (str/join
-   "\n"
-   ["  upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null) \\"
-    "    || die \"branch $target has no upstream; push it before running the land quality gate\""
-    "  upstream_head=$(git rev-parse \"$upstream\") || die \"cannot read upstream $upstream\""
-    "  [ \"$upstream_head\" = \"$head_before\" ] \\"
-    "    || die \"unpushed or mismatched HEAD: local $head_before, upstream $upstream_head\""]))
-
-(def ^:private origin-quality-check
-  (str/join
-   "\n"
-   ["  git fetch origin \"refs/heads/$target:refs/remotes/origin/$target\" \\"
-    "    || die \"cannot refresh refs/remotes/origin/$target from origin\""
-    "  origin_head=$(git rev-parse \"refs/remotes/origin/$target\") \\"
-    "    || die \"cannot read refreshed refs/remotes/origin/$target\""
-    "  [ \"$origin_head\" = \"$head_before\" ] \\"
-    "    || die \"unpushed or mismatched HEAD: local $head_before, origin $origin_head\""]))
-
-(def ^:private upstream-quality-check-after
-  (str/join
-   "\n"
-   ["  upstream_head_after=$(git rev-parse \"$upstream\") \\"
-    "    || die \"cannot re-read upstream $upstream after quality checks\""
-    "  [ \"$upstream_head_after\" = \"$head_before\" ] \\"
-    "    || die \"upstream changed during quality checks: expected $head_before, found $upstream_head_after\""]))
-
-(def ^:private origin-quality-check-after
-  (str/join
-   "\n"
-   ["  git fetch origin \"refs/heads/$target:refs/remotes/origin/$target\" \\"
-    "    || die \"cannot refresh refs/remotes/origin/$target from origin after quality checks\""
-    "  origin_head_after=$(git rev-parse \"refs/remotes/origin/$target\") \\"
-    "    || die \"cannot re-read refreshed refs/remotes/origin/$target after quality checks\""
-    "  [ \"$origin_head_after\" = \"$head_before\" ] \\"
-    "    || die \"origin/$target changed during quality checks: expected $head_before, found $origin_head_after\""]))
-
-(def ^:private auto-run-quality-gate-script
-  (-> land-support/land-quality-gate-script
-      (replace-quality-check upstream-quality-check origin-quality-check)
-      (replace-quality-check upstream-quality-check-after origin-quality-check-after)))
-
 (def ^:private human-gate-instruction
   "Await this executor-owned gate. Inspect failures, repair the cause, then explicitly clear gate/error to retry. Never manually assert a passing result.")
 
@@ -79,8 +31,10 @@
         (fn [{:keys [card]}]
           (format/prose
            "
-             Read card {card}, its epic and tasks, and AGENTS.md. Claim the card
-             with your provided identity, branch, worktree, and Harnesses run ID.
+             Read card {card}, its epic and tasks, and AGENTS.md. Inspect current
+             ownership before claiming: continue if you already own it; claim only
+             an unowned pending feature with your provided identity, branch,
+             worktree, and run ID. Another owner requires an explicit handoff.
              Work in the provided worktree; do not create a second one. Implement
              the scoped outcome yourself and record evidence on the card's tasks.
              Follow the architecture contract and preserve unrelated work.
@@ -117,8 +71,7 @@
        (land-support/shell-gate
         :quality "Pass repository quality checks" [:publish]
         (fn [{:keys [branch]}]
-          (land-support/sh-gate auto-run-quality-gate-script
-                                "auto-run-quality" branch))
+          ["sh" ".millstrand/published-candidate.sh" branch])
         5400 gate-failure)
        (workflow/step
         :prepare-pr "Publish the exact change with its review package" :self
@@ -135,27 +88,34 @@
              - `## Verification`: automated checks, reproduction or manual test
                instructions, and limitations.
 
+             Read the quality receipt from the Git metadata path returned by
+             `git rev-parse --git-path millstrand-land-quality-head`. Compare its
+             SHA with `git rev-parse HEAD` and the PR head. If they differ, stop
+             and repair publication and quality; do not claim this revision was
+             tested.
+
              Put the PR URL, exact head SHA, and concise handoff on card {card}.
              Retain detailed evidence on its verification task. Complete this step
              only after publishing the committed revision and review package. The
-             next gates independently wait for CI and verify the card transition.
+             next gate independently verifies the PR and waits for CI. Keep the
+             card claimed during autonomous work; only the human route requests
+             human attention.
            " {:card card :branch branch})))
        (land-support/shell-gate
         :ci "Wait for the PR checks" [:prepare-pr]
         (fn [{:keys [branch]}]
           (land-support/pr-checks-argv "allow-empty" branch))
-        2100 gate-failure)
-       (workflow/gate
-        :review-card "Move the verified feature into review" :code
-        :depends-on [:ci]
-        :attributes {"code/fn" "millhouse.spools.land.card-actions/review-card!"
-                     "code/params" (fn [{:keys [card]}] {:card card})}
-        (if autonomous?
-          gate-failure
-          "This is an automatic card transition after the review-package checks."))]
+        2100 gate-failure)]
+      (when-not autonomous?
+        [(workflow/gate
+          :review-card "Move the verified feature into review" :code
+          :depends-on [:ci]
+          :attributes {"code/fn" "millhouse.spools.land.card-actions/review-card!"
+                       "code/params" (fn [{:keys [card]}] {:card card})}
+          "This is an automatic card transition after the review-package checks.")])
       (if autonomous?
         [(workflow/call :land #'autonomous/autonomous-land {}
-                        :depends-on [:review-card]
+                        :depends-on [:ci]
                         :title "Review and hand off autonomous landing")]
         [(workflow/checkpoint
           :human-acceptance "Human review: return the passing PR and stop"

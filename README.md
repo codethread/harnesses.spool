@@ -87,9 +87,20 @@ admitted workers. A card may override `auto-run/seat`, `auto-run/effort`, or
 `auto-run/workflow`; only those two workflows are accepted.
 
 Both workflows separate implementation, branch publication, repository checks,
-CI, and the review transition. After committing, the implementation worker
-pushes its branch with an upstream before repository quality runs, so quality
-validates the same published HEAD that reaches review.
+and CI. After committing, the implementation worker pushes its branch before
+repository quality runs, so quality validates the same published HEAD that
+reaches review. Autonomous delivery keeps the feature claimed; only the human
+review route moves it to `in_review`.
+
+The repository-owned `.millstrand/published-candidate.sh BRANCH` runs from the
+feature worktree root. It checks a clean, unchanged branch/HEAD against a fresh
+fetch of the exact origin branch both before and after executing the committed,
+executable `.millstrand/land-quality.sh` contract. There is no upstream-cache
+fallback. The quality contract retains sole ownership of the shared suite lock
+and runs `git diff --check` and `make check`. Only verified success publishes the
+exact HEAD to Git's `millstrand-land-quality-head` receipt; every attempt first
+invalidates the old receipt. PR preparation reads that receipt explicitly.
+This candidate contract does not replace shared Land's main/merge checks.
 
 `auto-full-land` calls Codethread's shared autonomous Land policy, which creates
 a distinct finisher target whose worker owns sign-off, FIFO merge, cleanup, and
