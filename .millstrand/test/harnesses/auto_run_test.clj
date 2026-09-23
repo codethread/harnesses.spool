@@ -120,6 +120,8 @@
       (io/make-parents quality-contract)
       (spit quality-contract contract)
       (.setExecutable quality-contract true false))
+    (spit (io/file worktree ".millstrand/published-candidate.sh")
+          (slurp "published-candidate.sh"))
     (git! worktree "add" ".")
     (git! worktree "commit" "-m" "quality fixture")
     (git! worktree "remote" "add" "origin" (.getPath remote))
@@ -134,9 +136,13 @@
   (doseq [file (reverse (file-seq root))]
     (io/delete-file file true)))
 
+(defn- quality-marker [worktree]
+  (io/file worktree (str/trim (git! worktree "rev-parse" "--git-path"
+                                    "millstrand-land-quality-head"))))
+
 (defn- quality-result
   [argv worktree branch]
-  (apply shell/sh (concat (assoc argv 4 branch) [:dir (.getPath worktree)])))
+  (apply shell/sh (concat (assoc argv 2 branch) [:dir (.getPath worktree)])))
 
 (deftest repository-activation-and-full-land-contract
   (t/with-weaver-world
@@ -226,7 +232,6 @@
           (is (= ["Implement and verify the assigned feature"]
                  (mapv :title (:ready result))))
           (is (contains? gates "shell"))
-          (is (contains? gates "code"))
           (is (not (contains? gates "agent"))
               "The finisher is a deliberate handoff, not an eager agent gate")
           (testing "publication precedes quality"
@@ -238,23 +243,31 @@
               (is (str/includes? (instruction {:branch "auto/fixture-card"})
                                  "git push --set-upstream origin auto/fixture-card"))
               (is (= "sh" (first quality-argv)))
-              (is (= "auto-run-quality" (nth quality-argv 3)))
-              (is (= "auto/fixture-card" (nth quality-argv 4)))
+              (is (= ["sh" ".millstrand/published-candidate.sh" "auto/fixture-card"]
+                     quality-argv))
               (is (= ["sh" "-c"] (subvec ci-argv 0 2)))
               (is (= ["pr-checks" "allow-empty" "auto/fixture-card" "120" "5"]
                      (subvec ci-argv (- (count ci-argv) 5))))
-              (is (= [:ci] (:depends-on (step :review-card))))
-              (testing "the shared gate accepts a clean published revision"
+              (is (nil? (step :review-card)))
+              (is (= [:ci] (:depends-on (step :land))))
+              (testing "the repository candidate gate accepts a clean published revision"
                 (let [fixture (quality-fixture "#!/bin/sh\nexit 0\n")]
                   (try
                     (is (zero? (:exit (quality-result quality-argv
-                                                       (:worktree fixture)
-                                                       (:branch fixture)))))
+                                                      (:worktree fixture)
+                                                      (:branch fixture)))))
+                    (is (= (:head fixture)
+                           (str/trim (slurp (quality-marker (:worktree fixture))))))
                     (finally
                       (delete-tree! (:root fixture))))))
-              (testing "the shared gate rejects an unbound or changed revision"
+              (testing "the repository candidate gate rejects an unbound or changed revision"
                 (doseq [[label contract mutate!]
-                        [["wrong branch" "#!/bin/sh\nexit 0\n"
+                        [["failed quality" "#!/bin/sh\nexit 7\n" identity]
+                         ["dirty after quality" "#!/bin/sh\ntouch dirty\n" identity]
+                         ["remote branch deleted during quality"
+                          "#!/bin/sh\ngit push origin --delete \"$LAND_EXPECTED_BRANCH\"\n"
+                          identity]
+                         ["wrong branch" "#!/bin/sh\nexit 0\n"
                           #(git! (:worktree %) "checkout" "-b" "feature/other")]
                          ["dirty worktree" "#!/bin/sh\nexit 0\n"
                           #(spit (io/file (:worktree %) "dirty") "dirty\n")]
@@ -284,11 +297,13 @@
                           identity]]]
                   (let [fixture (quality-fixture contract)]
                     (try
+                      (spit (quality-marker (:worktree fixture)) (:head fixture))
                       (mutate! fixture)
                       (let [{:keys [exit]} (quality-result quality-argv
                                                            (:worktree fixture)
                                                            (:branch fixture))]
-                        (is (not (zero? exit)) label))
+                        (is (not (zero? exit)) label)
+                        (is (not (.exists (quality-marker (:worktree fixture)))) label))
                       (finally
                         (delete-tree! (:root fixture)))))))))
           (testing "repository policy delegates landing to separate shared roles"
@@ -309,7 +324,7 @@
                      (auto-run/scan! rt))
           accepted (weaver/show rt (:id card))]
       (is (= ["auto-full-land"] (get-in (auto-run/status rt)
-                                         [:config :workflows])))
+                                        [:config :workflows])))
       (is (= 1 (count (:dispatched dispatch))))
       (is (= "assigned" (attr-get accepted :auto-run/status)))
       (spit (io/file (:config-dir ctx) "me/auto_run.clj")
@@ -354,6 +369,42 @@
           (is (= ["reviewed"] (:choices checkpoint)))
           (is (nil? (role-step strands "handoff-worker")))
           (is (nil? (role-step strands "finisher"))))))))
+
+(deftest delivery-ready-frontier-preserves-attention-boundary
+  (t/with-weaver-world
+    [ctx (world-options)]
+    (let [rt (:runtime ctx)]
+      (current/with-runtime rt
+        (doseq [route [:auto-full-land :auto-human-review]]
+          (let [card (card! rt "p2")
+                run-id (str "frontier-" (name route))]
+            (weaver/update! rt (:id card) {:attributes {:kanban/lane "claimed"}})
+            (workflow/start! run-id route
+                             {:card (:id card) :feature "Fixture"
+                              :branch "auto/fixture" :worktree (:config-dir ctx)})
+            ;; Supply fixture executor evidence, without running GitHub or quality.
+            (doseq [title ["Implement and verify the assigned feature"
+                           "Publish the committed branch before quality checks"
+                           "Pass repository quality checks"
+                           "Publish the exact change with its review package"
+                           "Wait for the PR checks"]]
+              (let [frontier (workflow/ready run-id)]
+                (is (= [title] (mapv :title frontier)))
+                (workflow/run-complete!
+                 {:run-id run-id :step (:id (first frontier))
+                  :executor "fixture"})))
+            (if (= route :auto-full-land)
+              (do
+                (is (= "claimed" (attr-get (weaver/show rt (:id card)) :kanban/lane)))
+                (is (= "handoff-worker"
+                       (attr-get (weaver/show rt (:id (first (workflow/ready run-id))))
+                                 :auto-run/role))))
+              (do
+                ;; The real code executor owns the attention transition.
+                (workflow/await! run-id {:timeout-secs 10 :poll-ms 10})
+                (is (= "in_review"
+                       (attr-get (weaver/show rt (:id card)) :kanban/lane)))
+                (is (= ["human"] (mapv :checkpoint-kind (workflow/ready run-id))))))))))))
 
 (defn -main
   "Run the disposable workspace activation test."

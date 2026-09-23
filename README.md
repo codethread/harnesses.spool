@@ -87,9 +87,20 @@ admitted workers. A card may override `auto-run/seat`, `auto-run/effort`, or
 `auto-run/workflow`; only those two workflows are accepted.
 
 Both workflows separate implementation, branch publication, repository checks,
-CI, and the review transition. After committing, the implementation worker
-pushes its branch with an upstream before repository quality runs, so quality
-validates the same published HEAD that reaches review.
+and CI. After committing, the implementation worker pushes its branch before
+repository quality runs, so quality validates the same published HEAD that
+reaches review. Autonomous delivery keeps the feature claimed; only the human
+review route moves it to `in_review`.
+
+The repository-owned `.millstrand/published-candidate.sh BRANCH` runs from the
+feature worktree root. It checks a clean, unchanged branch/HEAD against a fresh
+fetch of the exact origin branch both before and after executing the committed,
+executable `.millstrand/land-quality.sh` contract. There is no upstream-cache
+fallback. The quality contract retains sole ownership of the shared suite lock
+and runs `git diff --check` and `make check`. Only verified success publishes the
+exact HEAD to Git's `millstrand-land-quality-head` receipt; every attempt first
+invalidates the old receipt. PR preparation reads that receipt explicitly.
+This candidate contract does not replace shared Land's main/merge checks.
 
 `auto-full-land` calls Codethread's shared autonomous Land policy, which creates
 a distinct finisher target whose worker owns sign-off, FIFO merge, cleanup, and
@@ -677,6 +688,16 @@ Exact replay returns that same interruption, never re-enriches it or creates
 another worker. A fully committed run remains accepted even if its response
 was lost. Readback and execution startup recognize retained incomplete rows;
 possible execution custody never acquires invented settlement evidence.
+
+Consumers that must check accepted lineage and record a related receipt can use
+`ct.spools.harnesses/call-with-run-publication-lock` with `[runtime thunk]`.
+It calls the zero-argument thunk synchronously under the same runtime-local
+monitor as run creation and continuation publication. Same-thread calls are
+reentrant, including calls to Harnesses publication APIs. The return value or
+exception passes through unchanged, and the monitor is released on either exit.
+Keep this section bounded: do not wait on external work or another thread that
+may need the monitor. It provides no database transaction, rollback, protection
+against raw edits, or protection for asynchronous work after the thunk returns.
 
 An interrupted child is not an accepted continuation head. Continue only by an
 explicit normal request from a valid accepted predecessor, or by a separately
