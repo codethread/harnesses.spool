@@ -689,6 +689,16 @@ another worker. A fully committed run remains accepted even if its response
 was lost. Readback and execution startup recognize retained incomplete rows;
 possible execution custody never acquires invented settlement evidence.
 
+Consumers that must check accepted lineage and record a related receipt can use
+`ct.spools.harnesses/call-with-run-publication-lock` with `[runtime thunk]`.
+It calls the zero-argument thunk synchronously under the same runtime-local
+monitor as run creation and continuation publication. Same-thread calls are
+reentrant, including calls to Harnesses publication APIs. The return value or
+exception passes through unchanged, and the monitor is released on either exit.
+Keep this section bounded: do not wait on external work or another thread that
+may need the monitor. It provides no database transaction, rollback, protection
+against raw edits, or protection for asynchronous work after the thunk returns.
+
 An interrupted child is not an accepted continuation head. Continue only by an
 explicit normal request from a valid accepted predecessor, or by a separately
 authorized fresh assignment. Publication recovery does not retry work, attach

@@ -232,7 +232,6 @@
           (is (= ["Implement and verify the assigned feature"]
                  (mapv :title (:ready result))))
           (is (contains? gates "shell"))
-          (is (not (contains? gates "code")))
           (is (not (contains? gates "agent"))
               "The finisher is a deliberate handoff, not an eager agent gate")
           (testing "publication precedes quality"

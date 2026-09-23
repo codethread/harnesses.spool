@@ -360,3 +360,60 @@
         (is (= {:interrupted true :outcome "interrupted"
                 :settlement "never-launched"}
                result))))))
+
+(deftest public-publication-boundary-shares-the-create-resume-monitor
+  (fixture/with-assignment-world
+    (fn [ctx]
+      (let [result
+            (fixture/eval-world
+             ctx
+             '(do
+                (require '[ct.spools.harnesses.catalog :as catalog])
+                (let [monitor (catalog/publication-lock rt)
+                      entered (promise)
+                      finished (promise)
+                      worker (Thread.
+                              (bound-fn []
+                                (let [caller (Thread/currentThread)]
+                                  (try
+                                    (deliver finished
+                                             (harnesses/call-with-run-publication-lock
+                                              rt
+                                              (fn []
+                                                (deliver entered true)
+                                                {:thread (= caller (Thread/currentThread))
+                                                 :held (Thread/holdsLock monitor)
+                                                 :nested
+                                                 (harnesses/call-with-run-publication-lock
+                                                  rt
+                                                  #(attr (harnesses/create!
+                                                          rt {:harness :fake :prompt "locked"})
+                                                         :harness/publication-outcome))})))
+                                    (catch Throwable error
+                                      (deliver finished {:error (ex-message error)}))))))
+                      blocked
+                      (locking monitor
+                        (.start worker)
+                        ;; Observe actual monitor contention, not a timing-based
+                        ;; absence of writes from a possibly unscheduled worker.
+                        (let [deadline (+ (System/nanoTime) 5000000000)]
+                          (loop []
+                            (cond
+                              (= Thread$State/BLOCKED (.getState worker))
+                              (not (realized? entered))
+                              (or (realized? finished)
+                                  (> (System/nanoTime) deadline)) false
+                              :else (do (Thread/yield) (recur))))))]
+                  (.join worker 5000)
+                  {:blocked blocked :finished (deref finished 1000 :timeout)
+                   :released (harnesses/call-with-run-publication-lock rt (constantly :released))
+                   :exception
+                   (let [error (ex-info "thunk failure" {})]
+                     (try
+                       (harnesses/call-with-run-publication-lock rt #(throw error))
+                       false
+                       (catch Exception actual (identical? error actual))))})))]
+        (is (= {:blocked true
+                :finished {:thread true :held true :nested "committed"}
+                :released :released :exception true}
+               result))))))

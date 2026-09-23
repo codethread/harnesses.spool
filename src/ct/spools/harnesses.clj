@@ -85,6 +85,27 @@
   (publication/recover! rt id)
   (runs/require-run rt id))
 
+(defn call-with-run-publication-lock
+  "Call zero-argument thunk synchronously under this runtime's publication monitor.
+
+  Serialize bounded caller checks and writes with Harnesses run creation and
+  continuation publication using the same catalog monitor as create!/resume!.
+  The monitor is reentrant on the calling thread: thunk may call this helper or
+  Harnesses publication operations for the same runtime. Return thunk's value
+  unchanged; propagate its exception, releasing the monitor on either exit.
+
+  This is process-local serialization, not a database transaction, rollback, or
+  protection against raw edits that bypass the monitor. Keep thunk bounded and
+  synchronous; do not wait for another thread or external work that may need
+  this monitor. Asynchronous work is not protected after thunk returns."
+  [rt thunk]
+  (require-valid! ::runtime rt "call-with-run-publication-lock requires a Weaver runtime")
+  (require-valid! ifn? thunk "call-with-run-publication-lock requires a callable thunk")
+  #_{:clj-kondo/ignore [:locking-suspicious-lock]}
+  #_{:splint/disable [lint/locking-object]}
+  (locking (catalog/publication-lock rt)
+    (thunk)))
+
 (defn create!
   "Create, publish, and return one ready harness-run strand.
 
