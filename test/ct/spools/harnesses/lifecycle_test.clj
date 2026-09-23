@@ -124,6 +124,28 @@
          #"no configured workspace"
          (#'execution/process-spec {:metadata {}} run launch-spec)))))
 
+(deftest managed-pi-launch-scrubs-inherited-subagent-marker
+  (let [runtime {:metadata {:config-dir "/runtime/workspace"}}
+        run {:id "run-1"
+             :attributes {:harness/harness "pi"
+                          :harness/cwd "/work"}}
+        launch-spec {:argv ["pi"]
+                     :env {"PI_SUBAGENT" "1"
+                           "MILLSTRAND_RUN_ID" "parent-run"
+                           "MILLSTRAND_INVOCATION" "parent-invocation"
+                           "OTHER" "kept"}
+                     :stdin nil}
+        launch (#'execution/process-spec runtime run launch-spec)]
+    (is (not (contains? (:env launch) "PI_SUBAGENT")))
+    (is (= "run-1" (get-in launch [:env "MILLSTRAND_RUN_ID"])))
+    (is (not (contains? (:env launch) "MILLSTRAND_INVOCATION")))
+    (is (= "kept" (get-in launch [:env "OTHER"])))
+    (testing "the provider command unsets the marker before exec"
+      (is (= "env" (first (:argv launch))))
+      (is (some #(= ["-u" "PI_SUBAGENT"] %)
+                (partition 2 1 (:argv launch))))
+      (is (= "pi" (last (:argv launch)))))))
+
 (defn- world-deps []
   (let [harnesses-root (test-alpha/spool-checkout-root
                         "ct/spools/harnesses.clj")
