@@ -75,7 +75,7 @@
 
   Operation caller attribution is durable run evidence and never participates
   in strict worker identity binding."
-  [rt {:keys [harness session-id run predecessor effective]}]
+  [rt {:keys [harness session-id run predecessor]}]
   (if (managed-harness? harness)
     {}
     (identity/bind!
@@ -92,8 +92,8 @@
 
   Native providers defer identity to startup. A native resume retry keeps its
   attached identity; maintenance-only providers return nil."
-  [rt run harness session-id effective]
-  (if (managed-harness? harness)
+  [_rt run harness _session-id _effective]
+  (when (managed-harness? harness)
     (when (attr-get run :harness/resumes)
       (when-not (= harness (attr-get run :harness/harness))
         (fail! "Native resume retry cannot change its managed provider"
@@ -106,8 +106,7 @@
       {:identity (attr-get run :identity/id)
        :prompt (attr-get run :identity/prompt)
        :reservation-id (attr-get run :identity/reservation-id)
-       :native-attached true})
-    nil))
+       :native-attached true})))
 
 (defn- workspace [rt]
   (or (get-in rt [:metadata :config-dir])
@@ -242,6 +241,23 @@
       (when-not (= expected actual)
         (fail! (str "Managed startup " label " does not match the run")
                {:run-id (:id run) :expected expected :actual actual})))
+    (when (= "pi" stored-harness)
+      (when-not (and (string? durable-pi-pin)
+                     (not (str/blank? durable-pi-pin)))
+        (fail! "Managed Pi startup has no durable native session pin"
+               {:run-id (:id run)
+                :provisional-session-id durable-pi-pin}))
+      (when-not (contains? bootstrap "expected-native-session-id")
+        (fail! "Managed Pi startup bootstrap requires its native session pin"
+               {:run-id (:id run)}))
+      (when-not (= durable-pi-pin
+                   (get bootstrap "expected-native-session-id")
+                   native-session-id)
+        (fail! "Managed Pi startup native session does not match its durable pin"
+               {:run-id (:id run)
+                :expected durable-pi-pin
+                :bootstrap (get bootstrap "expected-native-session-id")
+                :actual native-session-id})))
     (when-let [expected-native (get bootstrap "expected-native-session-id")]
       (when-not (= expected-native native-session-id)
         (fail! "Managed startup native session does not match the launch"
@@ -368,7 +384,8 @@
   Returns nil for maintenance providers and failed legacy outcomes without a
   usable session. The caller must hold the lifecycle publication lock."
   [rt run {:keys [session-id session-usable invocation] :as outcome}]
-  (when (managed-harness? (attr-get run :harness/harness))
+  (when (and (managed-harness? (attr-get run :harness/harness))
+             (attr-get run :identity/reservation-id))
     (if (legacy-managed-run? run)
       (when (legacy/positive-outcome? outcome)
         (validate-legacy-outcome! rt run outcome)

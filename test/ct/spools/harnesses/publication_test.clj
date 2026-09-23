@@ -78,9 +78,9 @@
           (is (= [(:target result)] (:serves result)))
           (is (empty? (:scheduled result)))
           (is (string? (:begin-error result))))
-        (is (= [0 1] (mapv :identities results)))
-        (is (= [0 1] (mapv :performed results)))
-        (is (string? (:reservation (second results))))))))
+        (is (= [0 0] (mapv :identities results)))
+        (is (= [0 0] (mapv :performed results)))
+        (is (nil? (:reservation (second results))))))))
 
 (deftest lost-success-response-retains-committed-assignment
   (fixture/with-assignment-world
@@ -109,7 +109,7 @@
                    :runs (count (weaver/list rt [:= [:attr "harness/run"] "true"] {}))
                    :identities (count (weaver/list rt [:= [:attr "identity/session"] "true"] {}))})))]
         (is (= {:error "response lost" :outcome "committed" :ready true
-                :no-writes true :runs 1 :identities 1}
+                :no-writes true :runs 1 :identities 0}
                result))))))
 
 (deftest interrupted-child-is-not-an-accepted-lineage-head

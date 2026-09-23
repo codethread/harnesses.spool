@@ -124,17 +124,15 @@
         (when (and bootstrap
                    (some? (attr-get run :harness/guidance-version)))
           (guidance/bootstrap run))]
-    {:argv (cond
-             (= "codex" (attr-get run :harness/harness))
-             (into ["/usr/bin/env" "-u" "MILLSTRAND_AGENT_ID"
-                    "-u" "MILLSTRAND_MANAGED_BOOTSTRAP"
-                    "-u" "MILLSTRAND_MANAGED_GUIDANCE"] argv)
-             (= "pi" (attr-get run :harness/harness))
-             (native-env/scrub-command argv)
-             :else argv)
+    {:argv (case (attr-get run :harness/harness)
+             "codex" (into ["/usr/bin/env" "-u" "MILLSTRAND_AGENT_ID"
+                            "-u" "MILLSTRAND_MANAGED_BOOTSTRAP"
+                            "-u" "MILLSTRAND_MANAGED_GUIDANCE"] argv)
+             "pi" (native-env/scrub-command argv)
+             argv)
      :cwd (or validated-cwd (attr-get run :harness/cwd))
-     :env (cond
-            (= "codex" (attr-get run :harness/harness))
+     :env (case (attr-get run :harness/harness)
+            "codex"
             (-> (or env {})
                 (dissoc "MILLSTRAND_AGENT_ID"
                         "MILLSTRAND_MANAGED_BOOTSTRAP"
@@ -142,10 +140,9 @@
                 (assoc "MILLSTRAND_RUN_ID" (:id run)
                        "MILLSTRAND_WORKSPACE" (launcher/workspace rt)
                        "MILLSTRAND_RUN_REFERENCE" (native-session/reference run)))
-            (= "pi" (attr-get run :harness/harness))
+            "pi"
             (assoc (apply dissoc (or env {}) native-env/ownership-keys)
                    "MILLSTRAND_RUN_ID" (:id run))
-            :else
             (cond-> (assoc (or env {})
                            "MILLSTRAND_RUN_ID" (:id run)
                            "MILLSTRAND_WORKSPACE" (launcher/workspace rt))

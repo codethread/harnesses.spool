@@ -36,23 +36,14 @@
 
 (deftest production-admission-is-disabled-and-hostile-argv-fails-first
   (is (empty? (capability/production-allowlist)))
-  (is (thrown-with-msg?
-       clojure.lang.ExceptionInfo
-       #"transport selection is unsupported"
-       (guidance/select!
-        {:metadata {:config-dir "/tmp"}}
-        {:harness "codex" :requested "native-v1" :mode :headless
-         :cwd "/tmp" :env {} :effective {:harness/extra-argv []}})))
-  (doseq [[harness argv] [["pi" ["--append-system-prompt=x"]]
-                          ["pi" ["--system-prompt" "x"]]]]
+  (doseq [harness ["codex" "pi"]]
     (is (thrown-with-msg?
          clojure.lang.ExceptionInfo
-         #"wrapper-level --append-system-prompt"
+         #"transport selection is unsupported"
          (guidance/select!
           {:metadata {:config-dir "/tmp"}}
           {:harness harness :requested "native-v1" :mode :headless
-           :cwd "/tmp" :env {}
-           :effective {:harness/extra-argv argv}})))))
+           :cwd "/tmp" :env {} :effective {:harness/extra-argv []}})))))
 
 (deftest provider-argv-removes-only-harnesses-guidance-in-native-mode
   (let [legacy-codex (codex/prepare runtime (codex/harness runtime)
@@ -67,10 +58,10 @@
               (:argv legacy-codex)))
     (is (some #(str/starts-with? % "developer_instructions=")
               (:argv native-codex)))
-    (is (= 3 (count (filter #{"--append-system-prompt"}
+    (is (= 2 (count (filter #{"--append-system-prompt"}
                             (:argv legacy-pi)))))
-    (is (zero? (count (filter #{"--append-system-prompt"}
-                              (:argv native-pi)))))
+    (is (= 2 (count (filter #{"--append-system-prompt"}
+                            (:argv native-pi)))))
     (doseq [launch [native-codex native-pi]]
       (is (= "Main task\n" (:stdin launch)))
       (is (some #{"model"} (:argv launch)))

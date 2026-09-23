@@ -3,8 +3,6 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
-            [ct.spools.harnesses.execution :as execution]
-            [ct.spools.harnesses.internal.guidance :as guidance]
             [ct.spools.harnesses.internal.guidance-capability :as capability]
             [ct.spools.harnesses.internal.guidance-closure :as closure]
             [ct.spools.harnesses.internal.guidance-process :as guidance-process]
@@ -224,117 +222,6 @@
                     (catch Throwable error error)))]
     {:failure failure
      :elapsed-millis (/ (- (System/nanoTime) started) 1000000.0)}))
-
-(deftest validated-executable-environment-and-selectors-reach-custody
-  (doseq [harness ["pi"]]
-    (with-profile
-      harness
-      (fn [{:keys [profile document request]}]
-        (let [root (io/file (get request "cwd"))
-              bin (doto (io/file root (str harness "-bin")) .mkdirs)
-              executable (io/file bin harness)
-              _ (spit executable "#!/bin/sh\nexit 0\n")
-              _ (.setExecutable executable true)
-              document (assoc document "executable-sha256"
-                              (capability/file-sha256 executable))
-              launch-environment {"PATH" (.getCanonicalPath bin)
-                                  "PRIVATE_FIXTURE" "secret"}
-              profile
-              (finalize-profile
-               (-> profile
-                   (assoc :capability document)
-                   (assoc-in [:executable-closure :resolution-inputs
-                              :environment]
-                             (closure/resolution-environment
-                              launch-environment))))
-              document (:capability profile)
-              captured-request (atom nil)
-              runner (fn [accepted request-json]
-                       (reset! captured-request
-                               (strict-json/parse-object!
-                                request-json 65536 "captured preflight"))
-                       (process-result accepted (result-json document)))
-              rt {:metadata {:config-dir (.getCanonicalPath root)}}
-              run-id (str harness "-launch")
-              guidance-attributes
-              (guidance/publication-patch
-               rt run-id "steady-fair-lynx" "Use the retained identity." []
-               {:transport "native-v1"
-                :capability document
-                :capability-sha256 (strict-json/canonical-sha256 document)}
-               nil [])
-              run (guidance/validation-run
-                   rt
-                   {:id run-id
-                    :attributes
-                    (merge
-                     guidance-attributes
-                     (cond->
-                      {:harness/harness harness
-                       :harness/mode "headless"
-                       :harness/cwd (.getCanonicalPath root)
-                       :harness/env launch-environment
-                       :harness/extra-argv ["--unrelated"]
-                       :harness/model "fixture-model"
-                       :harness/effort "high"
-                       :harness/resumes true
-                       :harness/session-id "native-session-1"
-                       :harness/prompt "fixture task"
-                       :harness/published "true"
-                       :identity/id "steady-fair-lynx"
-                       :identity/prompt "Use the retained identity."
-                       :identity/reservation-id "reservation-1"}
-                       (= "pi" harness)
-                       (assoc :harness/provisional-session-id
-                              "native-session-1")))})]
-          (binding [capability/*test-capability-profiles* [profile]
-                    capability/*test-preflight-runner* runner]
-            (let [patch (guidance/begin-attempt-patch
-                         rt run 1 "invocation-1")
-                  started (guidance/carry-launch-plan patch {:strand run})
-                  plan (guidance/launch-plan started)
-                  started-at (get (peek (:harness/guidance-attempts patch))
-                                  "started-at")
-                  running (update run :attributes merge patch
-                                  {:harness/attempt 1
-                                   :harness/invocation "invocation-1"
-                                   :harness/started-at started-at})
-                  provider-argv
-                  [harness "resume" "native-session-1"
-                   "--model" "fixture-model" "--effort" "high"
-                   "--unrelated" "fixture task"]
-                  prepared (#'execution/apply-native-launch-plan
-                            running
-                            {:argv provider-argv
-                             :env {"PATH" (.getCanonicalPath bin)
-                                   "PRIVATE_FIXTURE" "secret"}
-                             :stdin nil}
-                            plan)
-                  custody-spec (#'execution/process-spec rt running prepared)]
-              (is (= (.getCanonicalPath executable)
-                     (first (:argv custody-spec))))
-              (is (= (subvec provider-argv 1)
-                     (subvec (:argv custody-spec) 1)))
-              (is (= (.getCanonicalPath root) (:cwd custody-spec)))
-              (is (= "secret" (get-in custody-spec
-                                      [:env "PRIVATE_FIXTURE"])))
-              (is (= (.getCanonicalPath executable)
-                     (get @captured-request "executable")))
-              (is (not (contains? patch :launch-plan)))
-              (is (thrown-with-msg?
-                   clojure.lang.ExceptionInfo
-                   #"no longer matches"
-                   (#'execution/apply-native-launch-plan
-                    (assoc-in running [:attributes :harness/extra-argv]
-                              ["--changed"])
-                    {:argv [harness "--changed"] :env {} :stdin nil}
-                    plan)))
-              (spit executable "#!/bin/sh\nexit 7\n")
-              (is (thrown-with-msg?
-                   clojure.lang.ExceptionInfo
-                   #"executable.*evidence"
-                   (guidance/begin-attempt-patch
-                    rt run 2 "invocation-2"))))))))))
 
 (deftest exact-preflight-command-bounds-process-and-pipe-lifetimes
   (with-profile

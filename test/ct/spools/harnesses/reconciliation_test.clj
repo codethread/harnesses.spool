@@ -289,7 +289,7 @@
                               rt {:harness :codex :mode :interactive
                                   :target (:id target)})
                       _ (harnesses/begin-attempt! rt (:id legacy))
-                      actor (spool/attr-get legacy :identity/id)
+                      actor "reconciliation-operator"
                       before-dry-run (weaver/show rt (:id legacy))
                       dry-run (weaver/op! rt 'agent
                                           ["reconcile" (:id legacy) "--dry-run"])
