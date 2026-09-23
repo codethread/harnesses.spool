@@ -67,7 +67,10 @@
     (first matches)))
 
 (defn- create-external-run!
-  "Record an observed native session whose process Harnesses does not own."
+  "Record an unpublished external session registration.
+
+  Publication commits with the attachment batch, so a rejected registration
+  leaves an incomplete, recoverable publication instead of a committed run."
   [rt {:keys [harness native-session-id cwd]}]
   (weaver/add! rt {:title (str harness " native session " native-session-id)
                    :attributes {:harness/run "true"
@@ -77,17 +80,19 @@
                                 :harness/status "running"
                                 :harness/session-id native-session-id
                                 :harness/cwd (canonical cwd)
-                                :harness/published "true"
-                                :harness/publication-phase "complete"
-                                :harness/publication-outcome "committed"}}))
+                                :harness/publication-phase "created"
+                                :harness/publication-outcome "publishing"}}))
 
 (defn register!
   "Recover native identity and register its observed run before model work.
 
   Managed correlation names an already-running run and must match its actual
   session. Direct registration is idempotent by provider/session, has no alias,
-  and grants no process custody. Unknown effort is explicit observed metadata,
-  never a provider option. Ordinary launch prompts remain outside this API."
+  and grants no process custody. A direct run is recorded as an incomplete
+  publication and commits identity, provenance, and publication in one atomic
+  attachment batch, so a rejected registration leaves no committed run.
+  Unknown effort is explicit observed metadata, never a provider option.
+  Ordinary launch prompts remain outside this API."
   [rt {:keys [harness native-session-id run-id parent-identity parent-native-session-id model thinking-level]
        :as request}]
   (require-valid! ::request request "Invalid native startup request")
@@ -120,12 +125,14 @@
           run-id (when-not inherited-child? run-id)
           managed (when run-id (managed-run! rt request))
           existing (when-not run-id (external-registration rt request))
+          run (or managed existing (create-external-run! rt request))
           attached (identity/startup!
-                    rt (cond-> {:harness harness :native-session-id native-session-id}
+                    rt (cond-> {:harness harness
+                                :native-session-id native-session-id
+                                :run-id (:id run)}
                          parent-identity (assoc :parent-identity parent-identity)
                          model (assoc :model model)
                          thinking-level (assoc :thinking-level thinking-level)))
-          run (or managed existing (create-external-run! rt request))
           effort (or thinking-level (attr-get run :harness/effort)
                      (attr-get run :harness/observed-effort) "unknown")
           attrs (cond-> {:identity/id (:identity attached)
@@ -136,7 +143,10 @@
                                                          (life/now))}
                   model (assoc :harness/observed-model model)
                   run-id (assoc :harness/native-attachment-attempt (attr-get run :harness/attempt)
-                                :harness/native-attachment-invocation (life/invocation run)))
+                                :harness/native-attachment-invocation (life/invocation run))
+                  (nil? run-id) (assoc :harness/published "true"
+                                       :harness/publication-phase "complete"
+                                       :harness/publication-outcome "committed"))
           changed? (some (fn [[k v]] (not= v (attr-get run k))) attrs)]
       (when changed?
         (binding/persist-attachment!

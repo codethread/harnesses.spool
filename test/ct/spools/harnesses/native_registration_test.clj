@@ -138,3 +138,55 @@
         (is (:conflict-unchanged result))
         (is (:matched result))
         (is (not= (:matched result) (:parent result)))))))
+
+(deftest rejected-attachment-leaves-recoverable-publication
+  (fixture/with-managed-world
+    (fn [ctx]
+      (let [result
+            (fixture/eval-world
+             ctx
+             '(let [request {:harness "pi" :native-session-id "rejected-child"
+                             :cwd "/tmp/native-pi"}
+                    session-records
+                    (fn []
+                      {:runs (filterv #(= "rejected-child" (attr % :harness/session-id))
+                                      (weaver/list rt))
+                       :identities (filterv #(= "rejected-child"
+                                                (attr % :identity/native-session-id))
+                                            (weaver/list rt))})
+                    _ (reset! reject-attachment-batches? true)
+                    rejected (failure #(harnesses/register-native-session! rt request))
+                    _ (reset! reject-attachment-batches? false)
+                    after-rejection (session-records)
+                    run (first (:runs after-rejection))
+                    bound (first (:identities after-rejection))
+                    completed (harnesses/register-native-session! rt request)
+                    replay (harnesses/register-native-session! rt request)
+                    repaired (first (:runs (session-records)))]
+                {:rejected (:message rejected)
+                 :runs (count (:runs after-rejection))
+                 :identities (count (:identities after-rejection))
+                 :phase (attr run :harness/publication-phase)
+                 :outcome (attr run :harness/publication-outcome)
+                 :published (attr run :harness/published)
+                 :provenance (targets bound "performed")
+                 :run-id (:id run)
+                 :completed-run (:run-id completed)
+                 :replay-run (:run-id replay)
+                 :repaired-phase (attr repaired :harness/publication-phase)
+                 :repaired-outcome (attr repaired :harness/publication-outcome)
+                 :repaired-published (attr repaired :harness/published)
+                 :repaired-effort (attr repaired :harness/observed-effort)}))]
+        (is (some? (:rejected result)))
+        (is (= 1 (:runs result)))
+        (is (= 1 (:identities result)))
+        (is (= "created" (:phase result)))
+        (is (= "publishing" (:outcome result)))
+        (is (nil? (:published result)))
+        (is (= #{(:run-id result)} (:provenance result)))
+        (is (= (:run-id result) (:completed-run result)))
+        (is (= (:run-id result) (:replay-run result)))
+        (is (= "complete" (:repaired-phase result)))
+        (is (= "committed" (:repaired-outcome result)))
+        (is (= "true" (:repaired-published result)))
+        (is (= "unknown" (:repaired-effort result)))))))
