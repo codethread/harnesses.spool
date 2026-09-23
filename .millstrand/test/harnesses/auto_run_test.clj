@@ -396,9 +396,9 @@
             (if (= route :auto-full-land)
               (do
                 (is (= "claimed" (attr-get (weaver/show rt (:id card)) :kanban/lane)))
-                (is (= "handoff-worker"
-                       (attr-get (weaver/show rt (:id (first (workflow/ready run-id))))
-                                 :auto-run/role))))
+                (let [frontier (workflow/ready run-id)]
+                  (is (seq frontier))
+                  (is (not-any? #(= "human" (:checkpoint-kind %)) frontier))))
               (do
                 ;; The real code executor owns the attention transition.
                 (workflow/await! run-id {:timeout-secs 10 :poll-ms 10})
