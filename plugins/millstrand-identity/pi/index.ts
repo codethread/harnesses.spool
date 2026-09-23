@@ -73,15 +73,6 @@ export function createMillstrandIdentityLifecycle(
       pi.events.emit(MILLSTRAND_GUIDANCE_CONTEXT_EVENT, guidanceContext);
       publishState({ status: "pending" });
       try {
-        const inputs = getNativeIdentityInputs(pi);
-        if (inputs.runId && !managedSessionId)
-          managedSessionId = nativeSessionId;
-        if (managedSessionId && managedSessionId !== nativeSessionId)
-          inputs.runId = undefined;
-        // A native new/forked session gets attribution, never parent ownership.
-        if (previous && previous.nativeSessionId !== nativeSessionId) {
-          inputs.parentIdentity = previous.identity;
-        }
         const resolved = await resolveNativeIdentity(pi.exec, {
           cwd: ctx.cwd,
           nativeSessionId,
@@ -89,7 +80,17 @@ export function createMillstrandIdentityLifecycle(
           model: nativeIdentityModel(ctx),
           thinkingLevel: ctx.thinkingLevel,
           signal: ctx.signal,
-          ...inputs,
+          inputs: () => {
+            const inputs = getNativeIdentityInputs(pi);
+            if (inputs.runId && !managedSessionId)
+              managedSessionId = nativeSessionId;
+            if (managedSessionId && managedSessionId !== nativeSessionId)
+              inputs.runId = undefined;
+            // A fresh session gets attribution, never parent ownership.
+            if (previous && previous.nativeSessionId !== nativeSessionId)
+              inputs.parentIdentity = previous.identity;
+            return inputs;
+          },
         });
         if (resolved) {
           publishState({ status: "bound", ...resolved });

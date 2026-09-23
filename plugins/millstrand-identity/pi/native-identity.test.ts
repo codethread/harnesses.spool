@@ -77,13 +77,18 @@ describe("native identity boundary", () => {
   });
   it("does nothing outside the launch project even with inherited ownership", async () => {
     const exec = vi.fn(async () => ({ ...ok(""), code: 128 }));
+    const inputs = vi.fn(() => {
+      throw new Error("invalid inherited correlation");
+    });
     expect(
       await resolveNativeIdentity(exec as any, {
         cwd: "/tmp",
         nativeSessionId: "s",
         runId: "parent",
+        inputs,
       }),
     ).toBeNull();
+    expect(inputs).not.toHaveBeenCalled();
     expect(exec).toHaveBeenCalledTimes(1);
     expect(
       getNativeIdentityInputs({ getFlag: () => false } as any, {
@@ -94,6 +99,21 @@ describe("native identity boundary", () => {
         MILLSTRAND_WORKSPACE: "/wrong",
       }),
     ).toEqual({ runId: undefined, parentIdentity: "native-parent" });
+  });
+  it("still rejects malformed inherited correlation inside an admitted project", async () => {
+    const root = project();
+    const exec = vi.fn(async () => ok(join(root, ".git")));
+    await expect(
+      resolveNativeIdentity(exec as any, {
+        cwd: root,
+        nativeSessionId: "s",
+        inputs: () =>
+          getNativeIdentityInputs({ getFlag: () => false } as any, {
+            MILLSTRAND_RUN_ID: " ",
+          }),
+      }),
+    ).rejects.toThrow("MILLSTRAND_RUN_ID must be a non-empty string");
+    expect(exec).toHaveBeenCalledTimes(1);
   });
   it("fails visibly on actual startup failure", async () => {
     const root = project();

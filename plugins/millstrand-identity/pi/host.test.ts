@@ -127,6 +127,12 @@ it("real fork supplies its native parent header", () => {
 
 it("does not invoke Strand outside a Millstrand project", () => {
   const { root, env } = fixture(false);
+  // Inactive projects ignore malformed inherited ownership, not just valid hints.
+  Object.assign(env, {
+    MILLSTRAND_RUN_ID: " ",
+    MILLSTRAND_PI_PARENT_IDENTITY: " ",
+    MILLSTRAND_WORKSPACE: "/not-this-project/.millstrand",
+  });
   const output = host(
     root,
     env,
