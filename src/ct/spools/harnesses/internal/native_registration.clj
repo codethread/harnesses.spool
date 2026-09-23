@@ -48,7 +48,12 @@
              {:run-id run-id :harness harness :native-session-id native-session-id}))
     run))
 
-(defn- external-run! [rt {:keys [harness native-session-id cwd]}]
+(defn- external-registration
+  "Return the existing external registration for one native session.
+
+  Reject an active managed writer or duplicate registrations without writing,
+  so a caller creates the run only after identity resolution succeeds."
+  [rt {:keys [harness native-session-id]}]
   (let [registrations (weaver/list rt [:and [:= [:attr "harness/run"] "true"]
                                        [:= [:attr "harness/harness"] harness]
                                        [:= [:attr "harness/session-id"] native-session-id]] {})
@@ -59,18 +64,22 @@
     (when (< 1 (count matches))
       (fail! "Native session has duplicate external registrations"
              {:harness harness :native-session-id native-session-id}))
-    (or (first matches)
-        (weaver/add! rt {:title (str harness " native session " native-session-id)
-                         :attributes {:harness/run "true"
-                                      :harness/harness harness
-                                      :harness/mode "external"
-                                      :harness/ownership "external"
-                                      :harness/status "running"
-                                      :harness/session-id native-session-id
-                                      :harness/cwd (canonical cwd)
-                                      :harness/published "true"
-                                      :harness/publication-phase "complete"
-                                      :harness/publication-outcome "committed"}}))))
+    (first matches)))
+
+(defn- create-external-run!
+  "Record an observed native session whose process Harnesses does not own."
+  [rt {:keys [harness native-session-id cwd]}]
+  (weaver/add! rt {:title (str harness " native session " native-session-id)
+                   :attributes {:harness/run "true"
+                                :harness/harness harness
+                                :harness/mode "external"
+                                :harness/ownership "external"
+                                :harness/status "running"
+                                :harness/session-id native-session-id
+                                :harness/cwd (canonical cwd)
+                                :harness/published "true"
+                                :harness/publication-phase "complete"
+                                :harness/publication-outcome "committed"}}))
 
 (defn register!
   "Recover native identity and register its observed run before model work.
@@ -93,18 +102,30 @@
                        (fail! "Native parent session is not registered uniquely"
                               {:parent-native-session-id parent-native-session-id}))
                      (first matches)))
-          parent-identity (or parent-identity (attr-get parent :identity/id))
+          registered-parent (when parent (attr-get parent :identity/id))
+          parent-identity (if registered-parent
+                            (do
+                              (when (and parent-identity
+                                         (not= parent-identity registered-parent))
+                                (fail! "Native parent identity does not match its parent session"
+                                       {:parent-native-session-id parent-native-session-id
+                                        :parent-identity parent-identity
+                                        :registered-parent-identity registered-parent}))
+                              registered-parent)
+                            parent-identity)
           inherited-child? (and run-id parent-native-session-id
                                 (not= native-session-id parent-native-session-id)
                                 (= parent-native-session-id
                                    (attr-get (weaver/show rt run-id) :harness/session-id)))
           run-id (when-not inherited-child? run-id)
-          run (if run-id (managed-run! rt request) (external-run! rt request))
+          managed (when run-id (managed-run! rt request))
+          existing (when-not run-id (external-registration rt request))
           attached (identity/startup!
                     rt (cond-> {:harness harness :native-session-id native-session-id}
                          parent-identity (assoc :parent-identity parent-identity)
                          model (assoc :model model)
                          thinking-level (assoc :thinking-level thinking-level)))
+          run (or managed existing (create-external-run! rt request))
           effort (or thinking-level (attr-get run :harness/effort)
                      (attr-get run :harness/observed-effort) "unknown")
           attrs (cond-> {:identity/id (:identity attached)

@@ -94,3 +94,47 @@
         (is (= "bootstrap" (:missing-reason result)))
         (is (= "true" (:missing-settled result)))
         (is (nil? (:missing-identity result)))))))
+
+(deftest rejected-native-parent-leaves-no-external-run
+  (fixture/with-managed-world
+    (fn [ctx]
+      (let [result
+            (fixture/eval-world
+             ctx
+             '(let [before (weaver/list rt)
+                    missing (failure #(harnesses/register-native-session!
+                                       rt {:harness "pi"
+                                           :native-session-id "orphan-child"
+                                           :cwd "/tmp/native-pi"
+                                           :parent-native-session-id "unregistered-parent"}))
+                    after-missing (weaver/list rt)
+                    parent (harnesses/register-native-session!
+                            rt {:harness "pi" :native-session-id "registered-parent"
+                                :cwd "/tmp/native-pi"})
+                    before-conflict (weaver/list rt)
+                    conflict (failure #(harnesses/register-native-session!
+                                        rt {:harness "pi"
+                                            :native-session-id "conflicting-child"
+                                            :cwd "/tmp/native-pi"
+                                            :parent-native-session-id "registered-parent"
+                                            :parent-identity "someone-else"}))
+                    after-conflict (weaver/list rt)
+                    matched (harnesses/register-native-session!
+                             rt {:harness "pi" :native-session-id "matching-child"
+                                 :cwd "/tmp/native-pi"
+                                 :parent-native-session-id "registered-parent"
+                                 :parent-identity (:identity parent)})]
+                {:missing (:message missing)
+                 :missing-unchanged (= before after-missing)
+                 :parent (:identity parent)
+                 :conflict (:message conflict)
+                 :conflict-unchanged (= before-conflict after-conflict)
+                 :matched (:identity matched)}))]
+        (is (= "Native parent session is not registered uniquely"
+               (:missing result)))
+        (is (:missing-unchanged result))
+        (is (= "Native parent identity does not match its parent session"
+               (:conflict result)))
+        (is (:conflict-unchanged result))
+        (is (:matched result))
+        (is (not= (:matched result) (:parent result)))))))
