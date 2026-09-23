@@ -250,7 +250,15 @@
              retained
              (admission-deadline/bounded!
               budget "ownership-scanner-identity"
-              #(identity/retain handle "ownership-scanner"))
+              #(try
+                 (identity/retain handle "ownership-scanner")
+                 (catch clojure.lang.ExceptionInfo error
+                   ;; A fast scanner may exit before its birth can be observed.
+                   ;; Its directly created handle still owns this completed
+                   ;; process; never reacquire a PID or excuse a live scanner.
+                   (if (.isAlive scanner-process)
+                     (throw error)
+                     @direct-scanner))))
              _ (reset! scanner-identity retained)
              io-executor (Executors/newFixedThreadPool 2 (thread-factory))
              _ (reset! executor io-executor)
