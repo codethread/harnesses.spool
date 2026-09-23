@@ -70,7 +70,7 @@
              {:run-id id :writer (:id other)}))
     run))
 
-(defn- direct-run! [rt {:keys [harness native-session-id cwd model]}]
+(defn- direct-run [rt {:keys [harness native-session-id]}]
   (let [matches (filterv #(and (= "true" (attr-get % :harness/run))
                                (= harness (attr-get % :harness/harness))
                                (= native-session-id (attr-get % :harness/session-id)))
@@ -80,19 +80,21 @@
               (some #(and (not= "external" (attr-get % :harness/ownership))
                           (life/reserving? %)) matches))
       (fail! "Native session has another active registration" {:native-session-id native-session-id}))
-    (or (first external)
-        (weaver/add!
-         rt {:title (str harness " native session " native-session-id)
-             :attributes {:harness/run "true"
-                          :harness/ownership "external"
-                          :harness/harness harness
-                          :harness/mode "external"
-                          :harness/status "running"
-                          :harness/cwd (canonical cwd)
-                          :harness/model model
-                          :harness/session-id native-session-id
-                          :harness/publication-phase "created"
-                          :harness/publication-outcome "publishing"}}))))
+    (first external)))
+
+(defn- create-direct-run! [rt {:keys [harness native-session-id cwd model]}]
+  (weaver/add!
+   rt {:title (str harness " native session " native-session-id)
+       :attributes {:harness/run "true"
+                    :harness/ownership "external"
+                    :harness/harness harness
+                    :harness/mode "external"
+                    :harness/status "running"
+                    :harness/cwd (canonical cwd)
+                    :harness/model model
+                    :harness/session-id native-session-id
+                    :harness/publication-phase "created"
+                    :harness/publication-outcome "publishing"}}))
 
 (defn register!
   "Resolve identity and record an observed native session's run participation.
@@ -109,7 +111,7 @@
   #_{:clj-kondo/ignore [:locking-suspicious-lock]}
   #_{:splint/disable [lint/locking-object]}
   (locking (catalog/publication-lock rt)
-    (let [run (if run-reference (managed-run rt request) (direct-run! rt request))
+    (let [run (if run-reference (managed-run rt request) (direct-run rt request))
           observed-effort (or thinking-level (attr-get run :harness/effort)
                               (attr-get run :harness/observed-effort) "unknown")
           attached (identity/startup!
@@ -117,6 +119,7 @@
                                 :model model :thinking-level observed-effort}
                          parent-identity (assoc :parent-identity parent-identity)))
           identity-strand (identity/current rt (:identity attached))
+          run (or run (create-direct-run! rt request))
           patch (merge {:identity/id (:identity attached)
                         :harness/session-id native-session-id
                         :harness/observed-model model

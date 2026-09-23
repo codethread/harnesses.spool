@@ -182,3 +182,20 @@
         (is (nil? (get-in result [:process-spec :env "MILLSTRAND_AGENT_ID"])))
         (is (re-find #"export MILLSTRAND_RUN_REFERENCE=" (:launcher result)))
         (is (not (re-find #"export MILLSTRAND_AGENT_ID=" (:launcher result))))))))
+
+(deftest invalid-native-parent-does-not-publish-an-external-run
+  (fixture/with-managed-world
+    (fn [ctx]
+      (let [result
+            (fixture/eval-world
+             ctx (list 'do setup
+                       '(let [before (weaver/list rt)
+                              rejected (failure #(native/register!
+                                                  rt {:harness "codex" :model "model"
+                                                      :native-session-id "invalid-parent-session"
+                                                      :cwd "/tmp/direct"
+                                                      :parent-identity "missing-parent"}))
+                              after (weaver/list rt)]
+                          {:rejected rejected :unchanged (= before after)})))]
+        (is (:rejected result))
+        (is (:unchanged result))))))
