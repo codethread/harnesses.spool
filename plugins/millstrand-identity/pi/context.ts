@@ -67,6 +67,7 @@ function isBootstrapOwnershipKey(name: string): boolean {
   return (
     name === "MILLSTRAND_AGENT_ID" ||
     name === "MILLSTRAND_RUN_ID" ||
+    name === "MILLSTRAND_INVOCATION" ||
     name === "MILLSTRAND_RESERVATION_ID" ||
     name === "MILLSTRAND_MANAGED_BOOTSTRAP" ||
     name === "MILLSTRAND_MANAGED_GUIDANCE" ||
@@ -90,14 +91,7 @@ export function buildMillstrandChildEnvironment(
   currentIdentity: ActiveMillstrandIdentity | null,
 ): NodeJS.ProcessEnv {
   const childEnv = { ...env };
-  const legacyManagedParent = env.MILLSTRAND_RUN_ID?.trim()
-    ? env.MILLSTRAND_AGENT_ID?.trim()
-    : undefined;
-  const parentIdentity = currentIdentity?.identity ?? legacyManagedParent;
-  const workspace =
-    currentIdentity?.workspace ??
-    env[MILLSTRAND_WORKSPACE_ENV]?.trim() ??
-    env.MILLSTRAND_WORKSPACE?.trim();
+  const parentIdentity = currentIdentity?.identity;
 
   for (const name of Object.keys(childEnv)) {
     if (isBootstrapOwnershipKey(name)) delete childEnv[name];
@@ -107,7 +101,6 @@ export function buildMillstrandChildEnvironment(
   delete childEnv[MILLSTRAND_WORKSPACE_ENV];
 
   if (parentIdentity) childEnv[MILLSTRAND_PARENT_IDENTITY_ENV] = parentIdentity;
-  if (workspace) childEnv[MILLSTRAND_WORKSPACE_ENV] = workspace;
   childEnv.PI_SUBAGENT = "1";
   return childEnv;
 }

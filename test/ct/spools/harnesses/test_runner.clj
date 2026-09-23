@@ -11,7 +11,6 @@
             [ct.spools.harnesses.guidance-capability-test]
             [ct.spools.harnesses.guidance-capability-deadline-test]
             [ct.spools.harnesses.guidance-closure-test]
-            [ct.spools.harnesses.guidance-continuation-test]
             [ct.spools.harnesses.guidance-fixture-hygiene-test]
             [ct.spools.harnesses.guidance-process-cleanup-test]
             [ct.spools.harnesses.guidance-process-deadline-test]
@@ -26,9 +25,7 @@
             [ct.spools.harnesses.lifecycle-test]
             [ct.spools.harnesses.lifecycle-custody-test]
             [ct.spools.harnesses.managed-startup-test]
-            [ct.spools.harnesses.managed-startup-legacy-test]
-            [ct.spools.harnesses.managed-startup-validation-test]
-            [ct.spools.harnesses.managed-startup-evidence-test]
+            [ct.spools.harnesses.native-registration-test]
             [ct.spools.harnesses.native-resume-cli-replay-test]
             [ct.spools.harnesses.providers.claude-test]
             [ct.spools.harnesses.providers.codex-test]
@@ -53,7 +50,6 @@
     ct.spools.harnesses.guidance-capability-test
     ct.spools.harnesses.guidance-capability-deadline-test
     ct.spools.harnesses.guidance-closure-test
-    ct.spools.harnesses.guidance-continuation-test
     ct.spools.harnesses.guidance-fixture-hygiene-test
     ct.spools.harnesses.guidance-process-cleanup-test
     ct.spools.harnesses.guidance-process-deadline-test
@@ -68,9 +64,7 @@
     ct.spools.harnesses.lifecycle-test
     ct.spools.harnesses.lifecycle-custody-test
     ct.spools.harnesses.managed-startup-test
-    ct.spools.harnesses.managed-startup-legacy-test
-    ct.spools.harnesses.managed-startup-validation-test
-    ct.spools.harnesses.managed-startup-evidence-test
+    ct.spools.harnesses.native-registration-test
     ct.spools.harnesses.native-resume-cli-replay-test
     ct.spools.harnesses.providers.claude-test
     ct.spools.harnesses.providers.codex-test

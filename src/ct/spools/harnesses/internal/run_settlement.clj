@@ -5,6 +5,7 @@
             [ct.spools.harnesses.internal.guidance :as guidance]
             [ct.spools.harnesses.internal.lifecycle :as life]
             [ct.spools.harnesses.internal.managed-startup :as managed]
+            [ct.spools.harnesses.internal.native-registration :as native-registration]
             [ct.spools.harnesses.internal.runs :as runs]
             [millstrand.api.spool.alpha :refer [attr-get fail!]]
             [millstrand.api.weaver.alpha :as weaver]))
@@ -36,6 +37,7 @@
   #_{:splint/disable [lint/locking-object]}
   (locking (catalog/publication-lock rt)
     (let [run (runs/require-run rt id)
+          outcome (:outcome (native-registration/completion run outcome))
           invocation (:invocation outcome)]
       (when (= "external" (attr-get run :harness/ownership))
         (fail! "Harnesses does not own external session settlement" {:id id}))

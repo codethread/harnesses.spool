@@ -1,95 +1,111 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  MILLSTRAND_GUIDANCE_CONTEXT_EVENT,
-  MILLSTRAND_IDENTITY_CONTEXT_EVENT,
-  MILLSTRAND_IDENTITY_STATE_EVENT,
-} from "./context.js";
-
-const resolvedIdentity = {
-  identity: "warm-silver-lemur",
-  strandId: "identity-1",
-  result: "minted" as const,
-  instruction: "Your Millstrand identity is warm-silver-lemur.",
-  nativeSessionId: "session-1",
+const resolved = {
+  identity: "native-parent",
+  strandId: "i1",
+  runId: "r1",
+  result: "minted",
+  instruction: "Your Millstrand identity is native-parent.",
+  nativeSessionId: "s1",
   workspace: "/world/.millstrand",
 };
-
-vi.mock("./managed-guidance.js", () => ({
-  failManagedGuidance: vi.fn(),
-  fetchManagedGuidance: vi.fn(),
-  ManagedGuidanceAdapterError: class ManagedGuidanceAdapterError extends Error {
-    stage = "startup";
-    receiptRouteTrusted = true;
-  },
-  stageManagedPiGuidanceSelection: vi.fn(() => ({
-    kind: "selected",
-    selection: { kind: "unmanaged" },
-  })),
-}));
-
 vi.mock("./native-identity.js", () => ({
   DEBUG_MILLSTRAND_IDENTITY_FLAG: "debug-millstrand-identity",
-  MILLSTRAND_IDENTITY_FLAG: "millstrand-identity",
-  MILLSTRAND_WORKSPACE_FLAG: "millstrand-workspace",
-  formatNativeIdentityState: vi.fn(() => "{}"),
-  getNativeIdentityInputs: vi.fn(() => ({})),
-  nativeIdentityModel: vi.fn(() => "gpt"),
-  resolveNativeIdentity: vi.fn(async () => resolvedIdentity),
+  formatNativeIdentityState: vi.fn(),
+  getNativeIdentityInputs: vi.fn(() => ({ runId: "managed" })),
+  nativeIdentityModel: vi.fn(() => "provider/model"),
+  resolveNativeIdentity: vi.fn(async () => resolved),
 }));
-
-import millstrandIdentityExtension from "./index.js";
-
-type Handler = (...args: any[]) => any;
-
-describe("Millstrand Pi identity data extension", () => {
-  beforeEach(() => vi.clearAllMocks());
-
-  it("publishes resolved identity and guidance data without owning prompt rendering", async () => {
-    const handlers = new Map<string, Handler>();
-    const eventHandlers = new Map<string, Handler>();
-    const emitted: Array<[string, unknown]> = [];
-    const pi = {
-      exec: vi.fn(),
-      getFlag: vi.fn(() => false),
-      registerFlag: vi.fn(),
-      on: vi.fn((name: string, handler: Handler) =>
-        handlers.set(name, handler),
-      ),
-      events: {
-        on: vi.fn((name: string, handler: Handler) =>
-          eventHandlers.set(name, handler),
-        ),
-        emit: vi.fn((name: string, value: unknown) =>
-          emitted.push([name, value]),
-        ),
-      },
-    };
-    millstrandIdentityExtension(pi as any);
-
+import extension, { createMillstrandIdentityLifecycle } from "./index.js";
+import { resolveNativeIdentity } from "./native-identity.js";
+function fixture() {
+  const handlers = new Map<string, (...args: any[]) => any>();
+  const pi = {
+    exec: vi.fn(),
+    getFlag: () => false,
+    registerFlag: vi.fn(),
+    on: (name: string, handler: (...args: any[]) => any) =>
+      handlers.set(name, handler),
+    events: { on: vi.fn(), emit: vi.fn() },
+  };
+  const ctx = {
+    cwd: "/repo",
+    hasUI: false,
+    thinkingLevel: "high",
+    sessionManager: { getSessionId: () => "s1" },
+  };
+  return { pi, ctx, handlers };
+}
+describe("native identity lifecycle", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(resolveNativeIdentity).mockResolvedValue(resolved as any);
+  });
+  it("awaits startup and contributes exactly once on each reconstructed standalone prompt", async () => {
+    const { pi, ctx, handlers } = fixture();
+    extension(pi as any);
+    expect(handlers.get("input")?.()).toEqual({ action: "handled" });
+    for (let n = 0; n < 3; n++) {
+      await handlers.get("session_start")?.({}, ctx);
+      const value = await handlers.get("before_agent_start")?.(
+        { systemPrompt: "ordinary policy\nuser append" },
+        ctx,
+      );
+      expect(value.systemPrompt).toBe(
+        `ordinary policy\nuser append\n\n${resolved.instruction}`,
+      );
+      expect(handlers.get("input")?.()).toBeUndefined();
+    }
+  });
+  it("composes with a prompt owner without installing another renderer", async () => {
+    const { pi, ctx, handlers } = fixture();
+    const lifecycle = createMillstrandIdentityLifecycle(pi as any);
+    await lifecycle.sessionStart(ctx as any);
     expect(handlers.has("before_agent_start")).toBe(false);
-    await handlers.get("session_start")?.(
-      {},
-      {
-        cwd: "/repo",
-        hasUI: false,
-        model: { id: "gpt" },
-        thinkingLevel: "high",
-        sessionManager: { getSessionId: () => "session-1" },
-        signal: new AbortController().signal,
-      },
+    expect(lifecycle.guidanceContext).toEqual({
+      selection: { kind: "unmanaged" },
+      bundle: null,
+    });
+    expect(lifecycle.identityState).toMatchObject({
+      status: "bound",
+      instruction: resolved.instruction,
+    });
+  });
+  it("blocks input and requests after registration failure", async () => {
+    const { pi, ctx } = fixture();
+    const lifecycle = createMillstrandIdentityLifecycle(pi as any);
+    vi.mocked(resolveNativeIdentity).mockRejectedValueOnce(
+      new Error("startup failed"),
     );
-
-    expect(emitted).toContainEqual([
-      MILLSTRAND_IDENTITY_CONTEXT_EVENT,
-      resolvedIdentity,
-    ]);
-    expect(emitted).toContainEqual([
-      MILLSTRAND_IDENTITY_STATE_EVENT,
-      { status: "bound", ...resolvedIdentity },
-    ]);
-    expect(emitted).toContainEqual([
-      MILLSTRAND_GUIDANCE_CONTEXT_EVENT,
-      { selection: { kind: "unmanaged" }, bundle: null },
-    ]);
+    await expect(lifecycle.sessionStart(ctx as any)).rejects.toThrow(
+      "startup failed",
+    );
+    expect(lifecycle.input()).toEqual({ action: "handled" });
+    const abort = vi.fn();
+    lifecycle.beforeProviderRequest({ payload: {} }, { abort });
+    expect(abort).toHaveBeenCalledOnce();
+  });
+  it("does not reuse managed correlation after native session changes or reloads", async () => {
+    const { pi, ctx } = fixture();
+    const lifecycle = createMillstrandIdentityLifecycle(pi as any);
+    await lifecycle.sessionStart(ctx as any);
+    ctx.sessionManager.getSessionId = () => "child";
+    vi.mocked(resolveNativeIdentity).mockResolvedValue({
+      ...resolved,
+      nativeSessionId: "child",
+      identity: "native-child",
+    } as any);
+    await lifecycle.sessionStart(ctx as any);
+    expect(resolveNativeIdentity).toHaveBeenLastCalledWith(
+      pi.exec,
+      expect.objectContaining({
+        runId: undefined,
+        parentIdentity: "native-parent",
+      }),
+    );
+    await lifecycle.sessionStart(ctx as any);
+    expect(resolveNativeIdentity).toHaveBeenLastCalledWith(
+      pi.exec,
+      expect.objectContaining({ runId: undefined }),
+    );
   });
 });

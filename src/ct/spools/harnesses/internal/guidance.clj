@@ -32,7 +32,9 @@
   "Public managed-guidance transport names."
   #{"legacy" "native-v1" "launch"})
 
-(def ^:private managed-harnesses #{"codex" "pi"})
+(def ^:private native-identity-harnesses
+  "Providers whose identity and run registration come from native startup."
+  #{"codex" "pi"})
 (def ^:private bootstrap-keys
   #{"schema" "transport" "run-id" "attempt" "invocation" "harness"
     "bundle-sha256" "capability-sha256"})
@@ -95,19 +97,25 @@
 (defn select!
   "Select and preflight guidance before run publication or identity reservation."
   [rt {:keys [harness mode requested inherited effective] :as request}]
-  (if (= "codex" harness)
+  (if (contains? native-identity-harnesses harness)
     (do
       (when (and requested (not= "launch" requested))
-        (spool/fail! "Codex uses ordinary launch guidance; transport selection is unsupported" {}))
+        (spool/fail!
+         "Native identity providers use ordinary launch prompts; transport selection is unsupported"
+         {:harness harness}))
       nil)
+    ;; Only maintenance providers reach this branch. The retained native-v1
+    ;; capability admission is inert because no provider selects that transport
+    ;; any more; the integration follow-up can prune it with the shared
+    ;; machinery.
     (let [transport (parse-transport (or requested inherited "legacy"))]
       (when (and (= "native-v1" transport)
                  (= :interactive mode)
-                 (contains? managed-harnesses harness))
+                 (contains? native-identity-harnesses harness))
         (spool/fail!
          "Native guidance does not support interactive launches; submit legacy work"
          {:harness harness :mode mode :guidance-transport transport}))
-      (if-not (contains? managed-harnesses harness)
+      (if-not (contains? native-identity-harnesses harness)
         (do
           (when (= "native-v1" transport)
             (spool/fail! "Native guidance supports only Codex and Pi"

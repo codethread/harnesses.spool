@@ -30,7 +30,6 @@
   (testing "new headless runs separate system identity from prompt stdin"
     (is (= {:argv ["pi" "--print" "--mode" "json"
                    "--session-id" "provisional"
-                   "--append-system-prompt" "You are agent tidy-brave-swan."
                    "--append-system-prompt" "Review changes only."
                    "--append-system-prompt" "Do not edit files."
                    "--model" "gpt-test" "--thinking" "adaptive"
@@ -41,7 +40,6 @@
   (testing "resumed headless runs select the session and reapply pinned guidance"
     (is (= {:argv ["pi" "--print" "--mode" "json"
                    "--session" "provisional"
-                   "--append-system-prompt" "You are agent tidy-brave-swan."
                    "--append-system-prompt" "Review changes only."
                    "--append-system-prompt" "Do not edit files."
                    "--model" "gpt-test" "--thinking" "adaptive"
@@ -52,7 +50,6 @@
                        (run "headless" {:harness/resumes "prior"})))))
   (testing "interactive runs retain a host-TTY prompt"
     (is (= {:argv ["pi" "--session-id" "provisional"
-                   "--append-system-prompt" "You are agent tidy-brave-swan."
                    "--append-system-prompt" "Review changes only."
                    "--append-system-prompt" "Do not edit files."
                    "--model" "gpt-test" "--thinking" "adaptive"

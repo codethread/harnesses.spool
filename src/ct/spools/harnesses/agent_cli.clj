@@ -10,7 +10,6 @@
             [ct.spools.harnesses.internal.cli :as cli]
             [ct.spools.harnesses.internal.lifecycle :as life]
             [ct.spools.harnesses.reconciliation :as reconciliation]
-            [ct.spools.harnesses.native-session :as native-session]
             [ct.spools.harnesses.reviewers :as reviewers]
             [millhouse.spools.identity :as identity]
             [millstrand.api.graph.alpha :as graph]
@@ -123,9 +122,10 @@
      ["show"] (op-show runtime args)
      ["runs"] (op-runs runtime args)
      ["native-startup"]
-     (native-session/register!
+     (harness/register-native-session!
       runtime (assoc (select-keys args [:harness :native-session-id :model :thinking-level
-                                        :run-reference :parent-identity])
+                                        :run-reference :run-id :parent-identity
+                                        :parent-native-session-id])
                      :cwd cwd))
      ["startup"] (harness/managed-startup!
                   runtime
@@ -302,11 +302,14 @@
            :settled (life/settled? run)
            :session-id (attr-get run :harness/session-id)}
     (attr-get run :harness/observed-model)
-    (assoc :model (attr-get run :harness/observed-model))
+    (assoc :model (attr-get run :harness/observed-model)
+           :observed-model (attr-get run :harness/observed-model))
     (attr-get run :harness/observed-effort)
-    (assoc :effort (attr-get run :harness/observed-effort))
+    (assoc :effort (attr-get run :harness/observed-effort)
+           :observed-effort (attr-get run :harness/observed-effort))
     (attr-get run :harness/ownership)
-    (assoc :origin (attr-get run :harness/ownership))
+    (assoc :origin (attr-get run :harness/ownership)
+           :ownership (attr-get run :harness/ownership))
     (attr-get run :harness/settlement)
     (assoc :settlement (attr-get run :harness/settlement))
     (attr-get run :harness/settlement-gap)

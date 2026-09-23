@@ -3,7 +3,6 @@
   (:require [clojure.test :refer [deftest is]]
             [ct.spools.harnesses.guidance-representation-fixture :as representation-fixture]
             [ct.spools.harnesses.internal.cli :as cli]
-            [ct.spools.harnesses.internal.guidance :as guidance]
             [ct.spools.harnesses.internal.guidance-prompt-controls :as prompt]
             [ct.spools.harnesses.providers.pi :as pi]))
 
@@ -86,27 +85,6 @@
     (let [unchanged (vec argv)]
       (is (nil? (prompt/reject! "pi" argv)))
       (is (= unchanged argv)))))
-
-(deftest pi-reported-consumption-boundary-precedes-capability-execution
-  (is (thrown-with-msg?
-       clojure.lang.ExceptionInfo
-       #"raw provider prompt controls"
-       (guidance/select!
-        {:metadata {:config-dir "/tmp"}}
-        {:harness "pi" :requested "native-v1" :mode :headless
-         :cwd "/tmp" :env {}
-         :effective
-         {:harness/extra-argv
-          ["--name" "--" "--system-prompt" "competing"]}})))
-  (is (thrown-with-msg?
-       clojure.lang.ExceptionInfo
-       #"no accepted production capability"
-       (guidance/select!
-        {:metadata {:config-dir "/tmp"}}
-        {:harness "pi" :requested "native-v1" :mode :headless
-         :cwd "/tmp" :env {}
-         :effective {:harness/extra-argv
-                     ["--name" "--system-prompt"]}}))))
 
 (deftest pi-launch-preserves-owned-extra-argv-byte-for-byte
   (let [extra ["--name" "--system-prompt"

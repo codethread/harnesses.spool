@@ -84,10 +84,13 @@
     {:doc "Register actual native identity and run participation without launching."
      :hook-class :mutating
      :deadline-class :standard
-     :flags {:model {:type :string :required? true :doc "Actual host model."}
+     :flags {:model {:type :string :doc "Actual host model; required for codex."}
              :thinking-level {:type :string :doc "Observed reasoning effort, when available."}
-             :run-reference {:type :string :doc "Managed run ID:invocation reference."}
-             :parent-identity {:type :string :doc "Resolved native parent identity."}}
+             :run-reference {:type :string :doc "Managed codex run ID:invocation reference."}
+             :run-id {:type :string :doc "Existing managed pi run correlation."}
+             :parent-identity {:type :string :doc "Resolved native parent identity."}
+             :parent-native-session-id {:type :string
+                                        :doc "Parent session observed in the native host header."}}
      :positionals [{:name :harness :type :string :required? true
                     :doc "Actual native provider: codex or pi."}
                    {:name :native-session-id :type :string :required? true

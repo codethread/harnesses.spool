@@ -56,8 +56,6 @@
                  :session-id (attribute run :harness/session-id)
                  :model (attribute run :harness/model)
                  :effort (attribute run :harness/effort)
-                 :identity-prompt (attribute run :identity/prompt)
-                 :guidance-transport (guidance/transport run)
                  :appended-system-prompts
                  (or (attribute run :harness/appended-system-prompts) [])
                  :prompt (attribute run :harness/prompt)
@@ -137,23 +135,15 @@
            {:extra-argv extra})))
 
 (defn- pi-command
-  [{:keys [mode resumes session-id model effort identity-prompt
-           appended-system-prompts prompt extra guidance-transport]}]
+  [{:keys [mode resumes session-id model effort
+           appended-system-prompts prompt extra]}]
   (let [interactive? (= "interactive" mode)]
     (vec
      (concat
       ["pi"]
       (when-not interactive? ["--print" "--mode" "json"])
       (if resumes ["--session" session-id] ["--session-id" session-id])
-      ;; Pi reconstructs the system prompt from the launch options every time, so
-      ;; a resumed run drops pinned identity and policy guidance unless it is
-      ;; reapplied here.
-      (when (and (= "legacy" guidance-transport)
-                 (not (str/blank? identity-prompt)))
-        ["--append-system-prompt" identity-prompt])
-      (when (= "legacy" guidance-transport)
-        (mapcat #(vector "--append-system-prompt" %)
-                appended-system-prompts))
+      (mapcat #(vector "--append-system-prompt" %) appended-system-prompts)
       (when model ["--model" model])
       (when effort ["--thinking" effort])
       extra

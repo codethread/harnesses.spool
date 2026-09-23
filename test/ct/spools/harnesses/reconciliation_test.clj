@@ -239,14 +239,14 @@
                          '[millstrand.api.weaver.alpha :as weaver])
                 (let [rt (current/runtime)
                       _ (harnesses/register-harness!
-                         rt :pi
+                         rt :codex
                          {:modes #{:interactive}
                           :prepare 'ct.spools.harnesses/create!
                           :finish 'ct.spools.harnesses/finish!})
                       pid (.pid (java.lang.ProcessHandle/current))
                       start-attributes (reconcile/completion-owner-attributes pid)
                       live (harnesses/create!
-                            rt {:harness :pi :mode :interactive})
+                            rt {:harness :codex :mode :interactive})
                       live-start (harnesses/begin-attempt!
                                   rt (:id live) start-attributes)
                       _ (reconcile/register-provider!
@@ -268,7 +268,7 @@
                           false
                           (catch clojure.lang.ExceptionInfo _ true)))
                       reused (harnesses/create!
-                              rt {:harness :pi :mode :interactive})
+                              rt {:harness :codex :mode :interactive})
                       reused-start (harnesses/begin-attempt!
                                     rt (:id reused) start-attributes)
                       _ (reconcile/register-provider!
@@ -286,10 +286,10 @@
                         (weaver/op! rt 'agent ["reconcile" (:id reused)]))
                       target (weaver/add! rt {:title "Reconciliation target"})
                       legacy (harnesses/create!
-                              rt {:harness :pi :mode :interactive
+                              rt {:harness :codex :mode :interactive
                                   :target (:id target)})
                       _ (harnesses/begin-attempt! rt (:id legacy))
-                      actor (spool/attr-get legacy :identity/id)
+                      actor "reconciliation-operator"
                       before-dry-run (weaver/show rt (:id legacy))
                       dry-run (weaver/op! rt 'agent
                                           ["reconcile" (:id legacy) "--dry-run"])
@@ -314,14 +314,14 @@
                       target-blocked?
                       (try
                         (harnesses/create!
-                         rt {:harness :pi :mode :interactive
+                         rt {:harness :codex :mode :interactive
                              :target (:id target)})
                         false
                         (catch clojure.lang.ExceptionInfo _ true))
                       same-session-blocked?
                       (try
                         (harnesses/create!
-                         rt {:harness :pi :mode :interactive
+                         rt {:harness :codex :mode :interactive
                              :session-id
                              (spool/attr-get stored :harness/session-id)})
                         false
