@@ -126,7 +126,7 @@
        (is (= {:status "failed" :settled "true"} (:first result)))
        (is (= [1 2] (:attempts result)))
        (is (true? (:invocations-differ result)))
-       (is (= ["not-required" "not-required"]
+       (is (= []
               (:guidance-states result)))
        (is (= "v2" (:second-callback-contract result)))
        (is (true? (:second-provider-fenced result)))
@@ -174,7 +174,7 @@
                        (let [run (weaver/show rt (:id created))]
                          {:run run
                           :identity
-                          (identity/current rt (spool/attr-get run :identity/id))
+                          (spool/attr-get run :identity/id)
                           :strand-count (count (weaver/list rt))}))]
                  (with-redefs
                   [pi/finish

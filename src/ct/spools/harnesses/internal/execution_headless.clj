@@ -8,6 +8,7 @@
             [ct.spools.harnesses.internal.launcher :as launcher]
             [ct.spools.harnesses.internal.lifecycle :as life]
             [ct.spools.harnesses.internal.managed-startup :as managed]
+            [ct.spools.harnesses.internal.native-environment :as native-env]
             [ct.spools.harnesses.internal.process-custody :as custody]
             [millstrand.api.spool.alpha :refer [attr-get fail! require-valid!]]
             [millstrand.api.weaver.alpha :as weaver]))
@@ -123,29 +124,38 @@
         (when (and bootstrap
                    (some? (attr-get run :harness/guidance-version)))
           (guidance/bootstrap run))]
-    {:argv (if (= "codex" (attr-get run :harness/harness))
+    {:argv (cond
+             (= "codex" (attr-get run :harness/harness))
              (into ["/usr/bin/env" "-u" "MILLSTRAND_AGENT_ID"
                     "-u" "MILLSTRAND_MANAGED_BOOTSTRAP"
                     "-u" "MILLSTRAND_MANAGED_GUIDANCE"] argv)
-             argv)
+             (= "pi" (attr-get run :harness/harness))
+             (native-env/scrub-command argv)
+             :else argv)
      :cwd (or validated-cwd (attr-get run :harness/cwd))
-     :env (cond-> (assoc (if (= "codex" (attr-get run :harness/harness))
-                           (dissoc env "MILLSTRAND_AGENT_ID"
-                                   "MILLSTRAND_MANAGED_BOOTSTRAP"
-                                   "MILLSTRAND_MANAGED_GUIDANCE")
-                           (or env {}))
-                         "MILLSTRAND_RUN_ID" (:id run)
-                         "MILLSTRAND_WORKSPACE" (launcher/workspace rt))
+     :env (cond
             (= "codex" (attr-get run :harness/harness))
-            (assoc "MILLSTRAND_RUN_REFERENCE" (native-session/reference run))
-            (and (not= "codex" (attr-get run :harness/harness))
-                 (attr-get run :identity/id))
-            (assoc "MILLSTRAND_AGENT_ID" (attr-get run :identity/id))
-            bootstrap
-            (assoc "MILLSTRAND_MANAGED_BOOTSTRAP" (json/write-str bootstrap))
-            guidance-document
-            (assoc "MILLSTRAND_MANAGED_GUIDANCE"
-                   (json/write-str guidance-document)))
+            (-> (or env {})
+                (dissoc "MILLSTRAND_AGENT_ID"
+                        "MILLSTRAND_MANAGED_BOOTSTRAP"
+                        "MILLSTRAND_MANAGED_GUIDANCE")
+                (assoc "MILLSTRAND_RUN_ID" (:id run)
+                       "MILLSTRAND_WORKSPACE" (launcher/workspace rt)
+                       "MILLSTRAND_RUN_REFERENCE" (native-session/reference run)))
+            (= "pi" (attr-get run :harness/harness))
+            (assoc (apply dissoc (or env {}) native-env/ownership-keys)
+                   "MILLSTRAND_RUN_ID" (:id run))
+            :else
+            (cond-> (assoc (or env {})
+                           "MILLSTRAND_RUN_ID" (:id run)
+                           "MILLSTRAND_WORKSPACE" (launcher/workspace rt))
+              (attr-get run :identity/id)
+              (assoc "MILLSTRAND_AGENT_ID" (attr-get run :identity/id))
+              bootstrap
+              (assoc "MILLSTRAND_MANAGED_BOOTSTRAP" (json/write-str bootstrap))
+              guidance-document
+              (assoc "MILLSTRAND_MANAGED_GUIDANCE"
+                     (json/write-str guidance-document))))
      :stdin stdin}))
 
 (defn finish-process!

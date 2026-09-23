@@ -29,6 +29,7 @@
             [ct.spools.harnesses.managed-startup-legacy-test]
             [ct.spools.harnesses.managed-startup-validation-test]
             [ct.spools.harnesses.managed-startup-evidence-test]
+            [ct.spools.harnesses.native-registration-test]
             [ct.spools.harnesses.native-resume-cli-replay-test]
             [ct.spools.harnesses.providers.claude-test]
             [ct.spools.harnesses.providers.codex-test]
@@ -71,6 +72,7 @@
     ct.spools.harnesses.managed-startup-legacy-test
     ct.spools.harnesses.managed-startup-validation-test
     ct.spools.harnesses.managed-startup-evidence-test
+    ct.spools.harnesses.native-registration-test
     ct.spools.harnesses.native-resume-cli-replay-test
     ct.spools.harnesses.providers.claude-test
     ct.spools.harnesses.providers.codex-test

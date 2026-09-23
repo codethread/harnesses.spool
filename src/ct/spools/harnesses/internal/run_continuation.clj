@@ -8,7 +8,6 @@
             [ct.spools.harnesses.internal.lifecycle :as life]
             [ct.spools.harnesses.internal.managed-startup :as managed]
             [ct.spools.harnesses.internal.registry :as registry]
-            [ct.spools.harnesses.internal.run-creation :as creation]
             [ct.spools.harnesses.internal.runs :as runs]
             [millstrand.api.spool.alpha :refer [attr-get fail!]])
   (:import [java.util UUID]))
@@ -114,7 +113,6 @@
           selected-transport
           (guidance/parse-transport (or (:guidance-transport request)
                                         inherited-transport))
-          _ (creation/require-guidance-lineage! run selected-transport)
           frozen-guidance-template
           (attr-get run :harness/guidance-context-template)
           _ (when (and (= "native-v1" selected-transport)
@@ -143,7 +141,7 @@
           guidance-selection
           (guidance/select!
            rt {:harness concrete
-               :requested selected-transport
+               :requested (if (= "pi" concrete) (:guidance-transport request) selected-transport)
                :mode (keyword (attr-get run :harness/mode))
                :cwd cwd
                :env (:env resolved)
@@ -228,11 +226,6 @@
                  (and (= "codex" (attr-get run :harness/harness))
                       (not= "native-startup" (attr-get run :harness/native-attachment-source)))
                  {:eligible? false :reason "Codex native startup has not registered this run"}
-
-                 (and legacy? (= "pi" (attr-get run :harness/harness)))
-                 (do
-                   (managed/require-legacy-pi-continuation! rt run)
-                   (life/resume-eligibility run (count writers)))
 
                  legacy?
                  {:eligible? false
@@ -344,7 +337,6 @@
         (guidance/parse-transport (or guidance-transport inherited-transport))
         frozen-guidance-template
         (attr-get run :harness/guidance-context-template)
-        _ (creation/require-guidance-lineage! run selected-transport)
         _ (when (and (= "native-v1" selected-transport)
                      (nil? frozen-guidance-template))
             (fail! "Native resume requires a versioned frozen guidance template"
@@ -372,7 +364,8 @@
                                 :mode (or mode (attr-get run :harness/mode))
                                 :cwd (or cwd (attr-get run :harness/cwd))
                                 :attributes overrides
-                                :guidance-transport selected-transport
+                                :guidance-transport (if (= "pi" (attr-get run :harness/harness))
+                                                      guidance-transport selected-transport)
                                 :resumes id
                                 :logical-id (life/logical-id run)
                                 :session-id (attr-get run :harness/session-id)}
@@ -389,7 +382,8 @@
                          (assoc :resume-selector-intent
                                 resume-selector-intent))
         create-request (cond-> create-request
-                         (= "codex" (attr-get run :harness/harness))
+                         (managed/managed-harness?
+                          (attr-get run :harness/harness))
                          (dissoc :guidance-transport))
         fingerprint (life/fingerprint (dissoc create-request :request-id))]
     #_{:clj-kondo/ignore [:locking-suspicious-lock]}

@@ -4,22 +4,10 @@
             [ct.spools.harnesses.catalog :as catalog]
             [ct.spools.harnesses.internal.guidance :as guidance]
             [ct.spools.harnesses.internal.lifecycle :as life]
-            [ct.spools.harnesses.internal.managed-startup :as managed]
             [ct.spools.harnesses.internal.registry :as registry]
             [ct.spools.harnesses.internal.runs :as runs]
-            [millstrand.api.spool.alpha :refer [attr-get fail!]])
+            [millstrand.api.spool.alpha :refer [fail!]])
   (:import [java.util UUID]))
-
-(defn require-guidance-lineage!
-  "Reject native transport for pre-reservation Pi continuation lineage."
-  [run transport]
-  (when (and (= "native-v1" (guidance/parse-transport transport))
-             (= "pi" (attr-get run :harness/harness))
-             (managed/legacy-managed-run? run))
-    (fail! "Pre-reservation Pi continuations require legacy guidance transport"
-           {:run-id (:id run)
-            :guidance-transport transport
-            :remedy "Explicitly select --guidance-transport legacy."})))
 
 (defn fingerprint
   "Return the stable idempotency fingerprint for one create request."
@@ -59,10 +47,6 @@
         cwd (or cwd (System/getProperty "user.dir"))
         requested-session-id session-id
         session-id (or session-id (str (UUID/randomUUID)))
-        _ (when resumes
-            (require-guidance-lineage!
-             (runs/require-run rt resumes)
-             (or guidance-transport "legacy")))
         guidance-selection
         (guidance/select!
          rt {:harness harness

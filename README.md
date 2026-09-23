@@ -355,8 +355,9 @@ strand agent run reviewer --prompt "Review this change" \
   --append-system-prompt "Focus on concurrency risks."
 ```
 
-Claude and Pi receive one native append flag per contribution. Codex receives accumulated ordinary contributions joined with blank lines; its
-identity comes from the native hook. Cursor receives identity plus appends.
+Claude and Pi receive one native append flag per ordinary guidance contribution.
+Codex receives accumulated ordinary contributions joined with blank lines; its
+identity comes from the native hook. Cursor receives the identity plus appends.
 System-prompt injection is rebuilt from frozen run data for every launch,
 including native resume.
 
@@ -439,37 +440,91 @@ values rather than encoding shell argv as JSON. The created run remains the
 same tracked interactive lifecycle driven by `agent run --interactive`, its
 private launcher, `_started`, and `_finished`.
 
-## Codex native identity and run registration
+## Native identity and run registration (Codex and Pi)
 
-Codex creates no identity before launch. Its ordinary task, role, frozen policy,
-and ordered alias/user appends stay on the launch prompt and developer-instruction
-paths. Only the canonical identity contribution comes from native startup.
-Claude and Cursor retain their maintenance transports. Pi's adapter cutover is
-tracked separately; its existing managed transport remains operational here.
+Codex and Pi create no identity before launch. Their ordinary task, role, frozen
+policy, and ordered alias/user appends stay on the launch prompt and
+developer-instruction paths. Only the canonical identity contribution comes from
+native startup. Claude and Cursor retain their maintenance transports.
 
-The packaged hook gates on the launch project's canonical `.millstrand`
-workspace, including Git linked worktrees. Outside such a project it does
-nothing—even if workspace or managed hints were inherited. It never starts a
-Weaver, creates a workspace, or uses a global fallback. Enable/trust the packaged
-SessionStart and SubagentStart hooks in the host before using this integration.
+The packaged hooks gate on the launch project's canonical `.millstrand`
+workspace, including Git linked worktrees. Outside such a project they do
+nothing—even if workspace or managed hints were inherited. They never start a
+Weaver, create a workspace, or use a global fallback. Enable/trust the packaged
+hooks in the host before using this integration.
+
+Codex managed roots carry only `MILLSTRAND_RUN_REFERENCE=RUN_ID:INVOCATION`.
+Pi managed correlation is only `MILLSTRAND_RUN_ID`, and there is no Pi
+reservation, identity-bearing bootstrap, generated identity append, or
+guidance-transport selection. Task, policy and ordered alias/user guidance stay
+on ordinary prompt paths. Startup failure is visible; a process exit cannot
+invent attachment. Same-session resume retains identity but attaches each new
+managed invocation.
 
 The small registration boundary is:
 
 ```text
 strand --workspace PROJECT_WORKSPACE --cwd SESSION_CWD \
-  agent native-startup codex ACTUAL_NATIVE_ID --model ACTUAL_MODEL \
-  [--run-reference RUN_ID:INVOCATION] [--parent-identity FRIENDLY]
+  agent native-startup HARNESS ACTUAL_NATIVE_ID --model ACTUAL_MODEL \
+  [--run-reference RUN_ID:INVOCATION] [--run-id MANAGED_RUN_ID] \
+  [--parent-identity FRIENDLY] [--parent-native-session-id HOST_HEADER_ID]
 ```
 
-`ct.spools.harnesses.native-session/register!` composes Millhouse Identity startup.
-The callback returns `identity`, `strand-id`, `instruction`, `result`, `run-id`,
-and `observed-effort`. The hook awaits this result, validates the canonical
-instruction, and returns developer `additionalContext` before model work.
-Startup, resume, clear, and compact each reconstruct one current contribution.
-SubagentStart uses `codex-child:v1:<base64url(parent)>:<base64url(agent)>`, resolves
-parent identity separately, and never consumes inherited root run correlation.
+`ct.spools.harnesses/register-native-session!` dispatches on the provider and
+composes Millhouse Identity startup. Codex uses
+`ct.spools.harnesses.native-session/register!`, which fences the exact managed
+invocation through `--run-reference RUN_ID:INVOCATION`; the hook awaits the
+result, validates the canonical instruction, and returns developer
+`additionalContext` before model work. Pi uses
+`ct.spools.harnesses.internal.native-registration/register!`, where `--run-id`
+must match the pinned native session, current running attempt/invocation,
+provider and cwd, and a native fork header supplies `--parent-native-session-id`
+with parent attribution. Startup, resume, clear, and compact each reconstruct one
+current contribution. Codex SubagentStart uses
+`codex-child:v1:<base64url(parent)>:<base64url(agent)>`, resolves parent identity
+separately, and never consumes inherited root run correlation.
 
 ### Shared persistence contract
+
+- Managed launch correlation is provider-specific: Codex passes
+  `MILLSTRAND_RUN_REFERENCE=RUN_ID:INVOCATION`; Pi passes `MILLSTRAND_RUN_ID` for
+  its pinned session. `MILLSTRAND_RUN_ID` remains ordinary run metadata, not
+  identity authority.
+- There is no Codex or Pi identity reservation, identity environment variable,
+  rich bootstrap document, transport selection, completion-time mint, or legacy
+  repair. Pi's former reservation/guidance APIs are removed.
+- Publication commits request/target tracking without a worker identity.
+  Native registration validates the running invocation, provider, canonical cwd,
+  expected resume session and competing writers. It sets `identity/id`, the actual
+  `harness/session-id`, and the identity's `performed` edge to that exact run.
+- Attachment retains `harness/native-attached=true`, `native-attached-at`,
+  `native-attachment-source=native-startup`, and managed
+  `native-attachment-attempt`/`native-attachment-invocation`. Provenance and the run
+  patch commit together. Identity lookup/mint is independently idempotent.
+- Without a managed reference, registration creates/reuses one run per
+  provider/native session. It has `harness/mode=external` and
+  `harness/ownership=external`, no alias, target, attempt, invocation, launch
+  custody or settlement assertion. It does not spawn an agent or claim work.
+  Harnesses refuses process stop/completion for these externally owned sessions.
+- `harness/observed-model` records the actual host model. Codex hooks do not
+  report reasoning effort: `harness/observed-effort` is the literal **`unknown`**
+  unless an authoritative managed selection supplies it. Consumers display
+  **Unknown**. This metadata is separate from `harness/effort`, the provider
+  option; the unknown marker is never passed as a reasoning-effort setting.
+- Alias visibility policy is unchanged. An external run without an alias does
+  not acquire unrestricted delegation visibility.
+
+Same-session callbacks recover the identity and direct registration. Managed
+resume keeps its true lineage but waits for its own native callback to record
+participation. Fresh retries/children get fresh native identities. Request replay
+and target exclusivity are independent of registration. A missing callback or
+inconsistent observed thread produces a visible bootstrap failure at completion,
+without discarding genuine process settlement. Registration is not custody or
+proof that a model obeyed its context. Missing/disabled hooks cannot themselves
+block a host; completion never pretends that such a run integrated successfully.
+
+Source delivery does not install plugins, update consumers, or restart a runtime.
+Combined provider acceptance and package/runtime rollout are downstream.
 
 - Managed launch correlation is only `MILLSTRAND_RUN_REFERENCE=RUN_ID:INVOCATION`.
   `MILLSTRAND_RUN_ID` remains ordinary run metadata, not identity authority.
@@ -668,9 +723,9 @@ used verbatim. Frozen provider guidance carries state-independent ownership
 rules, so native resume does not replay a stale first-claim assertion. A fresh
 `--after` run keeps the target, policy, logical lineage, and ancestor history,
 then receives guidance for ownership at its own acceptance. Process exit never
-closes the target or releases its dependency chain. Codex assignment guidance refers to the native startup identity instead of
-interpolating a pre-created name. Other providers retain their current launch
-identity paths.
+closes the target or releases its dependency chain. Codex and Pi assignment
+guidance refers to the native startup identity instead of interpolating a
+pre-created name. Other providers retain their current launch identity paths.
 
 Publication receipts (`agent show` and `agent assign`) expose
 `publication-phase`, `publication-outcome`, and, on interruption,

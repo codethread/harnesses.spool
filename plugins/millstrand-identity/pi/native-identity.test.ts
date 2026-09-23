@@ -1,146 +1,116 @@
-import { describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   getNativeIdentityInputs,
-  isLegacyManagedPiEnvironment,
+  projectWorkspace,
   resolveNativeIdentity,
 } from "./native-identity.js";
 
-describe("resolveNativeIdentity", () => {
-  it("binds the actual Pi session with a cwd-scoped absolute workspace route", async () => {
-    const exec = vi.fn(async () => ({
-      stdout: JSON.stringify({
-        operation: "identity startup",
-        identity: "warm-silver-lemur",
-        "strand-id": "abc12",
-        result: "minted",
-        instruction:
-          "Your Millstrand identity is warm-silver-lemur. Use it as `--owner warm-silver-lemur` for `kanban claim` and `--by-identity warm-silver-lemur` for Kanban notes, workflow mutations, and agent operations. Keep `--identity` and `--parent-identity` for native-session references. Inspect live help; never pass an unsupported flag or invent another identity.",
-      }),
-      stderr: "",
-      code: 0,
-      killed: false,
-    }));
+const roots: string[] = [];
+function project() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-native-")));
+  roots.push(root);
+  execFileSync("git", ["init", "-q", root]);
+  mkdirSync(join(root, ".millstrand"));
+  return root;
+}
+afterEach(() =>
+  roots
+    .splice(0)
+    .forEach((root) => rmSync(root, { recursive: true, force: true })),
+);
+const ok = (stdout: string) => ({ stdout, stderr: "", code: 0, killed: false });
 
+describe("native identity boundary", () => {
+  it("derives canonical routing, records actual host data and only minimal correlation", async () => {
+    const root = project();
+    const exec = vi.fn(async (command: string) =>
+      command === "git"
+        ? ok(join(root, ".git"))
+        : ok(
+            JSON.stringify({
+              operation: "agent native-startup",
+              identity: "native-parent",
+              "strand-id": "i1",
+              "run-id": "r1",
+              instruction: "Your Millstrand identity is native-parent.",
+              result: "minted",
+            }),
+          ),
+    );
     const result = await resolveNativeIdentity(exec as any, {
-      cwd: "/repo/worktree",
-      nativeSessionId: "pi-session-1",
-      workspace: "./world/.millstrand",
-      identity: "warm-silver-lemur",
-      parentIdentity: "calm-green-otter",
-      model: "gpt-5",
+      cwd: root,
+      nativeSessionId: "actual-session",
+      runId: "r1",
+      model: "provider/model",
       thinkingLevel: "high",
     });
-
-    expect(exec).toHaveBeenCalledWith(
+    expect(result).toMatchObject({
+      identity: "native-parent",
+      runId: "r1",
+      nativeSessionId: "actual-session",
+      workspace: join(root, ".millstrand"),
+    });
+    expect(exec.mock.calls[1]).toEqual([
       "strand",
       [
-        "--cwd",
-        "/repo/worktree",
         "--workspace",
-        "/repo/worktree/world/.millstrand",
-        "identity",
-        "startup",
-        "--identity",
-        "warm-silver-lemur",
-        "--parent-identity",
-        "calm-green-otter",
+        join(root, ".millstrand"),
+        "--cwd",
+        root,
+        "agent",
+        "native-startup",
+        "pi",
+        "actual-session",
+        "--run-id",
+        "r1",
         "--model",
-        "gpt-5",
+        "provider/model",
         "--thinking-level",
         "high",
-        "pi",
-        "pi-session-1",
       ],
-      expect.objectContaining({ cwd: "/repo/worktree", timeout: 10_000 }),
-    );
-    expect(result).toMatchObject({
-      identity: "warm-silver-lemur",
-      strandId: "abc12",
-      result: "minted",
-      nativeSessionId: "pi-session-1",
-      workspace: "/repo/worktree/world/.millstrand",
-    });
+      expect.objectContaining({ cwd: root }),
+    ]);
   });
-
-  it("surfaces unavailable Strand and malformed responses without fabricating identity", async () => {
-    const unavailable = vi.fn(async () => ({
-      stdout: "",
-      stderr: "connection refused",
-      code: 1,
-      killed: false,
-    }));
-    await expect(
-      resolveNativeIdentity(unavailable as any, {
-        cwd: "/repo",
-        nativeSessionId: "session-1",
-      }),
-    ).rejects.toThrow(
-      "Strand identity startup failed (exit 1): connection refused",
-    );
-
-    const wrongOperation = vi.fn(async () => ({
-      stdout: JSON.stringify({
-        operation: "identity reserve",
-        identity: "wrong-operation",
-        "strand-id": "abc12",
-        result: "minted",
-        instruction: "wrong operation instruction",
-      }),
-      stderr: "",
-      code: 0,
-      killed: false,
-    }));
-    await expect(
-      resolveNativeIdentity(wrongOperation as any, {
-        cwd: "/repo",
-        nativeSessionId: "session-1",
-      }),
-    ).rejects.toThrow("unexpected identity startup operation");
-
-    const malformed = vi.fn(async () => ({
-      stdout:
-        '{"operation":"identity startup","identity":"invented-without-contract"}',
-      stderr: "",
-      code: 0,
-      killed: false,
-    }));
-    await expect(
-      resolveNativeIdentity(malformed as any, {
-        cwd: "/repo",
-        nativeSessionId: "session-1",
-      }),
-    ).rejects.toThrow("incomplete identity startup response");
-  });
-});
-
-describe("native identity inputs", () => {
-  it("uses explicit host settings and child parent metadata without adopting ambient ownership", () => {
-    const getFlag = vi.fn((name: string) =>
-      name === "millstrand-identity"
-        ? "existing-friendly-name"
-        : name === "millstrand-workspace"
-          ? "/explicit/world"
-          : undefined,
-    );
+  it("does nothing outside the launch project even with inherited ownership", async () => {
+    const exec = vi.fn(async () => ({ ...ok(""), code: 128 }));
     expect(
-      getNativeIdentityInputs({ getFlag } as any, {
-        MILLSTRAND_AGENT_ID: "ambient-owner-is-not-a-supply",
-        MILLSTRAND_PI_PARENT_IDENTITY: "parent-friendly-name",
+      await resolveNativeIdentity(exec as any, {
+        cwd: "/tmp",
+        nativeSessionId: "s",
+        runId: "parent",
       }),
-    ).toEqual({
-      identity: "existing-friendly-name",
-      parentIdentity: "parent-friendly-name",
-      workspace: "/explicit/world",
-    });
-  });
-
-  it("suppresses only legacy managed runs", () => {
-    expect(isLegacyManagedPiEnvironment({ MILLSTRAND_RUN_ID: "run-1" })).toBe(
-      true,
-    );
+    ).toBeNull();
+    expect(exec).toHaveBeenCalledTimes(1);
     expect(
-      isLegacyManagedPiEnvironment({ MILLSTRAND_AGENT_ID: "ambient-parent" }),
-    ).toBe(false);
-    expect(isLegacyManagedPiEnvironment({})).toBe(false);
+      getNativeIdentityInputs({ getFlag: () => false } as any, {
+        PI_SUBAGENT: "1",
+        MILLSTRAND_RUN_ID: "parent",
+        MILLSTRAND_PI_PARENT_IDENTITY: "native-parent",
+        MILLSTRAND_AGENT_ID: "wrong",
+        MILLSTRAND_WORKSPACE: "/wrong",
+      }),
+    ).toEqual({ runId: undefined, parentIdentity: "native-parent" });
+  });
+  it("fails visibly on actual startup failure", async () => {
+    const root = project();
+    const exec = vi.fn(async (command: string) =>
+      command === "git"
+        ? ok(join(root, ".git"))
+        : { ...ok(""), code: 1, stderr: "unavailable" },
+    );
+    await expect(
+      resolveNativeIdentity(exec as any, { cwd: root, nativeSessionId: "s" }),
+    ).rejects.toThrow("unavailable");
+  });
+  it("routes a linked worktree to its canonical project's workspace", async () => {
+    const root = project();
+    const exec = vi.fn(async () => ok(join(root, ".git")));
+    expect(
+      await projectWorkspace(exec as any, join(root, "worktrees", "feature")),
+    ).toBe(join(root, ".millstrand"));
   });
 });

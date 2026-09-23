@@ -23,7 +23,7 @@
                 (mapv
                  (fn [seam]
                    (let [target (add-target! (name seam))
-                         request {:harness :pi :request-id (name seam)}
+                         request {:harness :codex :request-id (name seam)}
                          failure (ex-info "publication seam failed" {})
                          error
                          (with-redefs-fn
@@ -92,7 +92,7 @@
                 (require '[ct.spools.harnesses.internal.publication :as publication])
                 (let [target (add-target! "Lost successful response")
                       original publication/complete!
-                      request {:harness :pi :request-id "lost-success"}
+                      request {:harness :codex :request-id "lost-success"}
                       error (with-redefs
                              [publication/complete!
                               (fn [& args]
@@ -168,7 +168,7 @@
                               :created #'managed/commit-identity!
                               :published #'assignment-internal/enrich-guidance!)
                             (fn [& _] (throw (ex-info "process lost" {})))}
-                           #(try (assign! (:id target) {:harness :pi :request-id (name seam)})
+                           #(try (assign! (:id target) {:harness :codex :request-id (name seam)})
                                  (catch Exception _ nil)))
                          (let [run (first (weaver/list
                                            rt [:= [:attr "harness/request-id"] (name seam)] {}))]
@@ -187,7 +187,7 @@
                       {:claimed (:claimed opened#)
                        :rows (mapv
                               (fn [{id# :id target# :target key# :key reservation# :reservation}]
-                                (let [run# (~'assign! target# {:harness :pi :request-id key#})]
+                                (let [run# (~'assign! target# {:harness :codex :request-id key#})]
                                   {:same (= id# (:id run#))
                                    :reservation (= reservation# (~'attr run# :identity/reservation-id))
                                    :outcome (~'attr run# :harness/publication-outcome)
@@ -253,7 +253,7 @@
                       @restore)))
                 @installed
                 (:id (add-target! "Socket cancellation"))))
-            argv ["assign" "pi" "--task" target "--cwd" "/tmp/assignment-work"
+            argv ["assign" "codex" "--task" target "--cwd" "/tmp/assignment-work"
                   "--request-id" "deadline"]]
         (try
           (let [response (invoke-agent ctx argv 2000)

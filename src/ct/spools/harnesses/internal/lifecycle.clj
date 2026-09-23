@@ -98,8 +98,9 @@
   whose process has not been proven gone must not free the session for a
   second writer."
   [run]
-  (or (active? run)
-      (and (terminal? run) (not (settled? run)))))
+  (and (not= "external" (attr-get run :harness/ownership))
+       (or (active? run)
+           (and (terminal? run) (not (settled? run))))))
 
 (defn stop-requested?
   "Return true when durable stop intent exists for `run`."

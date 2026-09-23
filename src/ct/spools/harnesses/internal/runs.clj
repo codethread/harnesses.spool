@@ -133,6 +133,12 @@
                        (= "native-startup" (attr-get predecessor :harness/native-attachment-source)))
           (fail! "Codex continuation requires its registered native provider and session"
                  {:predecessor resumes})))
+      (when (= "pi" (attr-get predecessor :harness/harness))
+        (when-not (and (= "pi" harness)
+                       (= requested-session-id (attr-get predecessor :harness/session-id))
+                       (= "true" (attr-get predecessor :harness/native-attached)))
+          (fail! "Pi continuation requires its attached native session"
+                 {:predecessor resumes})))
       (legacy/validate-continuation-request!
        rt predecessor harness requested-session-id)
       (require-continuation-head! rt resumes)))
@@ -193,14 +199,14 @@
     (try
       (publication/check-interrupted!)
       (let [predecessor (when resumes (require-run rt resumes))
-            identity-binding (managed/commit-identity!
-                              rt
-                              {:harness harness
-                               :session-id session-id
-                               :run run
-                               :predecessor predecessor
-                               :by-identity by-identity
-                               :effective effective})
+            identity-binding (when-not (= "pi" harness)
+                               (managed/commit-identity!
+                                rt {:harness harness
+                                    :session-id session-id
+                                    :run run
+                                    :predecessor predecessor
+                                    :by-identity by-identity
+                                    :effective effective}))
             run-id (:id run)
             identity-id (:identity identity-binding)
             _ (weaver/update!
@@ -370,6 +376,10 @@
            (when (some? context-template)
              {:harness/context
               (bind-invocation-markers context-template (:id run) identity-id)})
+           (when (= "pi" concrete)
+             {:identity/id nil
+              :identity/prompt nil
+              :harness/native-attached nil})
            (when identity-binding
              (merge
               {:identity/id identity-id

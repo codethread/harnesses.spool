@@ -3,6 +3,7 @@
   (:require [clojure.data.json :as json]
             [clojure.java.io :as io]
             [clojure.string :as str]
+            [ct.spools.harnesses.internal.native-environment :as native-env]
             [ct.spools.harnesses.native-session :as native-session]
             [millstrand.api.spool.alpha :refer [attr-get fail!]])
   (:import [java.nio.file Files]
@@ -61,8 +62,10 @@
                (when (or codex? (attr-get run :identity/reservation-id))
                  bootstrap-sentinel)
                "export MILLSTRAND_RUN_ID=" (sh-quote (:id run)) "\n"
-               (if codex?
+               (cond
+                 codex?
                  "unset MILLSTRAND_AGENT_ID MILLSTRAND_MANAGED_BOOTSTRAP MILLSTRAND_MANAGED_GUIDANCE\n"
+                 (not= "pi" (attr-get run :harness/harness))
                  (str "export MILLSTRAND_AGENT_ID="
                       (sh-quote (attr-get run :identity/id)) "\n"))
                "export MILLSTRAND_WORKSPACE=" (sh-quote workspace) "\n"
@@ -80,7 +83,9 @@
                       "--provider-pid \"$$\" >/dev/null || exit $?\n"
                       "fi\n"
                       "unset MILLSTRAND_INVOCATION\n"))
-               "exec " (str/join " " (map sh-quote argv)) "\n"))
+               "exec " (str/join " " (map sh-quote
+                                          (if (= "pi" (attr-get run :harness/harness))
+                                            (native-env/scrub-command argv) argv))) "\n"))
     (Files/setPosixFilePermissions
      (.toPath file)
      (PosixFilePermissions/fromString "rwx------"))

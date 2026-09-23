@@ -9,6 +9,8 @@
             [ct.spools.harnesses.internal.lifecycle :as life]
             [ct.spools.harnesses.internal.publication :as publication]
             [ct.spools.harnesses.internal.managed-startup :as managed]
+            [ct.spools.harnesses.internal.native-registration :as native-registration]
+            [ct.spools.harnesses.native-session :as native-session]
             [ct.spools.harnesses.internal.run-continuation :as continuation]
             [ct.spools.harnesses.internal.run-creation :as creation]
             [ct.spools.harnesses.internal.run-settlement :as settlement]
@@ -61,6 +63,23 @@
   "Record an exact adapter failure receipt for the current native attempt."
   [rt receipt]
   (guidance-receipts/fail! rt receipt))
+
+(defn register-native-session!
+  "Register an actual native session, optionally attaching its managed run.
+
+  Codex callers fence the exact managed invocation with `:run-reference`
+  `RUN_ID:INVOCATION` and supply the observed model. Pi callers correlate with
+  `:run-id` against the pinned native session and may carry the native fork
+  parent header. Direct registrations have no alias or process custody; an
+  observed unavailable effort is persisted as `harness/observed-effort=unknown`,
+  never a launch option."
+  [rt request]
+  (case (:harness request)
+    "codex" (native-session/register!
+             rt (dissoc request :run-id :parent-native-session-id))
+    "pi" (native-registration/register! rt (dissoc request :run-reference))
+    (fail! "Native startup requires a codex or pi harness"
+           {:harness (:harness request)})))
 
 (defn managed-bootstrap
   "Return prompt-free bootstrap metadata for a managed running invocation."
@@ -292,7 +311,9 @@
                   (fail! "Running harness finish requires its invocation token"
                          {:id id :invocation current}))
               guidance-completion
-              (guidance-receipts/completion run (assoc outcome :status status))
+              (if (= "pi" (attr-get run :harness/harness))
+                (native-registration/completion run (assoc outcome :status status))
+                (guidance-receipts/completion run (assoc outcome :status status)))
               outcome (:outcome guidance-completion)
               native-failure? (and (= "codex" (attr-get run :harness/harness))
                                    (life/invocation run)
@@ -387,7 +408,7 @@
   #_{:splint/disable [lint/locking-object]}
   (locking (catalog/publication-lock rt)
     (let [run (runs/require-run rt id)]
-      (when (= "external" (attr-get run :harness/ownership))
+      (when (native-registration/external? run)
         (fail! "Harnesses does not own external session processes" {:id id}))
       (if-let [patch (life/stop-patch run (:reason request))]
         (let [updated

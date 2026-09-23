@@ -63,6 +63,7 @@
               '[ct.spools.harnesses :as harnesses]
               '[ct.spools.harnesses.assignment :as assignment]
               '[ct.spools.harnesses.providers.pi :as pi]
+              '[ct.spools.harnesses.providers.codex :as codex]
               '[ct.spools.harnesses.execution :as execution]
               '[ct.spools.harnesses.internal.assignment :as assignment-internal]
               '[ct.spools.harnesses.internal.process-custody :as custody]
@@ -80,6 +81,7 @@
        :prepare 'ct.spools.harnesses/create!
        :finish 'ct.spools.harnesses/finish!})
      (harnesses/register-harness! rt :pi (pi/harness rt))
+     (harnesses/register-harness! rt :codex (codex/harness rt))
      (defn attr [strand key]
        (spool/attr-get strand key))
      (defn ctx-get [run k]

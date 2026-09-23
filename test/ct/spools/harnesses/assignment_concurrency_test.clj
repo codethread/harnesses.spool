@@ -28,14 +28,12 @@
                                     :append-system-prompt explicit-guidance})
                     first-id (:id first)
                     started (harnesses/begin-attempt! rt first-id)
-                    _ (harnesses/managed-startup!
-                       rt {:harness "pi"
-                           :native-session-id (attr first :harness/session-id)
-                           :cwd "/tmp/assignment-work"
-                           :scope "root"
-                           :bootstrap
-                           (harnesses/managed-bootstrap rt first-id)})
-                    _ (claim! (:id card) (attr first :identity/id)
+                    native (harnesses/register-native-session!
+                            rt {:harness "pi"
+                                :native-session-id (attr first :harness/session-id)
+                                :cwd "/tmp/assignment-work"
+                                :run-id first-id})
+                    _ (claim! (:id card) (:identity native)
                               :branch "resume-owner"
                               :worktree "/tmp/assignment-work"
                               :run-id first-id)
@@ -51,6 +49,11 @@
                            :text "Changed live policy text"})
                     resumed (harnesses/resume!
                              rt first-id {:prompt "New user primer"})
+                    _ (harnesses/begin-attempt! rt (:id resumed))
+                    resumed-native (harnesses/register-native-session!
+                                    rt {:harness "pi" :run-id (:id resumed)
+                                        :cwd "/tmp/assignment-work"
+                                        :native-session-id (attr resumed :harness/session-id)})
                     argv (:argv (pi/prepare rt (pi/harness rt) resumed))
                     command (str/join " " argv)]
                 {:first first-id
@@ -61,8 +64,7 @@
                  :alias-count (count (re-seq #"Existing alias guidance\." command))
                  :explicit-count
                  (count (re-seq #"Explicit caller guidance\." command))
-                 :same-identity (= (attr first :identity/id)
-                                   (attr resumed :identity/id))
+                 :same-identity (= (:identity native) (:identity resumed-native))
                  :claim-count (count (kanban/ownership-history rt (:id card)))
                  :stdin (:stdin (pi/prepare rt (pi/harness rt) resumed))}))]
         (is (= 1 (:policy-count result)))

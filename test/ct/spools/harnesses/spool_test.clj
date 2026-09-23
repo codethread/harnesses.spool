@@ -206,15 +206,13 @@
                            "=Keep {{RUN_ID}} and {{AGENT_ID}} literal"])
                          run (millstrand.api.weaver.alpha/show rt (:id created))
                          started (harnesses/begin-attempt! rt (:id run))
-                         _ (harnesses/managed-startup!
+                         _ (harnesses/register-native-session!
                             rt {:harness "pi"
                                 :native-session-id
                                 (millstrand.api.spool.alpha/attr-get
                                  run :harness/session-id)
                                 :cwd "/tmp"
-                                :scope "root"
-                                :bootstrap
-                                (harnesses/managed-bootstrap rt (:id run))})
+                                :run-id (:id run)})
                          _ (harnesses/finish!
                             rt (:id run)
                             {:status :done
@@ -239,16 +237,13 @@
                           rt (:id retry-created))
                          retry-start
                          (harnesses/begin-attempt! rt (:id retry-run))
-                         _ (harnesses/managed-startup!
+                         _ (harnesses/register-native-session!
                             rt {:harness "pi"
                                 :native-session-id
                                 (millstrand.api.spool.alpha/attr-get
                                  retry-run :harness/session-id)
                                 :cwd "/tmp"
-                                :scope "root"
-                                :bootstrap
-                                (harnesses/managed-bootstrap
-                                 rt (:id retry-run))})
+                                :run-id (:id retry-run)})
                          retry-failed
                          (harnesses/finish!
                           rt (:id retry-run)
@@ -359,7 +354,7 @@
                        run (millstrand.api.weaver.alpha/show rt (:id created))
                        identity
                        (millstrand.api.spool.alpha/attr-get run :identity/id)
-                       expected (str "Configured " (:id run) " and " identity)]
+                       expected (str "Configured " (:id run) " and {{AGENT_ID}}")]
                    (and
                     (= [expected]
                        (millstrand.api.spool.alpha/attr-get
@@ -493,9 +488,12 @@
                          (fn [alias]
                            (let [run (harnesses/create!
                                       rt {:harness alias :mode :interactive})
+                                 _ (harnesses/begin-attempt! rt (:id run))
                                  friendly-id
-                                 (millstrand.api.spool.alpha/attr-get
-                                  run :identity/id)]
+                                 (:identity (harnesses/register-native-session!
+                                             rt {:harness "pi" :run-id (:id run)
+                                                 :native-session-id (millstrand.api.spool.alpha/attr-get run :harness/session-id)
+                                                 :cwd (millstrand.api.spool.alpha/attr-get run :harness/cwd)}))]
                              (millstrand.api.weaver.alpha/op!
                               rt 'agent
                               ["list" "--by-identity" friendly-id])))
@@ -560,16 +558,23 @@
                               '[millstrand.api.spool.alpha :as spool]
                               '[millstrand.api.weaver.alpha :as weaver])
                      (let [rt (millstrand.api.current.alpha/runtime)
+                           native! (fn [summary]
+                                     (harnesses/begin-attempt! rt (:id summary))
+                                     (assoc summary :identity
+                                            (:identity (harnesses/register-native-session!
+                                                        rt {:harness "pi" :run-id (:id summary)
+                                                            :cwd "/tmp" :native-session-id (:session-id summary)}))))
                            launch #(weaver/op! rt 'agent
                                                ["run" "reviewer" "--interactive"
                                                 "--cwd" "/tmp"])
-                           origin-run (launch)
+                           origin-run (native! (launch))
                            origin-id (:identity origin-run)
                            child-run (weaver/op!
                                       rt 'agent
                                       ["run" "reviewer" "--interactive"
                                        "--cwd" "/tmp"
                                        "--by-identity" origin-id])
+                           child-run (native! child-run)
                            child-id (:identity child-run)
                            grandchild-run
                            (weaver/op!
@@ -577,30 +582,21 @@
                             ["run" "reviewer" "--interactive"
                              "--cwd" "/tmp"
                              "--by-identity" child-id])
+                           grandchild-run (native! grandchild-run)
                            grandchild-id (:identity grandchild-run)
-                           grandchild-start
-                           (harnesses/begin-attempt! rt (:id grandchild-run))
-                           grandchild-bootstrap
-                           (harnesses/managed-bootstrap
-                            rt (:id grandchild-run))
-                           _ (harnesses/managed-startup!
-                              rt {:harness (:harness grandchild-run)
-                                  :native-session-id
-                                  (:session-id grandchild-run)
-                                  :cwd "/tmp"
-                                  :scope "root"
-                                  :bootstrap grandchild-bootstrap})
+                           grandchild-start (weaver/show rt (:id grandchild-run))
                            _ (harnesses/finish!
                               rt (:id grandchild-run)
                               {:status :done :exit-code 0
                                :session-id (:session-id grandchild-run)
                                :session-usable true
-                               :invocation (:invocation grandchild-start)})
+                               :invocation (spool/attr-get grandchild-start :harness/invocation)})
                            resumed-run
                            (weaver/op!
                             rt 'agent
                             ["resume" "--run-id" (:id grandchild-run)
                              "--interactive" "--by-identity" child-id])
+                           resumed-run (native! resumed-run)
                            identity-strand #(identity/current rt %)
                            _ (identity/reconcile-attributions!
                               rt [(:id child-run) (:id grandchild-run)

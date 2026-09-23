@@ -53,12 +53,12 @@ describe("buildMillstrandChildEnvironment", () => {
       PATH: "/bin",
       PI_SUBAGENT: "1",
       MILLSTRAND_PI_PARENT_IDENTITY: "native-parent",
-      MILLSTRAND_PI_WORKSPACE: "/native/world",
     });
     for (const name of [
       "MILLSTRAND_AGENT_ID",
       "MILLSTRAND_RUN_ID",
       "MILLSTRAND_WORKSPACE",
+      "MILLSTRAND_PI_WORKSPACE",
       "MILLSTRAND_BOOTSTRAP_V1",
       "MILLSTRAND_MANAGED_BOOTSTRAP",
       "MILLSTRAND_MANAGED_GUIDANCE",
@@ -70,7 +70,7 @@ describe("buildMillstrandChildEnvironment", () => {
     }
   });
 
-  it("attributes a child to a known legacy managed parent without giving it parent ownership", () => {
+  it("never infers native parent attribution from inherited ownership", () => {
     const child = buildMillstrandChildEnvironment(
       {
         MILLSTRAND_AGENT_ID: "legacy-parent",
@@ -80,8 +80,8 @@ describe("buildMillstrandChildEnvironment", () => {
       null,
     );
 
-    expect(child.MILLSTRAND_PI_PARENT_IDENTITY).toBe("legacy-parent");
-    expect(child.MILLSTRAND_PI_WORKSPACE).toBe("/legacy/world");
+    expect(child.MILLSTRAND_PI_PARENT_IDENTITY).toBeUndefined();
+    expect(child.MILLSTRAND_PI_WORKSPACE).toBeUndefined();
     expect(child.MILLSTRAND_AGENT_ID).toBeUndefined();
     expect(child.MILLSTRAND_RUN_ID).toBeUndefined();
     expect(child.MILLSTRAND_WORKSPACE).toBeUndefined();
