@@ -16,6 +16,7 @@
            :cwd {:type :string
                  :required? true
                  :doc "Explicit work directory. No worktree is created."}
+           :effort {:type :string :doc "Override the agent effort."}
            :policy {:type :string
                     :doc "Named assign policy. Defaults to stop-on-complete."}
            :after {:type :string
@@ -82,6 +83,7 @@
       (some? (:after args)) (assoc :after (:after args))
       (some? (:title args)) (assoc :title (:title args))
       (some? (:attributes args)) (assoc :attributes (:attributes args))
+      (some? (:effort args)) (assoc-in [:attributes :harness/effort] (:effort args))
       (some? (:append-system-prompt args))
       (assoc :append-system-prompt (:append-system-prompt args))
       (some? (:request-id args)) (assoc :request-id (:request-id args))

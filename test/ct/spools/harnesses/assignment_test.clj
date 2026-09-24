@@ -136,8 +136,29 @@
     (is (some? command))
     (is (true? (get-in command [:flags :task :required?])))
     (is (true? (get-in command [:flags :cwd :required?])))
+    (is (= :string (get-in command [:flags :effort :type])))
     (is (nil? (get-in command [:flags :worktree])))
     (is (= :agent (-> command :positionals first :name)))))
+
+(deftest assign-cli-effort-overrides-provider-overlay
+  (with-assignment-world
+    (fn [ctx]
+      (is (= ["high" "test-model"]
+             (eval-world
+              ctx
+              '(do
+                 (require '[ct.spools.harnesses.assignment.cli :as assign-cli])
+                 (let [target (add-target! "Effort override")
+                       summary (assign-cli/op-assign
+                                rt {:agent "pi"
+                                    :task (:id target)
+                                    :cwd "/tmp/assignment-work"
+                                    :effort "high"
+                                    :attributes {:harness/effort "low"
+                                                 :harness/model "test-model"}})
+                       run (weaver/show rt (:id summary))]
+                   [(attr run :harness/effort)
+                    (attr run :harness/model)]))))))))
 
 (deftest assignment-persists-unresolved-operation-actor
   (with-assignment-world
