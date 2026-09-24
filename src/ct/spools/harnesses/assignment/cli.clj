@@ -85,7 +85,7 @@
       (some? (:attributes args)) (assoc :attributes (:attributes args))
       (some? (:effort args))
       (update :attributes #(assoc (dissoc % "harness/effort")
-                                 :harness/effort (:effort args)))
+                                  :harness/effort (:effort args)))
       (some? (:append-system-prompt args))
       (assoc :append-system-prompt (:append-system-prompt args))
       (some? (:request-id args)) (assoc :request-id (:request-id args))
