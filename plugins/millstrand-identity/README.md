@@ -3,6 +3,12 @@
 Harnesses owns native identity data and run registration. It does not own a
 consumer's prompt layout or UI.
 
+Both adapters require canonical Git project discovery and a `.millstrand`
+directory at the Git common root. Without Git, Millstrand is inert—even when
+`.millstrand` exists in the launch directory. Inherited workspace settings and
+managed run references never bypass this gate. A linked worktree uses its main
+repository's workspace, not a worktree-local `.millstrand`.
+
 ## Pi
 
 Install this repository as a Pi package. The standalone extension awaits native

@@ -127,14 +127,6 @@
                                         :run-reference :run-id :parent-identity
                                         :parent-native-session-id])
                      :cwd cwd))
-     ["startup"] (harness/managed-startup!
-                  runtime
-                  {:harness (:harness args)
-                   :native-session-id (:native-session-id args)
-                   :cwd cwd
-                   :scope (:scope args)
-                   :bootstrap (:bootstrap args)
-                   :guidance (:guidance args)})
      ["guidance" "acknowledge"]
      (harness/guidance-acknowledge! runtime (:receipt args))
      ["guidance" "fail"]

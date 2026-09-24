@@ -158,28 +158,16 @@
          {:id "present-nils"
           :attributes (zipmap representation/attribute-keys (repeat nil))})))
   (doseq [harness ["codex" "pi"]]
-    (testing (str harness " positive legacy and native starts")
+    (testing (str harness " cannot start the removed native guidance transport")
       (let [legacy (valid-run harness "legacy")
-            native (valid-run harness "native-v1")
-            capability (get-in native
-                               [:attributes :harness/guidance-capability])
-            digest (get-in native
-                           [:attributes :harness/guidance-capability-sha256])]
+            native (valid-run harness "native-v1")]
         (is (= "not-required"
                (get-in (guidance/begin-attempt-patch
                         nil legacy 1 "legacy-invocation")
                        [:harness/guidance-attempts 0 "state"])))
-        (with-redefs
-         [guidance/select!
-          (fn [_ _]
-            {:transport "native-v1"
-             :capability capability
-             :capability-sha256 digest
-             :launch-plan {:harness harness}})]
-          (is (= "pending"
-                 (get-in (guidance/begin-attempt-patch
-                          nil native 1 "native-invocation")
-                         [:harness/guidance-attempts 0 "state"]))))))
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo #"Native guidance is no longer supported"
+             (guidance/begin-attempt-patch nil native 1 "native-invocation")))))
     (testing (str harness " rejects malformed common representation")
       (let [legacy (valid-run harness "legacy")]
         (doseq [key [:harness/guidance-version

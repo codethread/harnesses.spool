@@ -7,6 +7,7 @@
             [ct.spools.harnesses.internal.guidance-closure :as closure]
             [ct.spools.harnesses.internal.guidance-process :as process]
             [ct.spools.harnesses.internal.guidance-process-identity :as identity]
+            [ct.spools.harnesses.internal.guidance-process-scan :as scan]
             [ct.spools.harnesses.internal.strict-json :as strict-json])
   (:import [java.lang ProcessHandle]
            [java.util.concurrent CountDownLatch TimeUnit]))
@@ -80,6 +81,7 @@
                 "; i++) print \"scanner\" > \"/dev/stderr\" }'\n"
                 "exec /bin/ps \"$@\"\n")
            :stalled "while :; do :; done\n"
+           :exited "printf '1 1\\n'; exit 0\n"
            :nonzero "printf 'scanner failed\\n' >&2; exit 7\n"
            :malformed "printf 'not-a-process-row\\n'; exit 0\n"
            :invalid-utf8 "printf '\\377'; exit 0\n"
@@ -200,6 +202,69 @@
   (when (.isAlive process)
     (.destroyForcibly process))
   (.waitFor process 5 TimeUnit/SECONDS))
+
+(deftest completed-direct-scanner-does-not-require-a-live-birth-observation
+  (with-scanner-profile
+    :exited
+    (fn [{:keys [root profile]}]
+      (let [original-direct identity/retain-direct
+            completed (atom nil)
+            sentinel (start-sleep!)
+            deadline (+ (System/nanoTime) (.toNanos TimeUnit/SECONDS 3))]
+        (try
+          (let [rows
+                (with-redefs
+                 [identity/retain-direct
+                  (fn [handle role destroy!]
+                    (let [retained (original-direct handle role destroy!)]
+                      ;; Force the legal fast-exit interleaving without a sleep.
+                      (while (.isAlive ^ProcessHandle handle)
+                        (when-not (< (System/nanoTime) deadline)
+                          (throw (ex-info "Fixture scanner did not exit" {})))
+                        (Thread/yield))
+                      (reset! completed retained)
+                      retained))]
+                  (scan/scan! (dissoc profile :effective-environment)
+                              (:effective-environment profile) root
+                              (str (io/file root "scanner.sh")) deadline
+                              #(- % (System/nanoTime))))]
+            (is (= [{:pid 1 :pgid 1}] rows))
+            (is (:direct? @completed))
+            (is (not (identity/live? @completed)))
+            (is (.isAlive sentinel)))
+          (finally
+            (stop! sentinel)))))))
+
+(deftest live-scanner-with-unavailable-birth-still-fails-and-is-cleaned
+  (with-scanner-profile
+    :stalled
+    (fn [{:keys [profile]}]
+      (let [original-retain identity/retain
+            original-direct identity/retain-direct
+            scanner (atom nil)
+            sentinel (start-sleep!)]
+        (try
+          (let [{:keys [error]}
+                (with-redefs
+                 [identity/retain-direct
+                  (fn [& args]
+                    (let [retained (apply original-direct args)]
+                      (when (= "direct-ownership-scanner" (:role retained))
+                        (reset! scanner retained))
+                      retained))
+                  identity/retain
+                  (fn [handle role]
+                    (when (= "ownership-scanner" role)
+                      (is (.isAlive ^ProcessHandle handle))
+                      (throw (ex-info "Fixture live scanner birth unavailable" {})))
+                    (original-retain handle role))]
+                  (run-profile profile))]
+            (is (= "Fixture live scanner birth unavailable" (ex-message error)))
+            (is @scanner)
+            (is (not (identity/live? @scanner)))
+            (is (.isAlive sentinel)))
+          (finally
+            (stop! sentinel)))))))
 
 (deftest scanner-drains-finite-flood-without-starving-helper-io
   (with-scanner-profile

@@ -27,6 +27,7 @@ type ResolveOptions = {
   parentIdentity?: string;
   parentSessionFile?: string;
   runId?: string;
+  inputs?: () => Pick<ResolveOptions, "runId" | "parentIdentity">;
   signal?: AbortSignal;
 };
 
@@ -89,6 +90,8 @@ export async function resolveNativeIdentity(
 ): Promise<NativeIdentityResult | null> {
   const workspace = await projectWorkspace(exec, options.cwd, options.signal);
   if (!workspace) return null;
+  // Inactive projects must not parse inherited managed configuration.
+  options = { ...options, ...options.inputs?.() };
   let parentNativeSessionId: string | undefined;
   if (options.parentSessionFile) {
     const stream = createReadStream(options.parentSessionFile, {

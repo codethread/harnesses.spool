@@ -2,10 +2,8 @@
   "Frozen managed-guidance selection, handoff, and receipt lifecycle."
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
-            [ct.spools.harnesses.internal.guidance-capability :as capability]
             [ct.spools.harnesses.internal.guidance-context :as guidance-context]
             [ct.spools.harnesses.internal.guidance-history :as history]
-            [ct.spools.harnesses.internal.guidance-prompt-controls :as prompt-controls]
             [ct.spools.harnesses.internal.guidance-representation :as representation]
             [ct.spools.harnesses.internal.lifecycle :as life]
             [ct.spools.harnesses.internal.strict-json :as strict-json]
@@ -35,14 +33,6 @@
 (def ^:private native-identity-harnesses
   "Providers whose identity and run registration come from native startup."
   #{"codex" "pi"})
-(def ^:private bootstrap-keys
-  #{"schema" "transport" "run-id" "attempt" "invocation" "harness"
-    "bundle-sha256" "capability-sha256"})
-
-(def ^:private metadata-limit (* 64 1024))
-(def ^:private bundle-limit (* 1024 1024))
-(def ^:private provider-context-limits {"codex" 3072 "pi" 65536})
-(def ^:private acknowledgement-deadline-seconds 20)
 
 (defn parse-transport
   "Parse an explicit transport name, failing on unsupported values."
@@ -74,79 +64,22 @@
     (representation/attach-context run (workspace rt))
     run))
 
-(defn- preflight-request [rt {:keys [harness mode cwd env effective session-id
-                                     resumes]}]
-  (let [overlay-env (into {} (map (fn [[key value]] [(name key) value]))
-                          (or env {}))
-        actual-env (merge (into {} (System/getenv)) overlay-env)
-        executable (capability/resolve-executable harness actual-env)]
-    (cond-> {"harness" harness
-             "executable" executable
-             "mode" (name mode)
-             "cwd" (canonical-path cwd "cwd")
-             "workspace" (workspace rt)
-             "env" actual-env
-             "extra-argv" (or (:harness/extra-argv effective) [])
-             "resumes" (boolean resumes)}
-      (:harness/model effective)
-      (assoc "model" (:harness/model effective))
-      (:harness/effort effective)
-      (assoc "effort" (:harness/effort effective))
-      resumes (assoc "native-session-id" session-id))))
-
 (defn select!
-  "Select and preflight guidance before run publication or identity reservation."
-  [rt {:keys [harness mode requested inherited effective] :as request}]
+  "Validate explicit transport selection; all providers use launch prompts.
+
+  Native identity providers reject the removed guidance transports. Maintenance
+  providers retain their ordinary legacy prompt path. No capability is admitted."
+  [_rt {:keys [harness requested inherited]}]
   (if (contains? native-identity-harnesses harness)
-    (do
-      (when (and requested (not= "launch" requested))
-        (spool/fail!
-         "Native identity providers use ordinary launch prompts; transport selection is unsupported"
-         {:harness harness}))
-      nil)
-    ;; Only maintenance providers reach this branch. The retained native-v1
-    ;; capability admission is inert because no provider selects that transport
-    ;; any more; the integration follow-up can prune it with the shared
-    ;; machinery.
+    (when (some? requested)
+      (spool/fail!
+       "Native identity providers use ordinary launch prompts; transport selection is unsupported"
+       {:harness harness}))
     (let [transport (parse-transport (or requested inherited "legacy"))]
-      (when (and (= "native-v1" transport)
-                 (= :interactive mode)
-                 (contains? native-identity-harnesses harness))
-        (spool/fail!
-         "Native guidance does not support interactive launches; submit legacy work"
-         {:harness harness :mode mode :guidance-transport transport}))
-      (if-not (contains? native-identity-harnesses harness)
-        (do
-          (when (= "native-v1" transport)
-            (spool/fail! "Native guidance supports only Codex and Pi"
-                         {:harness harness}))
-          nil)
-        (if (= "legacy" transport)
-          {:transport transport}
-          (do
-            (prompt-controls/reject! harness
-                                     (or (:harness/extra-argv effective) []))
-            (let [preflight (preflight-request rt request)
-                  capability (capability/preflight! preflight)]
-              (when-not (= (get provider-context-limits harness)
-                           (get capability "max-context-bytes"))
-                (spool/fail! "Guidance capability has an unaccepted context limit"
-                             {:harness harness
-                              :expected (get provider-context-limits harness)
-                              :actual (get capability "max-context-bytes")}))
-              {:transport transport
-               :capability capability
-               :capability-sha256
-               (strict-json/canonical-sha256 capability)
-               :launch-plan
-               {:harness harness
-                :executable (get preflight "executable")
-                :cwd (get preflight "cwd")
-                :env (get preflight "env")
-                :selectors
-                (select-keys preflight
-                             ["extra-argv" "model" "effort" "resumes"
-                              "native-session-id"])}})))))))
+      (when (= "native-v1" transport)
+        (spool/fail! "Native guidance is no longer supported"
+                     {:harness harness}))))
+  nil)
 
 (defn publication-patch
   "Freeze and digest one selected guidance bundle before final publication."
@@ -272,73 +205,22 @@
      :harness/session-usable "false"
      :harness/error diagnostic}))
 
-(defn- execution-selection! [rt run selected]
-  (let [selection (select!
-                   rt {:harness (spool/attr-get run :harness/harness)
-                       :requested selected
-                       :mode (keyword (spool/attr-get run :harness/mode))
-                       :cwd (spool/attr-get run :harness/cwd)
-                       :env (spool/attr-get run :harness/env)
-                       :effective (:attributes run)
-                       :session-id (spool/attr-get run :harness/session-id)
-                       :resumes (spool/attr-get run :harness/resumes)})
-        stored-capability (spool/attr-get run :harness/guidance-capability)
-        stored-digest
-        (spool/attr-get run :harness/guidance-capability-sha256)]
-    (when-not (= (:capability-sha256 selection)
-                 stored-digest
-                 (strict-json/canonical-sha256 stored-capability))
-      (spool/fail! "Native guidance capability changed before execution"
-                   {:run-id (:id run)}))
-    selection))
-
 (defn begin-attempt-patch
-  "Return a fenced guidance-attempt patch, rechecking native capability first."
-  [rt run attempt invocation]
+  "Return a fenced legacy attempt patch; reject the removed native transport."
+  [_rt run attempt invocation]
   (let [{:keys [versioned? transport attempts]}
         (validate-representation! run)]
+    (when (= "native-v1" transport)
+      (spool/fail! "Native guidance is no longer supported" {:run-id (:id run)}))
     (if-not versioned?
       {}
-      (let [selected transport
-            selection (when (= "native-v1" selected)
-                        (execution-selection! rt run selected))
-            now (Instant/now)
-            patch
-            {:harness/guidance-attempts
-             (conj attempts
-                   (cond-> {"attempt" attempt
-                            "invocation" invocation
-                            "transport" selected
-                            "state" (if (= "native-v1" selected)
-                                      "pending"
-                                      "not-required")
-                            "started-at" (str now)}
-                     (= "native-v1" selected)
-                     (assoc "harness" (spool/attr-get run :harness/harness)
-                            "mode" (spool/attr-get run :harness/mode)
-                            "bundle-sha256"
-                            (spool/attr-get run :harness/guidance-bundle-sha256)
-                            "capability-sha256"
-                            (spool/attr-get run
-                                            :harness/guidance-capability-sha256)
-                            "deadline-at"
-                            (str (.plusSeconds
-                                  now acknowledgement-deadline-seconds)))))}]
-        (if selection
-          (with-meta patch {::launch-plan (:launch-plan selection)})
-          patch)))))
-
-(defn carry-launch-plan
-  "Carry a private attempt launch plan in process-local result metadata."
-  [attempt-patch result]
-  (if-let [plan (::launch-plan (meta attempt-patch))]
-    (with-meta result {::launch-plan plan})
-    result))
-
-(defn launch-plan
-  "Return a process-local validated launch plan without durable disclosure."
-  [attempt-result]
-  (::launch-plan (meta attempt-result)))
+      {:harness/guidance-attempts
+       (conj attempts
+             {"attempt" attempt
+              "invocation" invocation
+              "transport" transport
+              "state" "not-required"
+              "started-at" (str (Instant/now))})})))
 
 (defn deadline-expired?
   "Return whether a native handoff record has crossed its durable deadline."
@@ -355,109 +237,3 @@
             (spool/fail! "Native guidance attempt has no deadline"
                          {:run-id (:id run)}))
           (not (.isBefore now (Instant/parse deadline)))))))
-
-(defn bootstrap
-  "Return the launcher guidance document for the current attempt."
-  [run]
-  (let [selected (transport run)]
-    (if (= "legacy" selected)
-      {"schema" guidance-bootstrap-schema "transport" "legacy"}
-      (let [record (current-attempt run)]
-        (when-not (and record (contains? #{"pending" "fetched" "acknowledged"}
-                                         (get record "state")))
-          (spool/fail! "Native guidance has no active handoff attempt"
-                       {:run-id (:id run)}))
-        {"schema" guidance-bootstrap-schema
-         "transport" "native-v1"
-         "run-id" (:id run)
-         "attempt" (get record "attempt")
-         "invocation" (get record "invocation")
-         "harness" (spool/attr-get run :harness/harness)
-         "bundle-sha256" (get record "bundle-sha256")
-         "capability-sha256" (get record "capability-sha256")}))))
-
-(defn- normalize-document [value label]
-  (cond
-    (string? value) (strict-json/parse-object! value metadata-limit label)
-    (map? value) (into {} (map (fn [[key item]] [(name key) item])) value)
-    :else (spool/fail! (str label " must be a JSON object") {:value value})))
-
-(defn validate-startup
-  "Validate optional startup guidance and return its normalized document."
-  [run value]
-  (let [selected (transport run)]
-    (if (= "legacy" selected)
-      (when value
-        (let [document (normalize-document value "Guidance bootstrap")]
-          (when-not (= {"schema" guidance-bootstrap-schema
-                        "transport" "legacy"}
-                       document)
-            (spool/fail! "Legacy guidance bootstrap is malformed" {}))
-          document))
-      (do
-        (when-not value
-          (spool/fail! "Native startup requires --guidance" {:run-id (:id run)}))
-        (let [record (current-attempt run)
-              _ (when (deadline-expired? run record)
-                  (spool/fail! "Native guidance startup crossed its handoff deadline"
-                               {:run-id (:id run)
-                                :attempt (get record "attempt")}))
-              document (normalize-document value "Guidance bootstrap")
-              expected (bootstrap run)]
-          (when-not (= bootstrap-keys (set (keys document)))
-            (spool/fail! "Native guidance bootstrap has invalid keys"
-                         {:required (sort bootstrap-keys)
-                          :actual (sort (keys document))}))
-          (when-not (= expected document)
-            (spool/fail! "Native guidance bootstrap does not match the run"
-                         {:run-id (:id run)}))
-          document)))))
-
-(defn fetch-patch
-  "Return a timely exact-current transition with local first-fetch evidence."
-  [run native-session-id fetched-at]
-  (when (native? run)
-    (let [record (current-attempt run)
-          state (get record "state")]
-      (when-not (contains? #{"pending" "fetched" "acknowledged"} state)
-        (spool/fail! "Native guidance cannot be fetched in its current state"
-                     {:run-id (:id run) :state state}))
-      (when (= "pending" state)
-        (when (deadline-expired? run record (Instant/parse fetched-at))
-          (spool/fail! "Native guidance first fetch crossed its handoff deadline"
-                       {:run-id (:id run) :attempt (get record "attempt")}))
-        {:harness/guidance-attempts
-         (mapv #(if (= record %)
-                  (assoc %
-                         "state" "fetched"
-                         "first-fetch"
-                         {"attempt" (get record "attempt")
-                          "invocation" (get record "invocation")
-                          "fetched-at" fetched-at
-                          "native-session-id" native-session-id
-                          "authority" "harness-managed-startup/v1"})
-                  %)
-               (attempt-records run))}))))
-
-(defn bundle
-  "Return the frozen current-run bundle after native attachment."
-  [rt run native-session-id identity strand-id]
-  (let [value {:schema guidance-bundle-schema
-               :run-id (:id run)
-               :attempt (spool/attr-get run :harness/attempt)
-               :invocation (spool/attr-get run :harness/invocation)
-               :harness (spool/attr-get run :harness/harness)
-               :native-session-id native-session-id
-               :identity identity
-               :strand-id strand-id
-               :workspace (workspace rt)
-               :transport "native-v1"
-               :bundle-sha256
-               (spool/attr-get run :harness/guidance-bundle-sha256)
-               :capability-sha256
-               (spool/attr-get run :harness/guidance-capability-sha256)
-               :context (spool/attr-get run :harness/guidance-context)}]
-    (when (> (strict-json/utf8-bytes (strict-json/canonical-json value))
-             bundle-limit)
-      (spool/fail! "Frozen guidance bundle exceeds 1 MiB" {:run-id (:id run)}))
-    value))

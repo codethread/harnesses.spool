@@ -38,7 +38,12 @@ function fixture() {
 describe("native identity lifecycle", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(resolveNativeIdentity).mockResolvedValue(resolved as any);
+    vi.mocked(resolveNativeIdentity).mockImplementation(
+      async (_exec, options) => {
+        options.inputs?.();
+        return resolved as any;
+      },
+    );
   });
   it("awaits startup and contributes exactly once on each reconstructed standalone prompt", async () => {
     const { pi, ctx, handlers } = fixture();
@@ -55,6 +60,22 @@ describe("native identity lifecycle", () => {
       );
       expect(handlers.get("input")?.()).toBeUndefined();
     }
+  });
+  it("leaves inactive sessions usable without adding identity context", async () => {
+    const { pi, ctx, handlers } = fixture();
+    vi.mocked(resolveNativeIdentity).mockResolvedValueOnce(null);
+    extension(pi as any);
+    await handlers.get("session_start")?.({}, ctx);
+    expect(handlers.get("input")?.()).toBeUndefined();
+    const abort = vi.fn();
+    const payload = { messages: [] };
+    expect(
+      handlers.get("before_provider_request")?.({ payload }, { abort }),
+    ).toBeUndefined();
+    expect(abort).not.toHaveBeenCalled();
+    expect(
+      handlers.get("before_agent_start")?.({ systemPrompt: "ordinary policy" }),
+    ).toBeUndefined();
   });
   it("composes with a prompt owner without installing another renderer", async () => {
     const { pi, ctx, handlers } = fixture();
@@ -89,23 +110,23 @@ describe("native identity lifecycle", () => {
     const lifecycle = createMillstrandIdentityLifecycle(pi as any);
     await lifecycle.sessionStart(ctx as any);
     ctx.sessionManager.getSessionId = () => "child";
-    vi.mocked(resolveNativeIdentity).mockResolvedValue({
-      ...resolved,
-      nativeSessionId: "child",
-      identity: "native-child",
-    } as any);
-    await lifecycle.sessionStart(ctx as any);
-    expect(resolveNativeIdentity).toHaveBeenLastCalledWith(
-      pi.exec,
-      expect.objectContaining({
-        runId: undefined,
-        parentIdentity: "native-parent",
-      }),
+    const inputs: unknown[] = [];
+    vi.mocked(resolveNativeIdentity).mockImplementation(
+      async (_exec, options) => {
+        inputs.push(options.inputs?.());
+        return {
+          ...resolved,
+          nativeSessionId: "child",
+          identity: "native-child",
+        } as any;
+      },
     );
     await lifecycle.sessionStart(ctx as any);
-    expect(resolveNativeIdentity).toHaveBeenLastCalledWith(
-      pi.exec,
-      expect.objectContaining({ runId: undefined }),
-    );
+    expect(inputs[0]).toEqual({
+      runId: undefined,
+      parentIdentity: "native-parent",
+    });
+    await lifecycle.sessionStart(ctx as any);
+    expect(inputs[1]).toEqual({ runId: undefined });
   });
 });

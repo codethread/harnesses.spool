@@ -73,6 +73,20 @@
 (defn- remaining [deadline]
   (- deadline (System/nanoTime)))
 
+(defn- await-exit! [^ProcessHandle handle deadline]
+  ;; ProcessHandle.onExit polls non-child processes at 300 ms on this JDK.
+  ;; Wait for actual death, not that delayed notification, inside the existing
+  ;; shared cleanup budget. Retain the original handle throughout.
+  (loop []
+    (if-not (.isAlive handle)
+      handle
+      (do
+        (when-not (pos? (remaining deadline))
+          (throw (ex-info "Fixture member did not exit before cleanup deadline"
+                          {:pid (.pid handle)})))
+        (Thread/yield)
+        (recur)))))
+
 (deftest partial-correlation-preserves-and-cleans-each-surviving-original-birth
   (doseq [exiting-index [0 1]]
     (testing (str "member " exiting-index " exits first")
@@ -114,8 +128,7 @@
                                  (compare-and-set! barrier-crossed? false true))
                         (is (= 2 @scan-count))
                         (.destroyForcibly selected)
-                        (is (.get (.onExit selected)
-                                  1 TimeUnit/SECONDS))))
+                        (is (await-exit! selected deadline))))
                     #(failure
                       (fn []
                         (cleanup/cleanup-owned!

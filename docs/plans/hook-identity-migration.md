@@ -5,7 +5,7 @@
 > documented in the repository README. In particular, pre-launch reservation,
 > compatibility transports, identity-only direct startup, environment routing
 > overrides and hook-delivered ordinary guidance below are no longer the Codex
-> design. Native startup registers direct/managed runs; ordinary guidance stays
+> or Pi design. Native startup registers direct/managed runs; ordinary guidance stays
 > on launch paths. Preserve this document only as historical design evidence.
 
 Design/backlog: **nsl12** · implementation epic: **k5zd2** · author: **steady-gentle-fox**

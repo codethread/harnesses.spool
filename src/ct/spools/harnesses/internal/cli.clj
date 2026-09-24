@@ -64,7 +64,7 @@
                            :doc "Append role or policy text to the system prompt."}
                           :guidance-transport
                           {:type :string
-                           :doc "Managed delivery: legacy (default) or native-v1."}
+                           :doc "Maintenance providers only: legacy. Unsupported for Codex/Pi."}
                           :extra-argv
                           {:type :string
                            :repeat? true
@@ -95,30 +95,6 @@
                     :doc "Actual native provider: codex or pi."}
                    {:name :native-session-id :type :string :required? true
                     :doc "Actual native session key."}]}
-    "startup"
-    {:doc "Attach a managed Codex/Pi run at native root startup."
-     :hook-class :mutating
-     :deadline-class :standard
-     :flags {:bootstrap
-             {:type :string
-              :parse :json
-              :required? true
-              :doc "Exact versioned MILLSTRAND_MANAGED_BOOTSTRAP document."}
-             :scope
-             {:type :string
-              :required? true
-              :doc "Native event scope; managed launches require root."}
-             :guidance
-             {:type :string
-              :doc "Exact MILLSTRAND_MANAGED_GUIDANCE JSON document."}}
-     :positionals [{:name :harness
-                    :type :string
-                    :required? true
-                    :doc "Concrete native provider: codex or pi."}
-                   {:name :native-session-id
-                    :type :string
-                    :required? true
-                    :doc "Actual native session ID reported by the host."}]}
     "show" {:doc "Show one agent run, or the run serving a task or request."
             :hook-class :read
             :deadline-class :standard

@@ -8,9 +8,8 @@ and Pi providers.
 
 This repository owns the focused Millstrand identity data package for Codex and
 Pi under [`plugins/millstrand-identity`](plugins/millstrand-identity/README.md).
-The package resolves native session bindings, publishes Pi lifecycle data,
-propagates parent identity/workspace data to children, and implements the
-optional managed-guidance protocol. It deliberately does not own consumer UI:
+The package registers native session identities and runs, publishes Pi lifecycle
+data, and propagates parent attribution to children. It deliberately does not own consumer UI:
 prompt owners, statuslines, and other extensions decide how to display the
 published identity.
 
@@ -42,9 +41,9 @@ The marketplace exposes the `millstrand-identity` plugin package. Enable
 `SubagentStart`, and dialogue capture and other harness UI remain separate.
 
 Run `pnpm check:plugins` for Pi unit/preflight checks, Codex 0.154.0 CLI
-conformance, and formatting. Installing these adapters does not activate the
-managed `native-v1` transport while Harnesses' production capability allowlist
-remains empty.
+conformance, and formatting. Native identity startup does not select a managed
+guidance transport or require capability admission; ordinary task and policy
+prompts remain on their existing launch paths.
 
 ## Activation model
 
@@ -448,8 +447,9 @@ developer-instruction paths. Only the canonical identity contribution comes from
 native startup. Claude and Cursor retain their maintenance transports.
 
 The packaged hooks gate on the launch project's canonical `.millstrand`
-workspace, including Git linked worktrees. Outside such a project they do
-nothing—even if workspace or managed hints were inherited. They never start a
+workspace, including Git linked worktrees. Git discovery is required: a non-Git
+directory stays inert even if it contains `.millstrand`. Outside such a project
+they do nothing—even if workspace or managed hints were inherited. They never start a
 Weaver, create a workspace, or use a global fallback. Enable/trust the packaged
 hooks in the host before using this integration.
 
@@ -492,7 +492,9 @@ separately, and never consumes inherited root run correlation.
   identity authority.
 - There is no Codex or Pi identity reservation, identity environment variable,
   rich bootstrap document, transport selection, completion-time mint, or legacy
-  repair. Pi's former reservation/guidance APIs are removed.
+  repair. The former `agent startup`, `managed-startup!`, and
+  `managed-bootstrap` reservation APIs are removed; use `agent native-startup`
+  or `register-native-session!`.
 - Publication commits request/target tracking without a worker identity.
   Native registration validates the running invocation, provider, canonical cwd,
   expected resume session and competing writers. It sets `identity/id`, the actual
@@ -523,45 +525,6 @@ without discarding genuine process settlement. Registration is not custody or
 proof that a model obeyed its context. Missing/disabled hooks cannot themselves
 block a host; completion never pretends that such a run integrated successfully.
 
-Source delivery does not install plugins, update consumers, or restart a runtime.
-Combined provider acceptance and package/runtime rollout are downstream.
-
-- Managed launch correlation is only `MILLSTRAND_RUN_REFERENCE=RUN_ID:INVOCATION`.
-  `MILLSTRAND_RUN_ID` remains ordinary run metadata, not identity authority.
-  There is no Codex identity reservation, identity environment variable, rich
-  bootstrap document, transport selection, completion-time mint, or legacy repair.
-- Publication commits request/target tracking without a worker identity.
-  Native registration validates the running invocation, provider, canonical cwd,
-  expected resume session and competing writers. It sets `identity/id`, the actual
-  `harness/session-id`, and the identity's `performed` edge to that exact run.
-- Attachment retains `harness/native-attached=true`, `native-attached-at`,
-  `native-attachment-source=native-startup`, and managed
-  `native-attachment-attempt`/`native-attachment-invocation`. Provenance and the run
-  patch commit together. Identity lookup/mint is independently idempotent.
-- Without a managed reference, registration creates/reuses one run per
-  provider/native session. It has `harness/mode=external` and
-  `harness/ownership=external`, no alias, target, attempt, invocation, launch
-  custody or settlement assertion. It does not spawn an agent or claim work.
-  Harnesses refuses process stop/completion for these externally owned sessions.
-- `harness/observed-model` records the actual host model. Codex hooks do not
-  report reasoning effort: `harness/observed-effort` is the literal **`unknown`**
-  unless an authoritative managed selection supplies it. Consumers display
-  **Unknown**. This metadata is separate from `harness/effort`, the provider
-  option; the unknown marker is never passed as a reasoning-effort setting.
-- Alias visibility policy is unchanged. An external run without an alias does
-  not acquire unrestricted delegation visibility.
-
-Same-session callbacks recover the identity and direct registration. Managed
-resume keeps its true lineage but waits for its own native callback to record
-participation. Fresh retries/children get fresh native identities. Request replay
-and target exclusivity are independent of registration. A missing callback or
-inconsistent observed thread produces a visible bootstrap failure at completion,
-without discarding genuine process settlement. Registration is not custody or
-proof that a model obeyed its context. Missing/disabled hooks cannot themselves
-block a host; completion never pretends that such a run integrated successfully.
-
-Pi's prior reservation/guidance APIs remain provider-scoped until its independent
-cutover lands; Codex rejects their transport selection and does not use them.
 Source delivery does not install plugins, update consumers, or restart a runtime.
 Combined provider acceptance and package/runtime rollout are downstream.
 

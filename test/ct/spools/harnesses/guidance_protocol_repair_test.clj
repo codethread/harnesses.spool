@@ -3,17 +3,31 @@
   (:require [clojure.test :refer [deftest is]]
             [ct.spools.harnesses.guidance-representation-fixture :as representation-fixture]
             [ct.spools.harnesses.internal.cli :as cli]
+            [ct.spools.harnesses.internal.guidance :as guidance]
             [ct.spools.harnesses.internal.guidance-prompt-controls :as prompt]
             [ct.spools.harnesses.providers.pi :as pi]))
+
+(deftest native-providers-reject-every-explicit-transport
+  (doseq [harness ["codex" "pi"]]
+    (is (nil? (guidance/select! nil {:harness harness})))
+    (doseq [transport ["launch" "legacy" "native-v1" "" "invalid"]]
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo
+           #"transport selection is unsupported"
+           (guidance/select! nil {:harness harness :requested transport})))))
+  (doseq [harness ["claude" "cursor"]
+          transport [nil "legacy"]]
+    (is (nil? (guidance/select! nil {:harness harness :requested transport})))))
 
 (deftest public-cli-exposes-explicit-transport-and-receipts
   (doseq [command ["run" "retry" "resume"]]
     (is (contains? (get-in cli/agent-arg-spec
                            [:subcommands command :flags])
                    :guidance-transport)))
+  (is (not (contains? (:subcommands cli/agent-arg-spec) "startup")))
   (is (= :string
          (get-in cli/agent-arg-spec
-                 [:subcommands "startup" :flags :guidance :type])))
+                 [:subcommands "native-startup" :flags :run-reference :type])))
   (doseq [command ["acknowledge" "fail"]]
     (is (= :string
            (get-in cli/agent-arg-spec

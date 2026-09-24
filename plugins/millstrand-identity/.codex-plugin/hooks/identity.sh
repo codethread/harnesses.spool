@@ -95,8 +95,6 @@ workspace=
 common_dir=$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common_dir=
 if [[ -n "$common_dir" && "$(basename "$common_dir")" == .git ]]; then
 	workspace="$(dirname "$common_dir")/.millstrand"
-elif [[ -d "$cwd/.millstrand" ]]; then
-	workspace="$cwd/.millstrand"
 fi
 [[ -n "$workspace" && -d "$workspace" ]] || exit 0
 workspace=$(cd -P "$workspace" && pwd) || exit 1

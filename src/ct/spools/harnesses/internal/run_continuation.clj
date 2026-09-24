@@ -73,9 +73,9 @@
   "Reconstruct and reset one failed ad-hoc run, applying replacement options.
 
   Request-bound assigned work cannot be retried in place: continue it with
-  `resume!` or submit a new request. A fresh Codex/Pi retry reserves a fresh
-  identity and refreshes invocation markers before becoming ready. Retrying a
-  native-resume attempt keeps its attached native identity and session."
+  `resume!` or submit a new request. A fresh Codex/Pi retry defers identity to
+  native startup. Retrying a native-resume attempt keeps its native session
+  and requires registration for the new invocation."
   [rt id {:keys [by-identity] :as request}]
   (require-valid! :ct.spools.harnesses/runtime rt "retry! requires a Weaver runtime")
   (require-valid! :ct.spools.harnesses/id id "retry! requires a run id")
@@ -141,7 +141,8 @@
           guidance-selection
           (guidance/select!
            rt {:harness concrete
-               :requested (if (= "pi" concrete) (:guidance-transport request) selected-transport)
+               :requested (:guidance-transport request)
+               :inherited inherited-transport
                :mode (keyword (attr-get run :harness/mode))
                :cwd cwd
                :env (:env resolved)
@@ -206,9 +207,7 @@
 
   Eligibility is positive evidence only: the run must be terminal, provably
   settled, hold a native session the provider has verified as usable, and have
-  no other run currently reserving that session. A pre-reservation Pi run is
-  eligible only while its exact historical identity and provenance remain
-  valid. Legacy Codex mismatch recovery still requires explicit repair."
+  no other run currently reserving that session."
   [rt id]
   (require-valid! :ct.spools.harnesses/runtime rt "resume-eligibility requires a Weaver runtime")
   (require-valid! :ct.spools.harnesses/id id "resume-eligibility requires a run id")
@@ -218,7 +217,6 @@
                   []
                   (remove #(= id (:id %))
                           (runs/reserving-session-writers rt session-id)))
-        legacy? (managed/legacy-managed-run? run)
         result (cond
                  (not (life/accepted? run))
                  {:eligible? false :reason "run publication was not accepted"}
@@ -226,11 +224,6 @@
                  (and (= "codex" (attr-get run :harness/harness))
                       (not= "native-startup" (attr-get run :harness/native-attachment-source)))
                  {:eligible? false :reason "Codex native startup has not registered this run"}
-
-                 legacy?
-                 {:eligible? false
-                  :reason (str "legacy Codex run has no verified native binding; "
-                               "native resume requires explicit repair")}
 
                  :else
                  (life/resume-eligibility run (count writers)))]
@@ -364,7 +357,8 @@
                                 :mode (or mode (attr-get run :harness/mode))
                                 :cwd (or cwd (attr-get run :harness/cwd))
                                 :attributes overrides
-                                :guidance-transport (if (= "pi" (attr-get run :harness/harness))
+                                :guidance-transport (if (managed/managed-harness?
+                                                         (attr-get run :harness/harness))
                                                       guidance-transport selected-transport)
                                 :resumes id
                                 :logical-id (life/logical-id run)
@@ -382,8 +376,7 @@
                          (assoc :resume-selector-intent
                                 resume-selector-intent))
         create-request (cond-> create-request
-                         (managed/managed-harness?
-                          (attr-get run :harness/harness))
+                         (nil? (:guidance-transport create-request))
                          (dissoc :guidance-transport))
         fingerprint (life/fingerprint (dissoc create-request :request-id))]
     #_{:clj-kondo/ignore [:locking-suspicious-lock]}
