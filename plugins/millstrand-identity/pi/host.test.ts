@@ -18,10 +18,10 @@ afterEach(() =>
     .splice(0)
     .forEach((root) => rmSync(root, { recursive: true, force: true })),
 );
-function fixture(project = true) {
+function fixture(project = true, git = true) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-native-host-")));
   roots.push(root);
-  execFileSync("git", ["init", "-q", root]);
+  if (git) execFileSync("git", ["init", "-q", root]);
   if (project) mkdirSync(join(root, ".millstrand"));
   mkdirSync(join(root, "bin"));
   const strand = join(root, "bin", "strand");
@@ -125,23 +125,81 @@ it("real fork supplies its native parent header", () => {
   expect(call).toContain("--parent-native-session-id");
 }, 30_000);
 
-it("does not invoke Strand outside a Millstrand project", () => {
-  const { root, env } = fixture(false);
-  // Inactive projects ignore malformed inherited ownership, not just valid hints.
-  Object.assign(env, {
-    MILLSTRAND_RUN_ID: " ",
-    MILLSTRAND_PI_PARENT_IDENTITY: " ",
-    MILLSTRAND_WORKSPACE: "/not-this-project/.millstrand",
-  });
-  const output = host(
+it.each([
+  { project: false, git: true },
+  { project: false, git: false },
+  { project: true, git: false },
+])(
+  "stays inactive with project=$project git=$git",
+  ({ project, git }) => {
+    const { root, env } = fixture(project, git);
+    // Inactive projects ignore malformed inherited ownership, not just valid hints.
+    Object.assign(env, {
+      MILLSTRAND_RUN_ID: " ",
+      MILLSTRAND_PI_PARENT_IDENTITY: " ",
+      MILLSTRAND_WORKSPACE: "/not-this-project/.millstrand",
+    });
+    const output = host(
+      root,
+      env,
+      resolve("plugins/millstrand-identity/pi/index.ts"),
+      ["--debug-millstrand-identity"],
+    );
+    expect(output).toContain('"status": "suppressed"');
+    expect(() => readFileSync(join(root, "calls"))).toThrow();
+  },
+  30_000,
+);
+
+it("routes nested and linked-worktree sessions to the canonical Git workspace", () => {
+  const { root, env } = fixture();
+  execFileSync("git", [
+    "-C",
     root,
-    env,
-    resolve("plugins/millstrand-identity/pi/index.ts"),
-    ["--debug-millstrand-identity"],
-  );
-  expect(output).toContain('"status": "suppressed"');
-  expect(() => readFileSync(join(root, "calls"))).toThrow();
-}, 30_000);
+    "-c",
+    "user.name=Fixture",
+    "-c",
+    "user.email=fixture@example.test",
+    "commit",
+    "-q",
+    "--allow-empty",
+    "-m",
+    "fixture",
+  ]);
+  const linked = join(root, "linked");
+  execFileSync("git", [
+    "-C",
+    root,
+    "worktree",
+    "add",
+    "-q",
+    "--detach",
+    linked,
+  ]);
+  mkdirSync(join(linked, ".millstrand"));
+  const nested = join(root, "nested");
+  mkdirSync(nested);
+  for (const cwd of [nested, linked]) {
+    const output = host(
+      cwd,
+      env,
+      resolve("plugins/millstrand-identity/pi/index.ts"),
+      ["--debug-millstrand-identity"],
+    );
+    expect(output).toContain('"status": "bound"');
+  }
+  const calls = readFileSync(join(root, "calls"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as string[]);
+  expect(calls).toHaveLength(2);
+  for (const [index, call] of calls.entries()) {
+    expect(call[call.indexOf("--workspace") + 1]).toBe(
+      join(root, ".millstrand"),
+    );
+    expect(call[call.indexOf("--cwd") + 1]).toBe([nested, linked][index]);
+  }
+}, 60_000);
 
 // The prompt owner is consumer source, not a dependency or an installed-package edit.
 it.skipIf(!process.env.PI_PROMPT_OWNER_SOURCE)(

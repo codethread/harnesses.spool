@@ -447,8 +447,9 @@ developer-instruction paths. Only the canonical identity contribution comes from
 native startup. Claude and Cursor retain their maintenance transports.
 
 The packaged hooks gate on the launch project's canonical `.millstrand`
-workspace, including Git linked worktrees. Outside such a project they do
-nothing—even if workspace or managed hints were inherited. They never start a
+workspace, including Git linked worktrees. Git discovery is required: a non-Git
+directory stays inert even if it contains `.millstrand`. Outside such a project
+they do nothing—even if workspace or managed hints were inherited. They never start a
 Weaver, create a workspace, or use a global fallback. Enable/trust the packaged
 hooks in the host before using this integration.
 

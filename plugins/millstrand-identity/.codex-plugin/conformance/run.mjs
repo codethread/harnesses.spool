@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import {
   cpSync,
@@ -79,6 +79,7 @@ function temporaryDirectory(prefix) {
 function millstrandProject(root, name = "project") {
   const cwd = join(root, name);
   mkdirSync(join(cwd, ".millstrand"), { recursive: true });
+  execFileSync("git", ["init", "--quiet", cwd]);
   return cwd;
 }
 
@@ -788,39 +789,51 @@ async function checkProjectGate() {
   // A session outside a Millstrand project stays a plain native session. The
   // hook must return before the configured-source probe, the OS lock, and
   // Strand, without emitting any response at all.
-  for (const fileName of [
-    "session-start-startup.json",
-    "subagent-start.json",
+  for (const [git, workspace] of [
+    [false, false],
+    [false, true],
+    [true, false],
   ]) {
-    const root = temporaryDirectory("codex-hook-plain-project-");
-    const payload = JSON.parse(
-      readFileSync(join(payloadRoot, fileName), "utf8"),
-    );
-    payload.cwd = join(root, "plain-project");
-    mkdirSync(payload.cwd);
-    const logPath = join(root, "fake-strand.jsonl");
-    for (const argv of [[], ["--configured-source"]]) {
-      const result = await run("bash", [identityHook, ...argv], {
-        input: JSON.stringify(payload),
-        env: fixtureEnvironment({
-          MILLSTRAND_CODEX_STRAND_BIN: fakeStrand,
-          FAKE_STRAND_LOG: logPath,
-          TMPDIR: root,
-        }),
-      });
-      assert.equal(result.code, 0, result.stderr);
-      assert.equal(
-        result.stdout,
-        "",
-        `${fileName} outside a Millstrand project must stay silent`,
+    for (const fileName of [
+      "session-start-startup.json",
+      "subagent-start.json",
+    ]) {
+      const root = temporaryDirectory("codex-hook-plain-project-");
+      const payload = JSON.parse(
+        readFileSync(join(payloadRoot, fileName), "utf8"),
       );
-      assert.equal(result.stderr, "");
+      payload.cwd = join(root, "plain-project");
+      mkdirSync(payload.cwd);
+      if (git) execFileSync("git", ["init", "--quiet", payload.cwd]);
+      if (workspace) mkdirSync(join(payload.cwd, ".millstrand"));
+      const logPath = join(root, "fake-strand.jsonl");
+      for (const argv of [[], ["--configured-source"]]) {
+        const result = await run("bash", [identityHook, ...argv], {
+          input: JSON.stringify(payload),
+          env: fixtureEnvironment({
+            MILLSTRAND_CODEX_STRAND_BIN: fakeStrand,
+            FAKE_STRAND_LOG: logPath,
+            MILLSTRAND_CODEX_WORKSPACE: payload.cwd,
+            MILLSTRAND_WORKSPACE: payload.cwd,
+            MILLSTRAND_RUN_REFERENCE: "inherited-run:invocation",
+            MILLSTRAND_MANAGED_BOOTSTRAP: "invalid-inherited-bootstrap",
+            TMPDIR: root,
+          }),
+        });
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(
+          result.stdout,
+          "",
+          `${fileName} outside a Millstrand project must stay silent`,
+        );
+        assert.equal(result.stderr, "");
+      }
+      assert.equal(
+        existsSync(logPath),
+        false,
+        `${fileName} outside a Millstrand project must not call Strand`,
+      );
     }
-    assert.equal(
-      existsSync(logPath),
-      false,
-      `${fileName} outside a Millstrand project must not call Strand`,
-    );
   }
 
   // Subdirectories and linked worktrees belong to the canonical Git project
@@ -833,36 +846,71 @@ async function checkProjectGate() {
   mkdirSync(join(repository, ".millstrand"));
   const nested = join(repository, "nested", "cwd");
   mkdirSync(nested, { recursive: true });
-  const nestedPayload = JSON.parse(
-    readFileSync(join(payloadRoot, "session-start-startup.json"), "utf8"),
-  );
-  nestedPayload.cwd = nested;
-  const nestedLog = join(repository, "fake-strand.jsonl");
-  const nestedResult = await run(
-    "bash",
-    [identityHook, "--configured-source"],
-    {
-      input: JSON.stringify(nestedPayload),
-      env: fixtureEnvironment({
-        MILLSTRAND_CODEX_STRAND_BIN: fakeStrand,
-        FAKE_STRAND_LOG: nestedLog,
-        TMPDIR: repository,
-      }),
-    },
-  );
-  assert.equal(nestedResult.code, 0, nestedResult.stderr);
-  assertHookOutput(
-    parseSingleJsonLine(
-      nestedResult.stdout,
-      "nested Millstrand project response",
-    ),
-    "SessionStart",
-  );
-  assert.equal(
-    parseSingleJsonLine(readFileSync(nestedLog, "utf8"), "nested project call")
-      .cwd,
-    nested,
-  );
+  execFileSync("git", [
+    "-C",
+    repository,
+    "-c",
+    "user.name=Fixture",
+    "-c",
+    "user.email=fixture@example.test",
+    "commit",
+    "--quiet",
+    "--allow-empty",
+    "-m",
+    "fixture",
+  ]);
+  const linked = join(repository, "linked");
+  execFileSync("git", [
+    "-C",
+    repository,
+    "worktree",
+    "add",
+    "--quiet",
+    "--detach",
+    linked,
+  ]);
+  mkdirSync(join(linked, ".millstrand")); // A worktree-local marker cannot override the canonical root.
+  for (const cwd of [nested, linked]) {
+    const nestedPayload = JSON.parse(
+      readFileSync(join(payloadRoot, "session-start-startup.json"), "utf8"),
+    );
+    nestedPayload.cwd = cwd;
+    const nestedLog = join(cwd, "fake-strand.jsonl");
+    const nestedResult = await run(
+      "bash",
+      [identityHook, "--configured-source"],
+      {
+        input: JSON.stringify(nestedPayload),
+        env: fixtureEnvironment({
+          MILLSTRAND_CODEX_STRAND_BIN: fakeStrand,
+          FAKE_STRAND_LOG: nestedLog,
+          TMPDIR: repository,
+        }),
+      },
+    );
+    assert.equal(nestedResult.code, 0, nestedResult.stderr);
+    assertHookOutput(
+      parseSingleJsonLine(
+        nestedResult.stdout,
+        "nested Millstrand project response",
+      ),
+      "SessionStart",
+    );
+    assert.equal(
+      parseSingleJsonLine(
+        readFileSync(nestedLog, "utf8"),
+        "nested project call",
+      ).cwd,
+      cwd,
+    );
+    assert.equal(
+      parseSingleJsonLine(
+        readFileSync(nestedLog, "utf8"),
+        "canonical project call",
+      ).workspace,
+      realpathSync(join(repository, ".millstrand")),
+    );
+  }
 }
 
 function writeConfig(codexHome, enabled, hooksEnabled = true) {
