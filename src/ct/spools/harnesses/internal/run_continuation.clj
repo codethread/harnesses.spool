@@ -141,7 +141,8 @@
           guidance-selection
           (guidance/select!
            rt {:harness concrete
-               :requested (if (= "pi" concrete) (:guidance-transport request) selected-transport)
+               :requested (:guidance-transport request)
+               :inherited inherited-transport
                :mode (keyword (attr-get run :harness/mode))
                :cwd cwd
                :env (:env resolved)
@@ -356,7 +357,8 @@
                                 :mode (or mode (attr-get run :harness/mode))
                                 :cwd (or cwd (attr-get run :harness/cwd))
                                 :attributes overrides
-                                :guidance-transport (if (= "pi" (attr-get run :harness/harness))
+                                :guidance-transport (if (managed/managed-harness?
+                                                         (attr-get run :harness/harness))
                                                       guidance-transport selected-transport)
                                 :resumes id
                                 :logical-id (life/logical-id run)
@@ -374,8 +376,7 @@
                          (assoc :resume-selector-intent
                                 resume-selector-intent))
         create-request (cond-> create-request
-                         (managed/managed-harness?
-                          (attr-get run :harness/harness))
+                         (nil? (:guidance-transport create-request))
                          (dissoc :guidance-transport))
         fingerprint (life/fingerprint (dissoc create-request :request-id))]
     #_{:clj-kondo/ignore [:locking-suspicious-lock]}

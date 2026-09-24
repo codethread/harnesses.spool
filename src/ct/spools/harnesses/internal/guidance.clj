@@ -71,7 +71,7 @@
   providers retain their ordinary legacy prompt path. No capability is admitted."
   [_rt {:keys [harness requested inherited]}]
   (if (contains? native-identity-harnesses harness)
-    (when (and requested (not= "launch" requested))
+    (when (some? requested)
       (spool/fail!
        "Native identity providers use ordinary launch prompts; transport selection is unsupported"
        {:harness harness}))

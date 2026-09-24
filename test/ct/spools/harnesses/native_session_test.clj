@@ -67,6 +67,8 @@
                               finished (harnesses/finish!
                                         rt (:id run) {:status :done :exit-code 0
                                                       :invocation (:invocation started)})
+                              rejected-transport (failure #(harnesses/resume!
+                                                            rt (:id run) {:guidance-transport "legacy"}))
                               resumed (harnesses/resume! rt (:id run) {})
                               next-start (harnesses/begin-attempt! rt (:id resumed))
                               next-request (assoc request :run-reference
@@ -74,7 +76,8 @@
                               wrong-session (failure #(native/register!
                                                        rt (assoc next-request :native-session-id "other")))
                               next-bound (native/register! rt next-request)]
-                          {:before-count before-count :before-identity (attr run :identity/id)
+                          {:rejected-transport rejected-transport
+                           :before-count before-count :before-identity (attr run :identity/id)
                            :stale stale :wrong-cwd wrong-cwd :wrong-session wrong-session
                            :same (= (:identity attached) (:identity replay) (:identity next-bound))
                            :effort (:observed-effort attached)
@@ -83,6 +86,7 @@
                            :usable (attr finished :harness/session-usable)
                            :appends (attr resumed :harness/appended-system-prompts)
                            :performed (targets (identity/current rt (:identity attached)) "performed")})))]
+        (is (:rejected-transport result))
         (is (zero? (:before-count result)))
         (is (nil? (:before-identity result)))
         (is (:stale result))
@@ -107,15 +111,19 @@
                                         rt (:id run) {:status :done :exit-code 0 :result "answer"
                                                       :session-id "stdout-thread" :session-usable true
                                                       :invocation (:invocation started)})
+                              rejected-transport (failure #(harnesses/retry!
+                                                            rt (:id run) {:guidance-transport "legacy"}))
                               retried (harnesses/retry! rt (:id run) {})
                               next-start (harnesses/begin-attempt! rt (:id run))
                               stale (failure #(native/register!
                                                rt {:harness "codex" :model "model" :cwd "/tmp"
                                                    :native-session-id "old-thread"
                                                    :run-reference (native/reference (:strand started))}))]
-                          {:finished (:attributes finished) :stale stale
+                          {:rejected-transport rejected-transport
+                           :finished (:attributes finished) :stale stale
                            :retry-identity (attr retried :identity/id)
                            :new-invocation (not= (:invocation started) (:invocation next-start))})))]
+        (is (:rejected-transport result))
         (is (= "failed" (get-in result [:finished :harness/status])))
         (is (= "bootstrap" (get-in result [:finished :harness/substatus])))
         (is (= "true" (get-in result [:finished :harness/settled])))
